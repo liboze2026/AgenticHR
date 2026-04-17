@@ -1,0 +1,802 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AgenticHR 竞品分析战卡 | 2026-04-13</title>
+<style>
+:root {
+    --bg-primary: #0a0d14;
+    --bg-elevated: #0f131c;
+    --bg-surface: #161b28;
+    --bg-hover: #1e2536;
+    --text-primary: #ffffff;
+    --text-secondary: rgba(255,255,255,0.7);
+    --text-muted: rgba(255,255,255,0.5);
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --you-win: #10b981;
+    --they-win: #ef4444;
+    --tie: #f59e0b;
+    --border: rgba(255,255,255,0.08);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg-primary); color: var(--text-primary); line-height: 1.6; }
+header { background: linear-gradient(135deg, #1a1f2e, #0f131c); padding: 40px 32px 24px; border-bottom: 1px solid var(--border); }
+header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+header p { color: var(--text-secondary); font-size: 14px; }
+header .meta { display: flex; gap: 24px; margin-top: 12px; font-size: 13px; color: var(--text-muted); }
+header .meta span { display: flex; align-items: center; gap: 6px; }
+
+.tabs { display: flex; gap: 4px; padding: 12px 32px; background: var(--bg-elevated); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.tab { padding: 10px 20px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text-secondary); cursor: pointer; font-size: 14px; transition: all 0.2s; font-family: inherit; }
+.tab:hover { background: var(--bg-hover); color: var(--text-primary); }
+.tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+.content { padding: 32px; max-width: 1200px; margin: 0 auto; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Comparison Matrix */
+.matrix { width: 100%; border-collapse: collapse; margin: 24px 0; }
+.matrix th, .matrix td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); font-size: 14px; }
+.matrix th { background: var(--bg-elevated); color: var(--text-secondary); font-weight: 600; position: sticky; top: 0; }
+.matrix th:first-child { min-width: 180px; }
+.matrix td:first-child { font-weight: 500; color: var(--text-primary); }
+.matrix tr:hover td { background: var(--bg-hover); }
+.win { color: var(--you-win); font-weight: 600; }
+.lose { color: var(--they-win); font-weight: 600; }
+.partial { color: var(--tie); font-weight: 600; }
+.na { color: var(--text-muted); }
+
+/* Cards */
+.card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 20px; transition: all 0.2s; }
+.card:hover { border-color: rgba(255,255,255,0.15); }
+.card h3 { font-size: 18px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+.card h4 { font-size: 15px; color: var(--accent); margin: 20px 0 10px; }
+
+.badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+.badge-green { background: rgba(16,185,129,0.15); color: var(--you-win); }
+.badge-red { background: rgba(239,68,68,0.15); color: var(--they-win); }
+.badge-yellow { background: rgba(245,158,11,0.15); color: var(--tie); }
+.badge-blue { background: rgba(59,130,246,0.15); color: var(--accent); }
+
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+
+ul { padding-left: 20px; }
+ul li { margin-bottom: 6px; color: var(--text-secondary); font-size: 14px; }
+ul li strong { color: var(--text-primary); }
+
+.section-title { font-size: 20px; font-weight: 700; margin: 32px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--accent); }
+
+.gap-item { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 20px; margin-bottom: 12px; }
+.gap-item .priority { font-size: 12px; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; }
+.gap-item .priority.p0 { color: var(--they-win); }
+.gap-item .priority.p1 { color: var(--tie); }
+.gap-item .priority.p2 { color: var(--accent); }
+.gap-item h4 { font-size: 15px; margin-bottom: 6px; color: var(--text-primary); }
+.gap-item p { font-size: 13px; color: var(--text-secondary); }
+
+.summary-box { background: linear-gradient(135deg, rgba(59,130,246,0.1), rgba(16,185,129,0.05)); border: 1px solid rgba(59,130,246,0.2); border-radius: 12px; padding: 24px; margin: 24px 0; }
+.summary-box h3 { color: var(--accent); margin-bottom: 12px; }
+
+.talk-track { background: var(--bg-elevated); border-left: 3px solid var(--accent); padding: 16px 20px; margin: 12px 0; border-radius: 0 8px 8px 0; }
+.talk-track .label { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 6px; }
+.talk-track p { font-size: 14px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+
+<header>
+    <h1>AgenticHR 竞品分析战卡</h1>
+    <p>招聘管理系统市场竞争格局分析 &mdash; 识别差距，规划路线</p>
+    <div class="meta">
+        <span>生成日期: 2026-04-13</span>
+        <span>竞品: Moka / 北森 / 飞书招聘 / Boss直聘企业版 / 开源ATS</span>
+        <span>数据来源: 网络调研</span>
+    </div>
+</header>
+
+<nav class="tabs">
+    <button class="tab active" data-tab="matrix">功能对比矩阵</button>
+    <button class="tab" data-tab="gaps">差距与路线图</button>
+    <button class="tab" data-tab="moka">Moka</button>
+    <button class="tab" data-tab="beisen">北森</button>
+    <button class="tab" data-tab="feishu">飞书招聘</button>
+    <button class="tab" data-tab="boss">Boss直聘企业版</button>
+    <button class="tab" data-tab="opensource">开源ATS</button>
+    <button class="tab" data-tab="our">我们的优势</button>
+</nav>
+
+<div class="content">
+
+<!-- ============ 功能对比矩阵 ============ -->
+<section id="matrix" class="tab-content active">
+    <h2 class="section-title">功能对比矩阵</h2>
+    <table class="matrix">
+        <thead>
+            <tr>
+                <th>功能模块</th>
+                <th>AgenticHR</th>
+                <th>Moka</th>
+                <th>北森</th>
+                <th>飞书招聘</th>
+                <th>Boss企业版</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr><td colspan="6" style="background:var(--bg-elevated);color:var(--accent);font-weight:700;">简历管理</td></tr>
+            <tr>
+                <td>多渠道简历采集</td>
+                <td class="partial">仅Boss直聘</td>
+                <td class="win">全渠道聚合</td>
+                <td class="win">170+渠道</td>
+                <td class="win">多渠道</td>
+                <td class="partial">仅Boss平台</td>
+            </tr>
+            <tr>
+                <td>简历自动解析</td>
+                <td class="win">AI解析(GLM-4V)</td>
+                <td class="win">AI解析 90%+</td>
+                <td class="win">AI解析</td>
+                <td class="win">AI解析</td>
+                <td class="partial">基础解析</td>
+            </tr>
+            <tr>
+                <td>PDF简历采集</td>
+                <td class="win">Chrome扩展自动下载</td>
+                <td class="partial">手动上传</td>
+                <td class="partial">手动上传</td>
+                <td class="partial">手动上传</td>
+                <td class="lose">不支持导出</td>
+            </tr>
+            <tr>
+                <td>人才库管理</td>
+                <td class="lose">无</td>
+                <td class="win">智能人才库</td>
+                <td class="win">AI人才库+激活</td>
+                <td class="win">人才库</td>
+                <td class="partial">基础</td>
+            </tr>
+            <tr>
+                <td>简历查重</td>
+                <td class="partial">按姓名+手机</td>
+                <td class="win">多维度查重</td>
+                <td class="win">智能查重</td>
+                <td class="win">查重</td>
+                <td class="na">N/A</td>
+            </tr>
+
+            <tr><td colspan="6" style="background:var(--bg-elevated);color:var(--accent);font-weight:700;">AI 能力</td></tr>
+            <tr>
+                <td>AI简历评估</td>
+                <td class="win">AI打分+推荐</td>
+                <td class="win">AI匹配引擎</td>
+                <td class="win">AI评估</td>
+                <td class="win">AI简历评估</td>
+                <td class="partial">AI搜索</td>
+            </tr>
+            <tr>
+                <td>AI面试</td>
+                <td class="lose">无</td>
+                <td class="win">AI视频面试</td>
+                <td class="win">AI面试官(标杆)</td>
+                <td class="partial">AI面试题推荐</td>
+                <td class="partial">AI面试总结</td>
+            </tr>
+            <tr>
+                <td>AI JD生成</td>
+                <td class="lose">无</td>
+                <td class="win">18行业模板</td>
+                <td class="win">智能生成</td>
+                <td class="partial">有</td>
+                <td class="lose">无</td>
+            </tr>
+            <tr>
+                <td>人岗智能匹配</td>
+                <td class="partial">硬性条件筛选</td>
+                <td class="win">深度AI匹配</td>
+                <td class="win">AI推荐</td>
+                <td class="win">相似人才推荐</td>
+                <td class="win">AI深度搜索</td>
+            </tr>
+
+            <tr><td colspan="6" style="background:var(--bg-elevated);color:var(--accent);font-weight:700;">面试管理</td></tr>
+            <tr>
+                <td>面试安排</td>
+                <td class="win">自动排期</td>
+                <td class="win">智能排期</td>
+                <td class="win">协同排期</td>
+                <td class="win">日历集成</td>
+                <td class="partial">基础</td>
+            </tr>
+            <tr>
+                <td>视频会议集成</td>
+                <td class="win">腾讯会议自动创建</td>
+                <td class="win">多平台集成</td>
+                <td class="win">集成</td>
+                <td class="win">飞书会议原生</td>
+                <td class="win">Boss面试间</td>
+            </tr>
+            <tr>
+                <td>面试评价/面评</td>
+                <td class="lose">无</td>
+                <td class="win">结构化面评</td>
+                <td class="win">面评模板</td>
+                <td class="win">AI面评+转写</td>
+                <td class="lose">无</td>
+            </tr>
+            <tr>
+                <td>面试官日程查询</td>
+                <td class="win">飞书忙闲查询</td>
+                <td class="win">日程同步</td>
+                <td class="win">日程同步</td>
+                <td class="win">原生日历</td>
+                <td class="lose">无</td>
+            </tr>
+
+            <tr><td colspan="6" style="background:var(--bg-elevated);color:var(--accent);font-weight:700;">通知与协作</td></tr>
+            <tr>
+                <td>飞书/钉钉通知</td>
+                <td class="win">飞书消息+日历</td>
+                <td class="win">多渠道</td>
+                <td class="win">多渠道</td>
+                <td class="win">原生</td>
+                <td class="lose">无</td>
+            </tr>
+            <tr>
+                <td>邮件通知</td>
+                <td class="partial">基础SMTP</td>
+                <td class="win">模板化邮件</td>
+                <td class="win">自动化邮件</td>
+                <td class="win">邮件集成</td>
+                <td class="partial">站内信</td>
+            </tr>
+            <tr>
+                <td>候选人自助门户</td>
+                <td class="lose">无</td>
+                <td class="win">候选人端</td>
+                <td class="win">候选人门户</td>
+                <td class="partial">有</td>
+                <td class="partial">APP端</td>
+            </tr>
+
+            <tr><td colspan="6" style="background:var(--bg-elevated);color:var(--accent);font-weight:700;">流程与数据</td></tr>
+            <tr>
+                <td>Offer管理</td>
+                <td class="lose">无</td>
+                <td class="win">审批+模板</td>
+                <td class="win">签批管理</td>
+                <td class="win">Offer审批</td>
+                <td class="lose">无</td>
+            </tr>
+            <tr>
+                <td>招聘漏斗/报表</td>
+                <td class="lose">无</td>
+                <td class="win">完整BI</td>
+                <td class="win">专题数据分析</td>
+                <td class="win">数据看板</td>
+                <td class="partial">基础统计</td>
+            </tr>
+            <tr>
+                <td>招聘官网</td>
+                <td class="lose">无</td>
+                <td class="win">可定制官网</td>
+                <td class="win">招聘官网</td>
+                <td class="win">招聘页</td>
+                <td class="partial">企业主页</td>
+            </tr>
+            <tr>
+                <td>入职管理</td>
+                <td class="lose">无</td>
+                <td class="win">入职流程</td>
+                <td class="win">入职同步</td>
+                <td class="win">入职管理</td>
+                <td class="lose">无</td>
+            </tr>
+
+            <tr><td colspan="6" style="background:var(--bg-elevated);color:var(--accent);font-weight:700;">部署与成本</td></tr>
+            <tr>
+                <td>私有部署/自托管</td>
+                <td class="win">完全自托管</td>
+                <td class="lose">仅SaaS</td>
+                <td class="partial">支持私有化</td>
+                <td class="lose">仅SaaS</td>
+                <td class="lose">仅SaaS</td>
+            </tr>
+            <tr>
+                <td>开源/可定制</td>
+                <td class="win">MIT开源</td>
+                <td class="lose">闭源</td>
+                <td class="lose">闭源</td>
+                <td class="lose">闭源</td>
+                <td class="lose">闭源</td>
+            </tr>
+            <tr>
+                <td>年费用</td>
+                <td class="win">免费(服务器费用)</td>
+                <td class="lose">~2万/席/年</td>
+                <td class="lose">高(企业定制)</td>
+                <td class="partial">飞书套件内</td>
+                <td class="partial">按服务付费</td>
+            </tr>
+            <tr>
+                <td>数据所有权</td>
+                <td class="win">完全自有</td>
+                <td class="lose">厂商托管</td>
+                <td class="partial">可私有化</td>
+                <td class="lose">厂商托管</td>
+                <td class="lose">厂商托管</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <div class="summary-box">
+        <h3>矩阵总结</h3>
+        <div class="grid">
+            <div>
+                <h4 style="color:var(--you-win);margin-bottom:8px;">AgenticHR 的核心优势</h4>
+                <ul>
+                    <li><strong>零成本自托管</strong> &mdash; MIT开源，数据完全自主</li>
+                    <li><strong>Boss直聘深度集成</strong> &mdash; 自动采集+PDF下载，竞品无此能力</li>
+                    <li><strong>腾讯会议自动化</strong> &mdash; 自动创建会议，无需手动操作</li>
+                    <li><strong>飞书深度集成</strong> &mdash; 消息+日历+忙闲一体化</li>
+                    <li><strong>轻量易部署</strong> &mdash; SQLite+单进程，5分钟启动</li>
+                </ul>
+            </div>
+            <div>
+                <h4 style="color:var(--they-win);margin-bottom:8px;">AgenticHR 的主要差距</h4>
+                <ul>
+                    <li><strong>无人才库</strong> &mdash; 所有竞品的标配功能</li>
+                    <li><strong>无数据报表</strong> &mdash; 招聘漏斗、渠道分析、效率统计</li>
+                    <li><strong>无Offer管理</strong> &mdash; 缺少从面试到入职的闭环</li>
+                    <li><strong>无面试评价</strong> &mdash; 面试官无法提交结构化反馈</li>
+                    <li><strong>单渠道限制</strong> &mdash; 仅支持Boss直聘</li>
+                    <li><strong>无AI面试</strong> &mdash; 竞品的差异化重点</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ============ 差距与路线图 ============ -->
+<section id="gaps" class="tab-content">
+    <h2 class="section-title">差距分析与建议路线图</h2>
+
+    <p style="color:var(--text-secondary);margin-bottom:24px;">基于竞品对比，以下是 AgenticHR 需要补充的功能，按优先级排序。P0 = 上线基本要求，P1 = 近期迭代，P2 = 中长期规划。</p>
+
+    <div class="gap-item">
+        <div class="priority p0">P0 - 必须</div>
+        <h4>招聘数据看板与报表</h4>
+        <p>竞品全部具备。至少需要：招聘漏斗（投递→筛选→面试→Offer→入职各阶段转化率）、岗位招聘进度、时间效率统计（平均筛选时长、面试周期等）。建议在 Dashboard 页面集成可视化图表。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p0">P0 - 必须</div>
+        <h4>面试评价/面评系统</h4>
+        <p>面试官提交结构化面评（评分+维度评价+录用建议）是招聘闭环的关键环节。当前系统面试安排后无反馈收集机制。建议：每场面试支持面试官填写面评表，HR可查看汇总。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p0">P0 - 必须</div>
+        <h4>候选人状态流转完善</h4>
+        <p>当前状态仅有 pending/passed/rejected/scheduled/cancelled。需要完善为完整招聘管道：新投递 → 筛选中 → 初筛通过 → 面试中 → 面试通过 → Offer阶段 → 已入职 / 已淘汰。每个状态变更需记录时间和操作人。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p1">P1 - 近期</div>
+        <h4>人才库管理</h4>
+        <p>北森人才库利用率提升30%，Moka智能人才库是核心卖点。需要：已淘汰/已拒绝候选人不删除而是入库，支持标签分类、搜索、二次激活（重新进入招聘流程）。这是简历资产沉淀的关键。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p1">P1 - 近期</div>
+        <h4>Offer 管理流程</h4>
+        <p>面试通过后的 Offer 发放、审批、候选人确认流程。竞品标配。建议：Offer模板管理、薪资审批流、候选人接受/拒绝跟踪。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p1">P1 - 近期</div>
+        <h4>操作日志与审计</h4>
+        <p>多用户系统必须有操作审计。记录谁在什么时间做了什么操作（删除简历、修改面试、发送通知等）。用于安全合规和问题追溯。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p1">P1 - 近期</div>
+        <h4>简历/候选人详情页</h4>
+        <p>竞品都有独立的候选人360度视图页面，集中展示：基本信息、简历原文、AI评估结果、面试记录、面评、通知记录、状态变更历史。当前系统信息分散在多个页面。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p2">P2 - 中长期</div>
+        <h4>多渠道简历采集</h4>
+        <p>北森支持170+渠道。AgenticHR仅支持Boss直聘。可扩展支持：猎聘、智联、前程无忧、拉勾等主流平台的Chrome扩展采集，以及邮件简历自动导入。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p2">P2 - 中长期</div>
+        <h4>招聘官网/职位发布页</h4>
+        <p>自动生成企业招聘页面，候选人可在线投递。竞品标配。可作为独立的前端页面，嵌入企业官网。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p2">P2 - 中长期</div>
+        <h4>AI面试能力</h4>
+        <p>北森AI面试官是2026标杆，Moka提供16维度评估。可考虑接入大模型做AI初面：候选人通过链接进入AI面试，系统自动提问+录音+评估。技术门槛较高但差异化明显。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p2">P2 - 中长期</div>
+        <h4>移动端适配</h4>
+        <p>面试官和HR常在手机端操作。当前系统仅桌面端。需要响应式设计或小程序/H5。</p>
+    </div>
+
+    <div class="gap-item">
+        <div class="priority p2">P2 - 中长期</div>
+        <h4>入职管理模块</h4>
+        <p>从Offer确认到员工报到的全流程：入职材料收集、入职手续清单、新人引导。竞品标配但实现周期较长。</p>
+    </div>
+</section>
+
+<!-- ============ Moka ============ -->
+<section id="moka" class="tab-content">
+    <h2 class="section-title">Moka &mdash; 智能化招聘管理系统</h2>
+
+    <div class="card">
+        <h3>公司概况</h3>
+        <div class="grid">
+            <div>
+                <ul>
+                    <li><strong>成立:</strong> 2015年</li>
+                    <li><strong>融资:</strong> C轮 1亿美元 (2021)</li>
+                    <li><strong>投资方:</strong> GGV、金沙江、高瓴、老虎基金</li>
+                </ul>
+            </div>
+            <div>
+                <ul>
+                    <li><strong>目标市场:</strong> 中大型企业</li>
+                    <li><strong>定价:</strong> ~2万元/席/年，有最低席位要求</li>
+                    <li><strong>部署:</strong> 仅SaaS</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>核心能力</h3>
+        <ul>
+            <li><strong>Moka Eva:</strong> 基于大语言模型的AI HR产品，号称10倍提效</li>
+            <li><strong>简历解析:</strong> 自研技术，支持word/图片/pdf/excel，准确率90%+</li>
+            <li><strong>AI JD生成:</strong> 18个行业模板，可自定义</li>
+            <li><strong>AI面试:</strong> 量身定制面试题目，16维度能力评估</li>
+            <li><strong>全渠道聚合:</strong> 一站式发布+简历统一汇总</li>
+            <li><strong>智能初筛:</strong> 自动完成70%简历初筛</li>
+            <li><strong>协同面试:</strong> 面试日历双向同步</li>
+            <li><strong>招聘数据分析:</strong> 完整BI报表</li>
+        </ul>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3 style="color:var(--they-win);">Moka 赢在哪里</h3>
+            <ul>
+                <li><strong>AI深度:</strong> Eva产品矩阵远超我们的AI能力</li>
+                <li><strong>全渠道:</strong> 我们仅Boss直聘</li>
+                <li><strong>企业成熟度:</strong> 大客户案例丰富，流程完善</li>
+                <li><strong>数据分析:</strong> 完整的招聘BI，我们完全没有</li>
+            </ul>
+        </div>
+        <div class="card">
+            <h3 style="color:var(--you-win);">我们赢在哪里</h3>
+            <ul>
+                <li><strong>零成本:</strong> Moka 2万/席/年，我们免费开源</li>
+                <li><strong>Boss深度集成:</strong> Moka无法自动采集Boss简历</li>
+                <li><strong>自托管:</strong> 数据完全自主，无厂商锁定</li>
+                <li><strong>轻量:</strong> 5分钟部署 vs 企业级实施周期</li>
+                <li><strong>可定制:</strong> 开源可二次开发</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="talk-track">
+        <div class="label">应对话术：当客户说"Moka功能更全"</div>
+        <p>"Moka确实功能全面，但每席位年费2万起步，10个HR就是20万/年。AgenticHR完全免费开源，部署在你自己的服务器上，数据不出企业。对于中小团队，我们覆盖了招聘核心流程（采集→筛选→面试→通知），而且Boss直聘的自动化采集是Moka做不到的。"</p>
+    </div>
+</section>
+
+<!-- ============ 北森 ============ -->
+<section id="beisen" class="tab-content">
+    <h2 class="section-title">北森 &mdash; 一体化人才管理云平台</h2>
+
+    <div class="card">
+        <h3>公司概况</h3>
+        <div class="grid">
+            <div>
+                <ul>
+                    <li><strong>定位:</strong> 中国HR SaaS龙头</li>
+                    <li><strong>渠道:</strong> 对接170+外部招聘渠道</li>
+                    <li><strong>上市:</strong> 港股上市</li>
+                </ul>
+            </div>
+            <div>
+                <ul>
+                    <li><strong>目标市场:</strong> 中大型企业</li>
+                    <li><strong>定价:</strong> 企业定制，价格较高</li>
+                    <li><strong>部署:</strong> SaaS + 支持私有化</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>核心能力</h3>
+        <ul>
+            <li><strong>北森AI Family:</strong> 10大AI助手 + 500+ AI特性</li>
+            <li><strong>AI面试官:</strong> 2026年校招/社招标杆应用</li>
+            <li><strong>AI人才库:</strong> 智能分类、透视分析、精准推荐、定向激活，利用率提升30%</li>
+            <li><strong>170+渠道:</strong> 覆盖智联、前程、58、Boss、国聘等</li>
+            <li><strong>一体化:</strong> 招聘→测评→入职→绩效→学习全链路</li>
+            <li><strong>招测一体:</strong> 招聘+人才测评结合</li>
+        </ul>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3 style="color:var(--they-win);">北森赢在哪里</h3>
+            <ul>
+                <li><strong>AI面试官:</strong> 行业标杆，我们完全没有</li>
+                <li><strong>人才测评:</strong> 心理测评+能力评估一体化</li>
+                <li><strong>渠道覆盖:</strong> 170+ vs 我们仅1个</li>
+                <li><strong>全链路:</strong> 从招聘到绩效全覆盖</li>
+            </ul>
+        </div>
+        <div class="card">
+            <h3 style="color:var(--you-win);">我们赢在哪里</h3>
+            <ul>
+                <li><strong>零成本:</strong> 北森报价动辄数十万/年</li>
+                <li><strong>实施速度:</strong> 5分钟 vs 数月实施周期</li>
+                <li><strong>Boss自动化:</strong> 北森需要手动操作Boss</li>
+                <li><strong>灵活定制:</strong> 开源可改 vs 定制需求排期</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="talk-track">
+        <div class="label">应对话术：当客户说"北森是行业龙头"</div>
+        <p>"北森是大厂首选没错，但实施周期3-6个月，年费用数十万。我们面向的是'现在就要开始招人'的中小团队——今天部署，明天就能从Boss直聘自动采集简历。等公司规模上去了再考虑切换到企业级方案也不迟，而且数据随时可以导出。"</p>
+    </div>
+</section>
+
+<!-- ============ 飞书招聘 ============ -->
+<section id="feishu" class="tab-content">
+    <h2 class="section-title">飞书招聘 &mdash; 一体化协作招聘</h2>
+
+    <div class="card">
+        <h3>产品概况</h3>
+        <div class="grid">
+            <div>
+                <ul>
+                    <li><strong>厂商:</strong> 字节跳动</li>
+                    <li><strong>定位:</strong> 飞书生态内置招聘模块</li>
+                    <li><strong>特色:</strong> 深度打通日历、音视频、群聊</li>
+                </ul>
+            </div>
+            <div>
+                <ul>
+                    <li><strong>目标市场:</strong> 飞书用户企业</li>
+                    <li><strong>定价:</strong> 飞书企业套件内含</li>
+                    <li><strong>部署:</strong> 仅SaaS</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>核心能力</h3>
+        <ul>
+            <li><strong>三合一工作台:</strong> 简历+面试+面评同步操作</li>
+            <li><strong>AI能力:</strong> 简历评估批量筛选、人岗匹配、AI面试题推荐</li>
+            <li><strong>实时语音转文字:</strong> 面试实时转写</li>
+            <li><strong>AI面试总结:</strong> 面试后自动生成总结</li>
+            <li><strong>在线代码考核:</strong> 技术岗在线编程面试</li>
+            <li><strong>原生协作:</strong> 与飞书日历、会议、文档无缝打通</li>
+        </ul>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3 style="color:var(--they-win);">飞书招聘赢在哪里</h3>
+            <ul>
+                <li><strong>协作深度:</strong> 原生打通飞书全套工具</li>
+                <li><strong>面试体验:</strong> 三合一工作台+实时转写</li>
+                <li><strong>AI面试总结:</strong> 自动总结面试内容</li>
+                <li><strong>多渠道:</strong> 支持多招聘平台</li>
+            </ul>
+        </div>
+        <div class="card">
+            <h3 style="color:var(--you-win);">我们赢在哪里</h3>
+            <ul>
+                <li><strong>不锁定生态:</strong> 飞书招聘仅限飞书用户</li>
+                <li><strong>Boss深度自动化:</strong> 飞书招聘无此能力</li>
+                <li><strong>腾讯会议支持:</strong> 不限于飞书视频会议</li>
+                <li><strong>自托管+开源:</strong> 数据自主</li>
+                <li><strong>成本:</strong> 免费 vs 飞书企业版费用</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="talk-track">
+        <div class="label">应对话术：当客户说"我们用飞书，直接用飞书招聘就好了"</div>
+        <p>"飞书招聘确实和飞书协作体验很好，但AgenticHR的优势是Boss直聘自动化——自动采集简历、自动求简历、PDF解析入库，这些飞书招聘都做不到。而且我们也深度集成了飞书通知和日历，可以作为飞书招聘的有力补充。很多HR是Boss直聘+飞书协作双线并用的。"</p>
+    </div>
+</section>
+
+<!-- ============ Boss直聘企业版 ============ -->
+<section id="boss" class="tab-content">
+    <h2 class="section-title">Boss直聘企业版 &mdash; 招聘平台内置工具</h2>
+
+    <div class="card">
+        <h3>产品概况</h3>
+        <div class="grid">
+            <div>
+                <ul>
+                    <li><strong>厂商:</strong> Boss直聘 (看准科技)</li>
+                    <li><strong>定位:</strong> 招聘平台增值服务</li>
+                    <li><strong>2026春招:</strong> 日活峰值2350万</li>
+                </ul>
+            </div>
+            <div>
+                <ul>
+                    <li><strong>目标市场:</strong> 所有企业</li>
+                    <li><strong>定价:</strong> 按服务包购买</li>
+                    <li><strong>部署:</strong> 仅平台内</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>核心能力</h3>
+        <ul>
+            <li><strong>AI深度搜索:</strong> 面向高要求企业的AI精准搜索工具</li>
+            <li><strong>AI面试总结:</strong> 30%招聘者使用AI辅助面试总结</li>
+            <li><strong>AI托管筛选:</strong> 批量招聘场景AI自动筛选</li>
+            <li><strong>Boss面试间:</strong> 内置视频面试</li>
+            <li><strong>协作招人:</strong> 多人协同管理</li>
+            <li><strong>筛选约面:</strong> 进度统计周报</li>
+        </ul>
+    </div>
+
+    <div class="grid">
+        <div class="card">
+            <h3 style="color:var(--they-win);">Boss企业版赢在哪里</h3>
+            <ul>
+                <li><strong>流量优势:</strong> 日活2350万的候选人池</li>
+                <li><strong>AI搜索:</strong> 基于全平台数据的智能匹配</li>
+                <li><strong>原生体验:</strong> 在Boss平台内完成全流程</li>
+            </ul>
+        </div>
+        <div class="card">
+            <h3 style="color:var(--you-win);">我们赢在哪里</h3>
+            <ul>
+                <li><strong>数据自主:</strong> Boss的数据锁在平台内</li>
+                <li><strong>自动化采集:</strong> 我们能把Boss的数据提取出来</li>
+                <li><strong>跨平台管理:</strong> 统一管理多渠道候选人</li>
+                <li><strong>外部通知:</strong> 飞书+邮件+腾讯会议集成</li>
+                <li><strong>AI评估:</strong> 自有AI评估，不受平台限制</li>
+            </ul>
+        </div>
+    </div>
+
+    <div class="talk-track">
+        <div class="label">定位策略：与Boss直聘互补而非竞争</div>
+        <p>"我们不是Boss直聘的替代品，而是它的增强工具。Boss直聘是你找人的地方，AgenticHR帮你把Boss上的简历自动化地管理起来——自动采集、AI评估、安排面试、发飞书通知、创腾讯会议，这些Boss直聘本身都不提供。"</p>
+    </div>
+</section>
+
+<!-- ============ 开源ATS ============ -->
+<section id="opensource" class="tab-content">
+    <h2 class="section-title">开源 ATS 对比 &mdash; 全球自托管方案</h2>
+
+    <div class="card">
+        <h3>主要开源竞品</h3>
+        <table class="matrix">
+            <thead>
+                <tr>
+                    <th>项目</th>
+                    <th>技术栈</th>
+                    <th>特点</th>
+                    <th>不足</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>OpenCATS</td>
+                    <td>PHP + MySQL</td>
+                    <td>最老牌开源ATS，社区活跃</td>
+                    <td>无AI能力，界面陈旧，无中国招聘平台集成</td>
+                </tr>
+                <tr>
+                    <td>CandidATS</td>
+                    <td>PHP + MySQL</td>
+                    <td>OpenCATS分支，UI改进</td>
+                    <td>同上，开发活跃度一般</td>
+                </tr>
+                <tr>
+                    <td>OrangeHRM</td>
+                    <td>PHP + MySQL</td>
+                    <td>完整HRM套件含招聘</td>
+                    <td>招聘模块功能有限，无中国本地化</td>
+                </tr>
+                <tr>
+                    <td>Odoo Recruitment</td>
+                    <td>Python + PostgreSQL</td>
+                    <td>ERP生态内招聘模块</td>
+                    <td>依赖Odoo全套，过重</td>
+                </tr>
+                <tr>
+                    <td><strong>AgenticHR</strong></td>
+                    <td><strong>Python + Vue 3</strong></td>
+                    <td><strong>AI驱动，中国本地化，Boss+飞书+腾讯会议</strong></td>
+                    <td><strong>功能还需完善</strong></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="summary-box">
+        <h3>开源赛道定位</h3>
+        <p style="color:var(--text-secondary);">全球开源ATS赛道中，<strong>没有任何一个项目</strong>同时具备：中国招聘平台集成（Boss直聘）、中国IM集成（飞书）、中国会议集成（腾讯会议）、AI简历评估。AgenticHR 是目前唯一面向中国中小企业的 AI 驱动开源招聘系统，这是一个明确的空白市场。</p>
+    </div>
+</section>
+
+<!-- ============ 我们的优势 ============ -->
+<section id="our" class="tab-content">
+    <h2 class="section-title">AgenticHR 独特价值</h2>
+
+    <div class="card">
+        <h3>竞品做不到的事</h3>
+        <ul>
+            <li><strong>Boss直聘自动化采集:</strong> Chrome扩展自动点击候选人、下载PDF简历、解析入库 &mdash; 任何竞品SaaS都不可能做到这一点（平台限制）</li>
+            <li><strong>完全自托管+MIT开源:</strong> 数据不出企业，无SaaS年费，可任意定制</li>
+            <li><strong>腾讯会议自动创建:</strong> 通过浏览器自动化创建会议并获取链接，竞品依赖手动操作或官方API（需企业认证）</li>
+            <li><strong>飞书深度通知:</strong> 消息+日历事件+忙闲查询三合一</li>
+            <li><strong>5分钟极速部署:</strong> SQLite免配置，单命令启动，vs 竞品数周到数月的实施周期</li>
+        </ul>
+    </div>
+
+    <div class="card">
+        <h3>目标用户画像</h3>
+        <ul>
+            <li><strong>1-5人HR团队</strong>的中小企业</li>
+            <li><strong>主要从Boss直聘招人</strong>，不需要170个渠道</li>
+            <li><strong>使用飞书协作</strong>，需要面试通知到飞书</li>
+            <li><strong>预算有限</strong>，无法承担2万/席/年的SaaS费用</li>
+            <li><strong>注重数据隐私</strong>，希望候选人数据不存在第三方平台</li>
+            <li><strong>有基本技术能力</strong>（或有IT支持），能部署和维护</li>
+        </ul>
+    </div>
+
+    <div class="card">
+        <h3>竞争定位一句话</h3>
+        <div style="font-size:20px;color:var(--accent);text-align:center;padding:20px;">
+            "中小企业的免费AI招聘助手 &mdash; Boss直聘深度集成 + 飞书通知 + 自托管"
+        </div>
+    </div>
+</section>
+
+</div>
+
+<script>
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(tab.dataset.tab).classList.add('active');
+    });
+});
+</script>
+</body>
+</html>

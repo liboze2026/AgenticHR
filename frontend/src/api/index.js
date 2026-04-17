@@ -1,0 +1,115 @@
+import axios from 'axios'
+
+const api = axios.create({
+  baseURL: '/api',
+  timeout: 30000,
+})
+
+// 请求拦截器：自动带 Token
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token')
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
+  }
+  return config
+})
+
+// 响应拦截器
+api.interceptors.response.use(
+  (response) => response.data,
+  (error) => {
+    const msg = error.response?.data?.detail || error.message || '请求失败'
+    console.error('API Error:', msg)
+    // 401 → token失效，跳转登录
+    if (error.response?.status === 401) {
+      localStorage.removeItem('token')
+      localStorage.removeItem('user')
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login'
+      }
+    }
+    return Promise.reject(error)
+  }
+)
+
+// 简历 API
+export const resumeApi = {
+  list: (params) => api.get('/resumes/', { params }),
+  get: (id) => api.get(`/resumes/${id}`),
+  create: (data) => api.post('/resumes/', data),
+  batchCreate: (data) => api.post('/resumes/batch', data),
+  update: (id, data) => api.patch(`/resumes/${id}`, data),
+  delete: (id) => api.delete(`/resumes/${id}`),
+  clearAll: () => api.delete('/resumes/clear-all'),
+  aiParseSingle: (id) => api.post(`/resumes/${id}/ai-parse`),
+  aiParseAll: () => api.post('/resumes/ai-parse-all'),
+  aiParseStatus: () => api.get('/resumes/ai-parse-status'),
+  upload: (file) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post('/resumes/upload', formData)
+  },
+}
+
+// 岗位 API
+export const jobApi = {
+  list: (params) => api.get('/screening/jobs', { params }),
+  get: (id) => api.get(`/screening/jobs/${id}`),
+  create: (data) => api.post('/screening/jobs', data),
+  update: (id, data) => api.patch(`/screening/jobs/${id}`, data),
+  delete: (id) => api.delete(`/screening/jobs/${id}`),
+  screen: (jobId, resumeIds) => api.post(`/screening/jobs/${jobId}/screen`, resumeIds),
+}
+
+// 面试 API
+export const schedulingApi = {
+  listInterviewers: () => api.get('/scheduling/interviewers'),
+  createInterviewer: (data) => api.post('/scheduling/interviewers', data),
+  updateInterviewer: (id, data) => api.patch(`/scheduling/interviewers/${id}`, data),
+  deleteInterviewer: (id) => api.delete(`/scheduling/interviewers/${id}`),
+  addAvailability: (data) => api.post('/scheduling/availability', data),
+  getAvailability: (id) => api.get(`/scheduling/availability/${id}`),
+  matchSlots: (data) => api.post('/scheduling/match-slots', data),
+  listInterviews: (params) => api.get('/scheduling/interviews', { params }),
+  createInterview: (data) => api.post('/scheduling/interviews', data),
+  getInterview: (id) => api.get(`/scheduling/interviews/${id}`),
+  updateInterview: (id, data) => api.patch(`/scheduling/interviews/${id}`, data),
+  cancelInterview: (id) => api.post(`/scheduling/interviews/${id}/cancel`),
+  deleteInterview: (id) => api.delete(`/scheduling/interviews/${id}`),
+  clearAllInterviews: () => api.delete('/scheduling/interviews/clear-all'),
+  askInterviewerTime: (id) => api.post(`/scheduling/interviews/${id}/ask-time`),
+  getFreeBusy: (interviewerId, days = 5) => api.get(`/scheduling/interviewers/${interviewerId}/freebusy`, { params: { days } }),
+}
+
+// 会议 API
+export const meetingApi = {
+  autoCreate: (interviewId) => api.post('/meeting/auto-create', null, { params: { interview_id: interviewId } }),
+}
+
+// 通知 API
+export const notificationApi = {
+  send: (data) => api.post('/notification/send', data),
+  listLogs: (params) => api.get('/notification/logs', { params }),
+  clearAll: () => api.delete('/notification/clear-all'),
+}
+
+// AI API
+export const aiApi = {
+  status: () => api.get('/ai/status'),
+  evaluate: (data) => api.post('/ai/evaluate', data),
+  batchEvaluate: (data) => api.post('/ai/evaluate/batch', data),
+}
+
+// Boss API
+export const bossApi = {
+  status: () => api.get('/boss/status'),
+  greet: (data) => api.post('/boss/greet', data),
+  collect: () => api.post('/boss/collect'),
+}
+
+// 健康检查
+export const healthApi = {
+  check: () => api.get('/health'),
+}
+
+export default api

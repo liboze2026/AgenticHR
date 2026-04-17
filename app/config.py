@@ -1,0 +1,58 @@
+"""统一配置管理"""
+from pathlib import Path
+from pydantic_settings import BaseSettings
+
+
+class Settings(BaseSettings):
+    # 应用
+    app_name: str = "招聘助手"
+    app_host: str = "127.0.0.1"
+    app_port: int = 8000
+    debug: bool = False
+
+    # 数据库
+    database_url: str = "sqlite:///./data/recruitment.db"
+
+    # AI 功能开关
+    ai_enabled: bool = False
+    ai_provider: str = "openai_compatible"
+    ai_api_key: str = ""
+    ai_base_url: str = ""
+    ai_model: str = ""
+
+    # 邮件 SMTP
+    smtp_host: str = ""
+    smtp_port: int = 465
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_use_ssl: bool = True
+
+    # 邮件 IMAP
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_user: str = ""
+    imap_password: str = ""
+    imap_check_interval: int = 300
+
+    # 飞书
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+
+    # 腾讯会议 - 账号池（逗号分隔的标签），每个标签对应 data/meeting_browser_{label}/ 的
+    # Playwright 持久化 Chrome 目录，首次用新标签时需人工扫码登录一次
+    tencent_meeting_accounts: str = "default"
+
+    # Boss 直聘
+    boss_adapter: str = "edge_extension"
+    boss_max_operations_per_hour: int = 30
+    boss_max_operations_per_day: int = 200
+    boss_delay_min: float = 3.0
+    boss_delay_max: float = 8.0
+
+    # 简历存储路径
+    resume_storage_path: str = "./data/resumes"
+
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+
+settings = Settings()

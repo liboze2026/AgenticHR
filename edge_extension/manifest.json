@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "招聘助手 - Boss直聘",
+  "version": "1.0.0",
+  "description": "Boss直聘简历采集助手",
+  "permissions": ["activeTab", "storage", "downloads"],
+  "host_permissions": ["https://www.zhipin.com/*", "http://127.0.0.1:8000/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.zhipin.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"]
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

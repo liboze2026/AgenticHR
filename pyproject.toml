@@ -1,0 +1,9 @@
+[project]
+name = "boss-feishu-recruitment-assistant"
+version = "0.1.0"
+description = "招聘助手 - Boss直聘简历管理与面试协调工具"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

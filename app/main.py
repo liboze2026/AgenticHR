@@ -1,0 +1,165 @@
+"""FastAPI 应用入口"""
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+from app.config import settings
+from app.database import create_tables
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_tables()
+    # Start Feishu WebSocket client if configured
+    if settings.feishu_app_id and settings.feishu_app_secret:
+        try:
+            from app.adapters.feishu_ws import start_feishu_ws
+            start_feishu_ws(settings.feishu_app_id, settings.feishu_app_secret)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Feishu WS client failed to start: {e}")
+    # 启动时若有未解析简历，自动续跑 AI 解析任务
+    try:
+        from app.modules.resume._ai_parse_worker import maybe_start_worker_thread
+        maybe_start_worker_thread()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"AI parse worker failed to auto-start: {e}")
+    yield
+
+
+app = FastAPI(
+    title=settings.app_name,
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# JWT 认证中间件：保护所有 /api/* 路由（白名单除外）
+_AUTH_WHITELIST = {"/api/health", "/api/auth/status", "/api/auth/register", "/api/auth/login", "/api/feishu/event"}
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    # OPTIONS 预检请求：返回CORS头并放行
+    if request.method == "OPTIONS":
+        from starlette.responses import Response
+        response = Response(status_code=200)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
+        return response
+    path = request.url.path
+    if path.startswith("/api/") and path not in _AUTH_WHITELIST:
+        # 优先从 Authorization header 取 token
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+        # 资源端点（图片/PDF）支持 URL query 传 token（因为 img/iframe 无法带 header）
+        if not token:
+            token = request.query_params.get("token", "")
+        if not token:
+            return JSONResponse(status_code=401, content={"detail": "未登录，请先登录"})
+        from app.modules.auth.service import decode_token
+        payload = decode_token(token)
+        if not payload:
+            return JSONResponse(status_code=401, content={"detail": "登录已过期，请重新登录"})
+        request.state.user_id = int(payload["sub"])
+        request.state.username = payload["username"]
+    return await call_next(request)
+
+
+@app.get("/api/health")
+def health_check():
+    from app.config import settings
+
+    feishu_configured = bool(settings.feishu_app_id and settings.feishu_app_secret)
+    ai_configured = bool(settings.ai_enabled and settings.ai_api_key)
+    smtp_configured = bool(getattr(settings, 'smtp_host', '') and getattr(settings, 'smtp_user', ''))
+    meeting_accounts_str = getattr(settings, 'tencent_meeting_accounts', '') or ''
+    meeting_accounts = [a.strip() for a in meeting_accounts_str.split(",") if a.strip()] if meeting_accounts_str else []
+
+    return {
+        "status": "ok",
+        "app_name": settings.app_name,
+        "services": {
+            "feishu": {"configured": feishu_configured},
+            "ai": {
+                "enabled": getattr(settings, 'ai_enabled', False),
+                "configured": ai_configured,
+                "model": getattr(settings, 'ai_model', '') if ai_configured else "",
+            },
+            "email": {"configured": smtp_configured},
+            "meeting": {
+                "configured": len(meeting_accounts) > 0,
+                "account_count": len(meeting_accounts),
+            },
+        }
+    }
+
+
+# Register routers
+from app.modules.auth.router import router as auth_router
+app.include_router(auth_router, prefix="/api/auth", tags=["auth"])
+
+from app.modules.resume.router import router as resume_router
+app.include_router(resume_router, prefix="/api/resumes", tags=["resumes"])
+
+from app.modules.screening.router import router as screening_router
+app.include_router(screening_router, prefix="/api/screening", tags=["screening"])
+
+from app.modules.ai_evaluation.router import router as ai_router
+app.include_router(ai_router, prefix="/api/ai", tags=["ai_evaluation"])
+
+from app.modules.scheduling.router import router as scheduling_router
+app.include_router(scheduling_router, prefix="/api/scheduling", tags=["scheduling"])
+
+from app.modules.meeting.router import router as meeting_router
+app.include_router(meeting_router, prefix="/api/meeting", tags=["meeting"])
+
+from app.modules.notification.router import router as notification_router
+app.include_router(notification_router, prefix="/api/notification", tags=["notification"])
+
+from app.modules.boss_automation.router import router as boss_router
+app.include_router(boss_router, prefix="/api/boss", tags=["boss_automation"])
+
+from app.modules.feishu_bot.router import router as feishu_bot_router
+app.include_router(feishu_bot_router, prefix="/api/feishu", tags=["feishu_bot"])
+
+# Serve Vue frontend static files
+import os
+from pathlib import Path
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+# Look for frontend dist in several locations
+_frontend_dirs = [
+    Path(__file__).parent.parent / "frontend" / "dist",  # dev: project root
+    Path(__file__).parent / "frontend_dist",  # packaged: bundled alongside app
+    Path(os.getcwd()) / "frontend" / "dist",  # cwd-relative
+]
+
+_frontend_dir = None
+for d in _frontend_dirs:
+    if d.exists():
+        _frontend_dir = d
+        break
+
+if _frontend_dir:
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dir / "assets")), name="static-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """SPA fallback: serve index.html for all non-API routes"""
+        file_path = _frontend_dir / full_path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(str(_frontend_dir / "index.html"))

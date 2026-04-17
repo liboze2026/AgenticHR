@@ -1,0 +1,190 @@
+"""AI 简历解析后台工作线程
+
+在独立线程中逐个解析未被 AI 解析的简历，支持中断恢复和运行期间新增。
+"""
+import asyncio
+import logging
+import os
+
+from app.database import SessionLocal
+from app.modules.resume.models import Resume
+
+logger = logging.getLogger(__name__)
+
+# 全局状态
+_status = {
+    "running": False,
+    "total": 0,
+    "completed": 0,
+    "failed": 0,
+    "current": "",
+}
+
+
+def get_parse_status() -> dict:
+    return {**_status}
+
+
+def start_ai_parse_worker(user_id: int = 0):
+    """在后台线程中运行 AI 解析（同步入口，内部用 asyncio）
+
+    Args:
+        user_id: 限定解析该用户的简历，0 表示不限制（向后兼容）
+    """
+    if _status["running"]:
+        logger.info("AI 解析任务已在运行中，跳过")
+        return
+
+    _status["running"] = True
+    _status["completed"] = 0
+    _status["failed"] = 0
+    _status["current"] = ""
+
+    try:
+        asyncio.run(_do_parse_all(user_id=user_id))
+    except Exception as e:
+        logger.error(f"AI 解析任务异常退出: {e}")
+    finally:
+        _status["running"] = False
+        _status["current"] = ""
+        logger.info(f"AI 解析任务结束: 完成 {_status['completed']}, 失败 {_status['failed']}")
+
+
+def maybe_start_worker_thread():
+    """如果 AI 已配置且 worker 没在跑，就在后台线程里启动它。幂等。"""
+    if _status["running"]:
+        return
+    try:
+        from app.config import settings
+        if not settings.ai_enabled:
+            return
+        from app.adapters.ai_provider import AIProvider
+        if not AIProvider().is_configured():
+            return
+    except Exception:
+        return
+
+    import threading
+    thread = threading.Thread(target=start_ai_parse_worker, daemon=True)
+    thread.start()
+    logger.info("AI 解析后台任务已自动启动")
+
+
+async def _do_parse_all(user_id: int = 0):
+    from app.adapters.ai_provider import AIProvider
+    from app.modules.resume.pdf_parser import ai_parse_resume, ai_parse_resume_vision, is_image_pdf
+
+    ai = AIProvider()
+    db = SessionLocal()
+
+    def _query_pending():
+        # 只看 'no'，不回头重试 'failed'（避免无限循环）；手动重试用单条接口
+        q = (
+            db.query(Resume)
+            .filter(Resume.ai_parsed == "no")
+            .filter((Resume.raw_text != "") | (Resume.pdf_path != ""))
+        )
+        if user_id:
+            q = q.filter(Resume.user_id == user_id)
+        return q.all()
+
+    def _s(v):
+        return str(v) if isinstance(v, (dict, list)) else (v or "")
+
+    try:
+        # 启动时先把卡在 'parsing' 状态的简历重置回 'no'，
+        # 避免 worker 上次异常退出（Ctrl+C/OOM/重载）导致简历永久卡住
+        stale_q = db.query(Resume).filter(Resume.ai_parsed == "parsing")
+        if user_id:
+            stale_q = stale_q.filter(Resume.user_id == user_id)
+        stale = stale_q.all()
+        if stale:
+            logger.info(f"发现 {len(stale)} 份卡在 parsing 的简历，重置为 no 重新排队")
+            for r in stale:
+                r.ai_parsed = "no"
+            db.commit()
+
+        round_idx = 0
+        while True:
+            pending = _query_pending()
+            if not pending:
+                break
+            round_idx += 1
+            if round_idx == 1:
+                _status["total"] = len(pending)
+                logger.info(f"AI 解析任务启动: {len(pending)} 份待解析")
+            else:
+                _status["total"] += len(pending)
+                logger.info(f"第 {round_idx} 轮: 发现 {len(pending)} 份新加入的待解析简历")
+
+            for i, resume in enumerate(pending):
+                _status["current"] = resume.name
+                logger.info(f"[轮{round_idx} {i+1}/{len(pending)}] 正在解析: {resume.name}")
+
+                resume.ai_parsed = "parsing"
+                db.commit()
+
+                try:
+                    use_vision = False
+                    if resume.pdf_path and os.path.exists(resume.pdf_path):
+                        if not resume.raw_text or len(resume.raw_text.strip()) < 50:
+                            use_vision = True
+                            logger.info(f"  图片版PDF，使用视觉模型")
+                        elif is_image_pdf(resume.pdf_path):
+                            use_vision = True
+                            logger.info(f"  检测为图片版PDF，使用视觉模型")
+
+                    if use_vision:
+                        parsed = await ai_parse_resume_vision(resume.pdf_path, ai)
+                        if parsed:
+                            resume.raw_text = f"[AI视觉解析] 姓名:{parsed.get('name','')} 技能:{parsed.get('skills','')} 经历:{parsed.get('work_experience','')}"
+                    else:
+                        parsed = await ai_parse_resume(resume.raw_text, ai)
+
+                    if not parsed:
+                        resume.ai_parsed = "failed"
+                        _status["failed"] += 1
+                        db.commit()
+                        continue
+
+                    if parsed.get("name") and resume.name == "未知":
+                        resume.name = _s(parsed["name"])
+                    if parsed.get("phone") and not resume.phone:
+                        resume.phone = _s(parsed["phone"])
+                    if parsed.get("email") and not resume.email:
+                        resume.email = _s(parsed["email"])
+                    if parsed.get("education") and not resume.education:
+                        resume.education = _s(parsed["education"])
+                    if parsed.get("bachelor_school") and not resume.bachelor_school:
+                        resume.bachelor_school = _s(parsed["bachelor_school"])
+                    if parsed.get("master_school") and not resume.master_school:
+                        resume.master_school = _s(parsed["master_school"])
+                    if parsed.get("phd_school") and not resume.phd_school:
+                        resume.phd_school = _s(parsed["phd_school"])
+                    if parsed.get("work_years") and not resume.work_years:
+                        val = parsed["work_years"]
+                        resume.work_years = int(val) if isinstance(val, (int, float)) else 0
+                    if parsed.get("skills"):
+                        resume.skills = _s(parsed["skills"])
+                    if parsed.get("work_experience"):
+                        resume.work_experience = _s(parsed["work_experience"])
+                    if parsed.get("project_experience"):
+                        resume.project_experience = _s(parsed["project_experience"])
+                    if parsed.get("self_evaluation"):
+                        resume.self_evaluation = _s(parsed["self_evaluation"])
+                    if parsed.get("job_intention") and not resume.job_intention:
+                        resume.job_intention = _s(parsed["job_intention"])
+
+                    resume.ai_parsed = "yes"
+                    _status["completed"] += 1
+                    db.commit()
+                    logger.info(f"  解析成功: {resume.name}")
+
+                except Exception as e:
+                    logger.error(f"  解析失败 [{resume.name}]: {e}")
+                    resume.ai_parsed = "failed"
+                    _status["failed"] += 1
+                    db.commit()
+
+    finally:
+        db.close()

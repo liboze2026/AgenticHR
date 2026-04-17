@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+.env
+*.db
+data/
+.pytest_cache/
+
+# 测试产物
+test-*.png
+.playwright-mcp/
+
+# 日志
+recruitment_assistant.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code 本地配置 (包含机器相关路径)
+.claude/settings.local.json
+
+# 腾讯会议 Playwright 持久化目录
+data/meeting_browser_*/
+
+# Node
+node_modules/

@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>招聘助手</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 360px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      background: #f5f7fa;
+      color: #333;
+    }
+
+    .header {
+      background: linear-gradient(135deg, #00b38a, #00a67c);
+      color: #fff;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .header h1 {
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .header .version {
+      font-size: 11px;
+      opacity: 0.8;
+      margin-left: auto;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      background: #fff;
+      border-bottom: 1px solid #e8e8e8;
+      font-size: 13px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ccc;
+      flex-shrink: 0;
+    }
+
+    .status-dot.connected {
+      background: #52c41a;
+    }
+
+    .status-dot.error {
+      background: #ff4d4f;
+    }
+
+    .status-text {
+      color: #666;
+    }
+
+    .section {
+      padding: 16px 20px;
+    }
+
+    .section-title {
+      font-size: 12px;
+      color: #999;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .input-group {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .input-group input {
+      flex: 1;
+      padding: 8px 12px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    .input-group input:focus {
+      border-color: #00b38a;
+    }
+
+    .btn {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .btn:hover {
+      opacity: 0.9;
+      transform: translateY(-1px);
+    }
+
+    .btn:active {
+      transform: translateY(0);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .btn-primary {
+      background: #00b38a;
+      color: #fff;
+      width: 100%;
+      padding: 10px;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .btn-secondary {
+      background: #e6f7f2;
+      color: #00a67c;
+      width: 100%;
+      padding: 10px;
+      font-size: 14px;
+      margin-bottom: 8px;
+    }
+
+    .btn-outline {
+      background: #fff;
+      color: #666;
+      border: 1px solid #d9d9d9;
+      font-size: 12px;
+    }
+
+    .result-area {
+      background: #fff;
+      border: 1px solid #e8e8e8;
+      border-radius: 6px;
+      padding: 12px;
+      min-height: 80px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 12px;
+      color: #666;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
+    .result-area.success {
+      border-color: #b7eb8f;
+      background: #f6ffed;
+      color: #52c41a;
+    }
+
+    .result-area.error {
+      border-color: #ffa39e;
+      background: #fff2f0;
+      color: #ff4d4f;
+    }
+
+    .footer {
+      text-align: center;
+      padding: 12px;
+      font-size: 11px;
+      color: #bbb;
+      border-top: 1px solid #e8e8e8;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>招聘助手 - Boss直聘</h1>
+    <span class="version">v1.0.0</span>
+  </div>
+
+  <div class="status-bar">
+    <span class="status-dot" id="statusDot"></span>
+    <span class="status-text" id="statusText">未连接</span>
+  </div>
+
+  <div class="section">
+    <div class="section-title">服务器设置</div>
+    <div class="input-group">
+      <input type="text" id="serverUrl" placeholder="http://127.0.0.1:8000">
+      <button class="btn btn-outline" id="btnTestConnection">测试连接</button>
+    </div>
+  </div>
+
+  <!-- 登录区域 -->
+  <div class="section" id="loginSection" style="display:none;">
+    <div class="section-title">登录</div>
+    <div class="input-group">
+      <input type="text" id="loginUsername" placeholder="用户名">
+    </div>
+    <div class="input-group">
+      <input type="password" id="loginPassword" placeholder="密码">
+    </div>
+    <button class="btn btn-primary" id="btnLogin">登录</button>
+  </div>
+
+  <!-- 已登录用户信息 -->
+  <div class="section" id="userSection" style="display:none; padding-bottom:0;">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <span style="font-size:13px;color:#333;">已登录：<b id="displayUser"></b></span>
+      <button class="btn btn-outline" id="btnLogout" style="padding:4px 10px;font-size:11px;">退出</button>
+    </div>
+  </div>
+
+  <div class="section" style="padding-top: 12px;">
+    <div class="section-title">自动打招呼</div>
+    <button class="btn btn-primary" id="btnAutoGreet" style="background: #ff9500;">自动求简历（新招呼列表）</button>
+  </div>
+
+  <div class="section" style="padding-top: 0;">
+    <div class="section-title">简历采集</div>
+    <button class="btn btn-primary" id="btnCollect">采集当前页面简历</button>
+    <button class="btn btn-secondary" id="btnBatchCollect">批量采集简历（已获取简历列表）</button>
+  </div>
+
+  <div class="section" style="padding-top: 0;">
+    <button class="btn btn-primary" id="btnPause" style="background: #ff4d4f; display: none;">暂停</button>
+  </div>
+
+  <div class="section" style="padding-top: 0;">
+    <div class="section-title">结果</div>
+    <div class="result-area" id="resultArea">等待操作...</div>
+  </div>
+
+  <div class="footer">Boss直聘简历采集助手</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
