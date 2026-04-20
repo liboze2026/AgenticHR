@@ -1,0 +1,206 @@
+"""F2 匹配服务 — 编排 scorers + 写 DB + 审计."""
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.core.audit.logger import log_event
+from app.core.settings.router import _load as _load_scoring_weights
+from app.modules.matching.hashing import compute_competency_hash, compute_weights_hash
+from app.modules.matching.models import MatchingResult
+from app.modules.matching.schemas import EvidenceItem, MatchingResultResponse
+from app.modules.matching.scorers.aggregator import aggregate, derive_tags
+from app.modules.matching.scorers.education import score_education
+from app.modules.matching.scorers.evidence import (
+    build_deterministic_evidence, enhance_evidence_with_llm,
+)
+from app.modules.matching.scorers.experience import score_experience
+from app.modules.matching.scorers.industry import score_industry
+from app.modules.matching.scorers.seniority import score_seniority
+from app.modules.matching.scorers.skill import score_skill
+from app.modules.resume.models import Resume
+from app.modules.screening.models import Job
+
+logger = logging.getLogger(__name__)
+
+
+class MatchingService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    async def score_pair(
+        self, resume_id: int, job_id: int, *, triggered_by: str = "T4"
+    ) -> MatchingResultResponse:
+        resume = self.db.query(Resume).filter_by(id=resume_id).first()
+        if not resume:
+            raise ValueError(f"resume {resume_id} not found")
+        job = self.db.query(Job).filter_by(id=job_id).first()
+        if not job:
+            raise ValueError(f"job {job_id} not found")
+        if not job.competency_model:
+            raise ValueError(f"job {job_id} has no competency_model (not approved yet)")
+
+        cm = job.competency_model
+        weights = _load_scoring_weights()
+
+        # 分维度打分
+        skill_score, missing_must = score_skill(
+            cm.get("hard_skills", []),
+            resume.skills or "",
+            db_session=self.db,
+        )
+        experience_score = score_experience(
+            resume.work_years or 0,
+            cm.get("experience") or {},
+        )
+        seniority_score = score_seniority(
+            resume.seniority or "",
+            cm.get("job_level", "") or "",
+        )
+        education_score = score_education(
+            resume.education or "",
+            cm.get("education") or {},
+        )
+        industries = (cm.get("experience") or {}).get("industries") or []
+        industry_score = score_industry(
+            resume.work_experience or "", industries, db_session=self.db,
+        )
+
+        # 聚合
+        agg = aggregate(
+            dim_scores={
+                "skill": skill_score, "experience": experience_score,
+                "seniority": seniority_score, "education": education_score,
+                "industry": industry_score,
+            },
+            missing_must_haves=missing_must,
+            weights=weights,
+        )
+        tags = derive_tags(
+            total_score=agg["total_score"],
+            hard_gate_passed=agg["hard_gate_passed"],
+            missing=missing_must,
+            education_score=education_score,
+            experience_score=experience_score,
+        )
+
+        # 证据
+        matched_skills = self._compute_matched_skills(cm.get("hard_skills", []), resume, missing_must)
+        matched_industries = self._compute_matched_industries(industries, resume.work_experience or "")
+        base_ev = build_deterministic_evidence(
+            resume=resume,
+            matched_skills=matched_skills,
+            experience_range=(
+                (cm.get("experience") or {}).get("years_min", 0),
+                (cm.get("experience") or {}).get("years_max") or ((cm.get("experience") or {}).get("years_min", 0) + 10),
+            ),
+            matched_industries=matched_industries,
+        )
+        dim_scores_dict = {
+            "skill": skill_score, "experience": experience_score,
+            "seniority": seniority_score, "education": education_score,
+            "industry": industry_score,
+        }
+        evidence = await enhance_evidence_with_llm(base_ev, resume, dim_scores_dict)
+
+        # UPSERT
+        competency_hash = compute_competency_hash(cm)
+        weights_hash = compute_weights_hash(weights)
+        now = datetime.now(timezone.utc)
+
+        existing = self.db.query(MatchingResult).filter_by(
+            resume_id=resume_id, job_id=job_id
+        ).first()
+        if existing:
+            existing.total_score = agg["total_score"]
+            existing.skill_score = skill_score
+            existing.experience_score = experience_score
+            existing.seniority_score = seniority_score
+            existing.education_score = education_score
+            existing.industry_score = industry_score
+            existing.hard_gate_passed = 1 if agg["hard_gate_passed"] else 0
+            existing.missing_must_haves = json.dumps(missing_must, ensure_ascii=False)
+            existing.evidence = json.dumps(evidence, ensure_ascii=False)
+            existing.tags = json.dumps(tags, ensure_ascii=False)
+            existing.competency_hash = competency_hash
+            existing.weights_hash = weights_hash
+            existing.scored_at = now
+            row = existing
+        else:
+            row = MatchingResult(
+                resume_id=resume_id, job_id=job_id,
+                total_score=agg["total_score"],
+                skill_score=skill_score, experience_score=experience_score,
+                seniority_score=seniority_score, education_score=education_score,
+                industry_score=industry_score,
+                hard_gate_passed=1 if agg["hard_gate_passed"] else 0,
+                missing_must_haves=json.dumps(missing_must, ensure_ascii=False),
+                evidence=json.dumps(evidence, ensure_ascii=False),
+                tags=json.dumps(tags, ensure_ascii=False),
+                competency_hash=competency_hash, weights_hash=weights_hash,
+                scored_at=now,
+            )
+            self.db.add(row)
+
+        self.db.commit()
+        self.db.refresh(row)
+
+        # 审计
+        try:
+            log_event(
+                f_stage="F2",
+                action="score",
+                entity_type="matching_result",
+                entity_id=row.id,
+                input_payload={
+                    "resume_id": resume_id, "job_id": job_id,
+                    "trigger": triggered_by,
+                    "competency_hash": competency_hash,
+                    "weights_hash": weights_hash,
+                },
+                output_payload={
+                    "total_score": agg["total_score"],
+                    "dim_scores": dim_scores_dict,
+                    "tags": tags,
+                    "hard_gate_passed": agg["hard_gate_passed"],
+                    "missing_must_haves": missing_must,
+                },
+            )
+        except Exception as e:
+            logger.warning(f"audit log failed (non-fatal): {e}")
+
+        return self._to_response(row, resume, job, competency_hash, weights_hash)
+
+    @staticmethod
+    def _compute_matched_skills(hard_skills: list[dict], resume: Resume, missing: list[str]) -> list[str]:
+        """匹配到的技能名 = hard_skills - missing."""
+        missing_set = set(missing)
+        return [hs["name"] for hs in hard_skills if hs.get("name") not in missing_set]
+
+    @staticmethod
+    def _compute_matched_industries(industries: list[str], work_experience: str) -> list[str]:
+        text = (work_experience or "").lower()
+        return [ind for ind in industries if ind and ind.lower() in text]
+
+    @staticmethod
+    def _to_response(
+        row: MatchingResult, resume: Resume, job: Job,
+        current_competency_hash: str, current_weights_hash: str,
+    ) -> MatchingResultResponse:
+        evidence_dict = json.loads(row.evidence or "{}")
+        return MatchingResultResponse(
+            id=row.id, resume_id=row.resume_id, resume_name=resume.name,
+            job_id=row.job_id, job_title=job.title,
+            total_score=row.total_score, skill_score=row.skill_score,
+            experience_score=row.experience_score, seniority_score=row.seniority_score,
+            education_score=row.education_score, industry_score=row.industry_score,
+            hard_gate_passed=bool(row.hard_gate_passed),
+            missing_must_haves=json.loads(row.missing_must_haves or "[]"),
+            evidence={k: [EvidenceItem(**e) for e in v] for k, v in evidence_dict.items()},
+            tags=json.loads(row.tags or "[]"),
+            stale=(row.competency_hash != current_competency_hash
+                   or row.weights_hash != current_weights_hash),
+            scored_at=row.scored_at,
+        )
