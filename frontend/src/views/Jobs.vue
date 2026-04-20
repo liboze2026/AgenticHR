@@ -99,7 +99,7 @@
           </div>
         </el-tab-pane>
         <el-tab-pane :label="competencyLabel" name="competency" v-if="currentJobId">
-          <CompetencyEditor :job-id="currentJobId" @status-change="onStatusChange" />
+          <CompetencyEditor :job-id="currentJobId" :initial-jd-text="jobForm.jd_text || ''" @status-change="onStatusChange" />
         </el-tab-pane>
       </el-tabs>
       <template #footer>

@@ -230,10 +230,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { competencyApi, hitlApi } from '../api'
 import SkillPicker from './SkillPicker.vue'
 
-const props = defineProps({ jobId: { type: Number, required: true } })
+const props = defineProps({
+  jobId: { type: Number, required: true },
+  initialJdText: { type: String, default: '' },
+})
 const emit = defineEmits(['status-change'])
 
-const jdText = ref('')
+const jdText = ref(props.initialJdText || '')
 const status = ref('none')
 const model = ref(null)
 const fallbackMode = ref(false)
@@ -359,6 +362,9 @@ async function submitFlat() {
 
 onMounted(loadCompetency)
 watch(() => props.jobId, loadCompetency)
+watch(() => props.initialJdText, (val) => {
+  if (val && !jdText.value) jdText.value = val
+})
 </script>
 
 <style scoped>
