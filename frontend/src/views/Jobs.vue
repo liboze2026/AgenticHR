@@ -114,6 +114,68 @@
         <el-tab-pane :label="competencyLabel" name="competency" v-if="currentJobId">
           <CompetencyEditor :job-id="currentJobId" :initial-jd-text="jobForm.jd_text || ''" @status-change="onStatusChange" @extract-background="onExtractBackground" />
         </el-tab-pane>
+        <el-tab-pane label="匹配候选人" name="matching" v-if="editingJob && editingJob.competency_model_status === 'approved'">
+          <div class="matching-toolbar">
+            <el-button type="primary" plain @click="recomputeMatching" :loading="matching.recomputing">重新打分</el-button>
+            <el-select v-model="matching.tagFilter" placeholder="按标签筛选" clearable @change="loadMatching" style="width: 180px; margin-left: 8px">
+              <el-option label="高匹配" value="高匹配" />
+              <el-option label="中匹配" value="中匹配" />
+              <el-option label="低匹配" value="低匹配" />
+              <el-option label="硬门槛未过" value="硬门槛未过" />
+            </el-select>
+            <span v-if="matching.staleCount > 0" class="stale-warn">
+              ⚠ {{ matching.staleCount }} 份分数基于旧能力模型
+            </span>
+          </div>
+
+          <div v-loading="matching.loading">
+            <el-empty v-if="!matching.items.length" description="尚无匹配结果，发布能力模型后会自动打分" />
+
+            <div v-for="item in matching.items" :key="item.id" class="matching-row" :class="{ expanded: matching.expandedId === item.id }">
+              <div class="matching-head" @click="toggleMatchingExpand(item.id)">
+                <span class="m-name">{{ item.resume_name }}</span>
+                <span class="m-score">{{ item.total_score.toFixed(1) }}</span>
+                <div class="m-tags">
+                  <el-tag v-for="t in item.tags" :key="t" :type="tagType(t)" size="small">{{ t }}</el-tag>
+                  <el-tag v-if="item.stale" type="warning" effect="plain" size="small">⚠ 过时</el-tag>
+                </div>
+              </div>
+
+              <transition name="expand">
+                <div v-if="matching.expandedId === item.id" class="matching-detail">
+                  <div class="dim-bar" v-for="(dim, key) in dimensionList(item)" :key="key">
+                    <span class="dim-label">{{ dim.label }} ({{ dim.weight }}%)</span>
+                    <el-progress :percentage="dim.score" :color="dim.color" :stroke-width="16" />
+                  </div>
+
+                  <div v-if="item.hard_gate_passed === false" class="hard-gate-warn">
+                    🛑 硬门槛未过：缺失必须项 {{ item.missing_must_haves.join(', ') }}
+                  </div>
+
+                  <div class="evidence-list">
+                    <h4>证据片段</h4>
+                    <div v-for="(items, dim) in item.evidence" :key="dim">
+                      <div v-for="(e, i) in items" :key="i" class="evidence-item">
+                        <span class="ev-dim">[{{ dim }}]</span>
+                        <span class="ev-text">{{ e.text }}</span>
+                        <el-button v-if="e.source && e.offset" link size="small" @click="jumpToResume(item.resume_id, e.source, e.offset)">查看原文</el-button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </transition>
+            </div>
+
+            <el-pagination
+              v-model:current-page="matching.page"
+              :page-size="matching.pageSize"
+              :total="matching.total"
+              layout="total, prev, pager, next"
+              @current-change="loadMatching"
+              style="margin-top: 12px; justify-content: flex-end"
+            />
+          </div>
+        </el-tab-pane>
       </el-tabs>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
@@ -172,9 +234,9 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
-import { jobApi, aiApi, competencyApi } from '../api'
+import { jobApi, aiApi, competencyApi, matchingApi } from '../api'
 import CompetencyEditor from '../components/CompetencyEditor.vue'
 import { extractingJobIds } from '../stores/extractingJobs.js'
 
@@ -387,6 +449,102 @@ async function screenResumes(jobId) {
   }
 }
 
+// ── 匹配候选人 Tab ──────────────────────────────────────────────────────────
+const matching = ref({
+  loading: false,
+  items: [],
+  total: 0,
+  page: 1,
+  pageSize: 20,
+  tagFilter: '',
+  expandedId: null,
+  recomputing: false,
+  staleCount: 0,
+  pollTimer: null,
+})
+
+async function loadMatching() {
+  if (!editingJob.value) return
+  matching.value.loading = true
+  try {
+    const data = await matchingApi.listByJob(editingJob.value.id, {
+      page: matching.value.page,
+      page_size: matching.value.pageSize,
+      tag: matching.value.tagFilter || undefined,
+    })
+    matching.value.items = data.items
+    matching.value.total = data.total
+    matching.value.staleCount = data.items.filter(i => i.stale).length
+  } catch (e) {
+    ElMessage.error('加载匹配候选人失败')
+  } finally {
+    matching.value.loading = false
+  }
+}
+
+function toggleMatchingExpand(id) {
+  matching.value.expandedId = matching.value.expandedId === id ? null : id
+}
+
+function dimensionList(item) {
+  return [
+    { label: '技能匹配', score: item.skill_score, weight: 35, color: scoreColor(item.skill_score) },
+    { label: '工作经验', score: item.experience_score, weight: 30, color: scoreColor(item.experience_score) },
+    { label: '职级对齐', score: item.seniority_score, weight: 15, color: scoreColor(item.seniority_score) },
+    { label: '教育背景', score: item.education_score, weight: 10, color: scoreColor(item.education_score) },
+    { label: '行业经验', score: item.industry_score, weight: 10, color: scoreColor(item.industry_score) },
+  ]
+}
+
+function scoreColor(s) {
+  if (s >= 80) return '#67c23a'
+  if (s >= 60) return '#409eff'
+  if (s >= 40) return '#e6a23c'
+  return '#f56c6c'
+}
+
+function tagType(tag) {
+  if (tag === '高匹配') return 'success'
+  if (tag === '中匹配') return 'primary'
+  if (tag === '低匹配') return 'warning'
+  if (tag === '不匹配' || tag.startsWith('硬门槛') || tag.startsWith('必须项缺失-')) return 'danger'
+  return 'info'
+}
+
+async function recomputeMatching() {
+  if (!editingJob.value) return
+  try {
+    matching.value.recomputing = true
+    const { task_id } = await matchingApi.recomputeJob(editingJob.value.id)
+    matching.value.pollTimer = setInterval(async () => {
+      const s = await matchingApi.recomputeStatus(task_id)
+      if (!s.running) {
+        clearInterval(matching.value.pollTimer)
+        matching.value.pollTimer = null
+        matching.value.recomputing = false
+        ElMessage.success(`打分完成：${s.completed}/${s.total}`)
+        loadMatching()
+      }
+    }, 2000)
+  } catch (e) {
+    matching.value.recomputing = false
+    ElMessage.error('启动打分失败')
+  }
+}
+
+function jumpToResume(resumeId, source, offset) {
+  const [start, end] = offset
+  window.open(`/#/resumes/${resumeId}?highlight=${start},${end}&source=${source}`, '_blank')
+}
+
+watch(activeTab, (tab) => {
+  if (tab === 'matching' && editingJob.value) loadMatching()
+})
+
+onUnmounted(() => {
+  if (matching.value.pollTimer) clearInterval(matching.value.pollTimer)
+})
+
 onMounted(loadJobs)
 </script>
 
@@ -395,4 +553,45 @@ onMounted(loadJobs)
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }
 }
+
+.matching-toolbar {
+  display: flex; gap: 8px; align-items: center;
+  margin-bottom: 16px;
+}
+.stale-warn { color: #e6a23c; font-size: 13px; margin-left: 12px; }
+
+.matching-row {
+  border: 1px solid #ebeef5; border-radius: 6px;
+  margin-bottom: 8px; overflow: hidden;
+}
+.matching-row.expanded { border-color: #409eff; }
+.matching-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; cursor: pointer;
+  transition: background 0.1s;
+}
+.matching-head:hover { background: #f5f7fa; }
+.m-name { font-weight: 600; min-width: 80px; }
+.m-score { font-size: 20px; color: #409eff; font-weight: 700; min-width: 60px; }
+.m-tags { display: flex; gap: 4px; flex-wrap: wrap; }
+
+.matching-detail { padding: 12px 16px; background: #fafbfc; border-top: 1px solid #f0f2f5; }
+.dim-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+.dim-label { width: 140px; font-size: 12px; color: #606266; }
+.dim-bar :deep(.el-progress) { flex: 1; }
+
+.hard-gate-warn {
+  margin-top: 10px; padding: 8px 12px;
+  background: #fef0f0; color: #c45656;
+  border-radius: 4px; font-size: 13px;
+}
+.evidence-list { margin-top: 12px; }
+.evidence-list h4 { margin: 6px 0; color: #606266; font-size: 13px; }
+.evidence-item { display: flex; gap: 6px; align-items: center; font-size: 13px; margin: 3px 0; }
+.ev-dim { color: #909399; font-size: 11px; min-width: 70px; }
+.ev-text { flex: 1; }
+
+.expand-enter-active, .expand-leave-active { transition: all 0.2s ease-out; overflow: hidden; }
+.expand-enter-from, .expand-leave-to { max-height: 0; opacity: 0; }
+.expand-enter-to, .expand-leave-from { max-height: 800px; opacity: 1; }
 </style>
