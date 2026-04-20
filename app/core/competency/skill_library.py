@@ -27,6 +27,22 @@ def _row_to_dict(s: Skill) -> dict:
 
 
 class SkillCache:
+    """进程内 skills 全量缓存.
+
+    **语义: 手动失效 (manual invalidate only).**
+
+    写操作 (SkillLibrary.insert / add_alias_if_absent / increment_usage /
+    update_embedding / merge) **不会**自动调用 invalidate(). 调用方必须
+    在"需要最新状态"时显式调用 `SkillCache.invalidate()`.
+
+    **为什么这么设计**: normalize_skills() 的一次调用里可能连续插入多个新
+    技能, 若每次 insert 都 invalidate, 则后插入的技能会成为先插入技能的
+    最近邻候选, 破坏归一化的稳定性. 所以 normalize_skills 在入口处拍一次
+    snapshot (SkillCache.all()), 期间的所有 insert 都不影响本次 snapshot.
+
+    **合约**: HTTP 请求边界或批处理边界上, 调用方应 invalidate 一次以读取
+    最新状态. 参考 tests/core/test_skill_library.py::test_cache_reload_after_insert.
+    """
     _cache: list[dict] | None = None
 
     @classmethod
@@ -75,6 +91,8 @@ class SkillLibrary:
         embedding: bytes | None = None,
         pending_classification: bool = False,
     ) -> int:
+        # Note: does NOT auto-invalidate SkillCache (see SkillCache docstring).
+        # Caller must call SkillCache.invalidate() if fresh read needed.
         session = _session_factory()
         try:
             row = Skill(
@@ -95,6 +113,8 @@ class SkillLibrary:
             session.close()
 
     def add_alias_if_absent(self, canonical_name: str, alias: str) -> None:
+        # Note: does NOT auto-invalidate SkillCache (see SkillCache docstring).
+        # Caller must call SkillCache.invalidate() if fresh read needed.
         session = _session_factory()
         try:
             row = session.query(Skill).filter(Skill.canonical_name == canonical_name).first()
@@ -110,6 +130,8 @@ class SkillLibrary:
             session.close()
 
     def increment_usage(self, skill_id: int) -> None:
+        # Note: does NOT auto-invalidate SkillCache (see SkillCache docstring).
+        # Caller must call SkillCache.invalidate() if fresh read needed.
         session = _session_factory()
         try:
             session.query(Skill).filter(Skill.id == skill_id).update(
@@ -144,6 +166,8 @@ class SkillLibrary:
             session.close()
 
     def update_embedding(self, skill_id: int, embedding: bytes) -> None:
+        # Note: does NOT auto-invalidate SkillCache (see SkillCache docstring).
+        # Caller must call SkillCache.invalidate() if fresh read needed.
         session = _session_factory()
         try:
             session.query(Skill).filter(Skill.id == skill_id).update({Skill.embedding: embedding})
@@ -152,6 +176,8 @@ class SkillLibrary:
             session.close()
 
     def merge(self, from_id: int, into_id: int) -> None:
+        # Note: does NOT auto-invalidate SkillCache (see SkillCache docstring).
+        # Caller must call SkillCache.invalidate() if fresh read needed.
         session = _session_factory()
         try:
             src = session.query(Skill).filter(Skill.id == from_id).first()
