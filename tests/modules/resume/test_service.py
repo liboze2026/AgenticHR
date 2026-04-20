@@ -17,7 +17,7 @@ def test_create_resume(db_session):
     assert is_new is True
     assert resume.id is not None
     assert resume.name == "王五"
-    assert resume.status == "pending"
+    assert resume.status == "passed"
 
 
 def test_create_duplicate_resume(db_session):
@@ -54,9 +54,10 @@ def test_list_resumes_with_pagination(db_session):
 
 def test_list_resumes_filter_by_status(db_session):
     service = ResumeService(db_session)
-    service.create(ResumeCreate(name="甲", phone="13165338580"))
-    r2, _ = service.create(ResumeCreate(name="乙", phone="13165338581"))
-    service.update(r2.id, ResumeUpdate(status="passed"))
+    r1, _ = service.create(ResumeCreate(name="甲", phone="13165338580"))
+    # default status is now "passed"; reject 甲 so only 乙 passes the filter
+    service.update(r1.id, ResumeUpdate(status="rejected"))
+    service.create(ResumeCreate(name="乙", phone="13165338581"))
 
     result = service.list(status="passed")
     assert result["total"] == 1

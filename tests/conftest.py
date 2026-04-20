@@ -1,4 +1,5 @@
 """共享测试 fixtures"""
+import os
 import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
@@ -10,6 +11,13 @@ import app.modules.screening.models  # noqa: F401
 import app.modules.scheduling.models  # noqa: F401
 import app.modules.notification.models  # noqa: F401
 import app.modules.matching.models  # noqa: F401
+
+# Allow test client requests to pass through the JWT auth HTTP middleware.
+# The middleware checks both this env var AND PYTEST_CURRENT_TEST (set by pytest
+# automatically). With bypass active the middleware skips token validation; the
+# get_current_user_id dependency is then overridden separately in the client
+# fixture below to return a fixed user_id of 1.
+os.environ.setdefault("AGENTICHR_TEST_BYPASS_AUTH", "1")
 
 
 @pytest.fixture(scope="function")
@@ -43,11 +51,16 @@ def db_session(db_engine):
 @pytest.fixture(scope="function")
 def client(db_session):
     from app.main import app as fastapi_app
+    from app.modules.auth.deps import get_current_user_id
 
     def override_get_db():
         yield db_session
 
+    def override_get_current_user_id():
+        return 1  # fixed test user_id; bypasses JWT auth for router tests
+
     fastapi_app.dependency_overrides[get_db] = override_get_db
+    fastapi_app.dependency_overrides[get_current_user_id] = override_get_current_user_id
     with TestClient(fastapi_app) as c:
         yield c
     fastapi_app.dependency_overrides.clear()

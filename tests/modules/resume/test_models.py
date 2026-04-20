@@ -28,7 +28,7 @@ def test_create_resume(db_session):
     assert resume.id is not None
     assert resume.name == "张三"
     assert resume.phone == "13800138000"
-    assert resume.status == "pending"
+    assert resume.status == "passed"
     assert isinstance(resume.created_at, datetime)
 
 
