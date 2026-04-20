@@ -59,6 +59,7 @@ export const jobApi = {
   update: (id, data) => api.patch(`/screening/jobs/${id}`, data),
   delete: (id) => api.delete(`/screening/jobs/${id}`),
   screen: (jobId, resumeIds) => api.post(`/screening/jobs/${jobId}/screen`, resumeIds),
+  parseJd: (jdText) => api.post('/screening/jobs/parse-jd', { jd_text: jdText }),
 }
 
 // 面试 API

@@ -32,49 +32,71 @@
     <el-dialog v-model="showCreateDialog" :title="editingJob ? '编辑岗位' : '新建岗位'" width="700px">
       <el-tabs v-model="activeTab">
         <el-tab-pane label="基本信息" name="basic">
-          <el-form :model="jobForm" label-width="100px">
-            <el-form-item label="岗位名称" required>
-              <el-input v-model="jobForm.title" />
-            </el-form-item>
-            <el-form-item label="部门">
-              <el-input v-model="jobForm.department" />
-            </el-form-item>
-            <el-form-item label="最低学历">
-              <el-select v-model="jobForm.education_min" clearable>
-                <el-option label="大专" value="大专" />
-                <el-option label="本科" value="本科" />
-                <el-option label="硕士" value="硕士" />
-                <el-option label="博士" value="博士" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="工作年限">
-              <el-col :span="11">
-                <el-input-number v-model="jobForm.work_years_min" :min="0" />
-              </el-col>
-              <el-col :span="2" style="text-align: center">-</el-col>
-              <el-col :span="11">
-                <el-input-number v-model="jobForm.work_years_max" :min="0" />
-              </el-col>
-            </el-form-item>
-            <el-form-item label="薪资范围">
-              <el-col :span="11">
-                <el-input-number v-model="jobForm.salary_min" :min="0" :step="1000" />
-              </el-col>
-              <el-col :span="2" style="text-align: center">-</el-col>
-              <el-col :span="11">
-                <el-input-number v-model="jobForm.salary_max" :min="0" :step="1000" />
-              </el-col>
-            </el-form-item>
-            <el-form-item label="必备技能">
-              <el-input v-model="jobForm.required_skills" placeholder="逗号分隔，如 Python,FastAPI" />
-            </el-form-item>
-            <el-form-item label="软性要求">
-              <el-input v-model="jobForm.soft_requirements" type="textarea" :rows="3" placeholder="自然语言描述，如：有大厂经历优先" />
-            </el-form-item>
-            <el-form-item label="打招呼话术">
-              <el-input v-model="jobForm.greeting_templates" type="textarea" :rows="2" placeholder="竖线分隔多条，如：你好请发简历|您好方便发简历吗" />
-            </el-form-item>
-          </el-form>
+          <!-- Step 1: JD 输入（新建岗位时） -->
+          <div v-if="parseStep === 'input'">
+            <el-input
+              v-model="jdInput"
+              type="textarea"
+              :rows="12"
+              placeholder="粘贴岗位 JD 原文，系统将自动识别岗位名称、学历要求、薪资范围、必备技能等信息..."
+            />
+            <div style="margin-top: 12px; display: flex; gap: 8px; align-items: center">
+              <el-button type="primary" @click="parseJd" :loading="parsing" :disabled="!jdInput.trim()">
+                解析 JD
+              </el-button>
+              <el-button link @click="parseStep = 'review'">手动填写</el-button>
+            </div>
+          </div>
+
+          <!-- Step 2: 表单（新建 review + 编辑） -->
+          <div v-else>
+            <el-button v-if="!editingJob" link @click="parseStep = 'input'" style="margin-bottom: 8px">
+              ← 重新粘贴 JD
+            </el-button>
+            <el-form :model="jobForm" label-width="100px">
+              <el-form-item label="岗位名称" required>
+                <el-input v-model="jobForm.title" />
+              </el-form-item>
+              <el-form-item label="部门">
+                <el-input v-model="jobForm.department" />
+              </el-form-item>
+              <el-form-item label="最低学历">
+                <el-select v-model="jobForm.education_min" clearable>
+                  <el-option label="大专" value="大专" />
+                  <el-option label="本科" value="本科" />
+                  <el-option label="硕士" value="硕士" />
+                  <el-option label="博士" value="博士" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="工作年限">
+                <el-col :span="11">
+                  <el-input-number v-model="jobForm.work_years_min" :min="0" />
+                </el-col>
+                <el-col :span="2" style="text-align: center">-</el-col>
+                <el-col :span="11">
+                  <el-input-number v-model="jobForm.work_years_max" :min="0" />
+                </el-col>
+              </el-form-item>
+              <el-form-item label="薪资范围">
+                <el-col :span="11">
+                  <el-input-number v-model="jobForm.salary_min" :min="0" :step="1000" />
+                </el-col>
+                <el-col :span="2" style="text-align: center">-</el-col>
+                <el-col :span="11">
+                  <el-input-number v-model="jobForm.salary_max" :min="0" :step="1000" />
+                </el-col>
+              </el-form-item>
+              <el-form-item label="必备技能">
+                <el-input v-model="jobForm.required_skills" placeholder="逗号分隔，如 Python,FastAPI" />
+              </el-form-item>
+              <el-form-item label="软性要求">
+                <el-input v-model="jobForm.soft_requirements" type="textarea" :rows="3" />
+              </el-form-item>
+              <el-form-item label="打招呼话术">
+                <el-input v-model="jobForm.greeting_templates" type="textarea" :rows="2" placeholder="竖线分隔多条" />
+              </el-form-item>
+            </el-form>
+          </div>
         </el-tab-pane>
         <el-tab-pane :label="competencyLabel" name="competency" v-if="currentJobId">
           <CompetencyEditor :job-id="currentJobId" @status-change="onStatusChange" />
@@ -82,7 +104,7 @@
       </el-tabs>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveJob" v-if="activeTab === 'basic'">保存</el-button>
+        <el-button type="primary" @click="saveJob" v-if="activeTab === 'basic' && parseStep === 'review'">保存</el-button>
       </template>
     </el-dialog>
 
@@ -139,7 +161,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { jobApi, aiApi } from '../api'
+import { jobApi, aiApi, competencyApi } from '../api'
 import CompetencyEditor from '../components/CompetencyEditor.vue'
 
 const jobs = ref([])
@@ -156,6 +178,11 @@ const activeTab = ref('basic')
 const currentJobId = ref(null)
 const competencyStatus = ref('none')
 
+// JD 解析相关
+const jdInput = ref('')
+const parseStep = ref('input')   // 'input' | 'review'
+const parsing = ref(false)
+
 const competencyLabel = computed(() => {
   if (competencyStatus.value === 'draft') return '能力模型 ●待审'
   if (competencyStatus.value === 'approved') return '能力模型 ✓'
@@ -165,7 +192,7 @@ const competencyLabel = computed(() => {
 
 function onStatusChange(s) { competencyStatus.value = s }
 
-const defaultForm = { title: '', department: '', education_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '' }
+const defaultForm = { title: '', department: '', education_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '', jd_text: '' }
 const jobForm = ref({ ...defaultForm })
 
 async function loadJobs() {
@@ -185,6 +212,8 @@ function openNewJob() {
   jobForm.value = { ...defaultForm }
   currentJobId.value = null
   activeTab.value = 'basic'
+  jdInput.value = ''
+  parseStep.value = 'input'    // 新建从第一步开始
   showCreateDialog.value = true
 }
 
@@ -193,7 +222,35 @@ function editJob(job) {
   jobForm.value = { ...job }
   currentJobId.value = job.id
   activeTab.value = 'basic'
+  parseStep.value = 'review'   // 编辑直接进表单
   showCreateDialog.value = true
+}
+
+async function parseJd() {
+  if (!jdInput.value.trim()) { ElMessage.warning('请先粘贴 JD 原文'); return }
+  parsing.value = true
+  try {
+    const result = await jobApi.parseJd(jdInput.value)
+    // 预填表单
+    jobForm.value = {
+      title: result.title || '',
+      department: result.department || '',
+      education_min: result.education_min || '',
+      work_years_min: result.work_years_min ?? 0,
+      work_years_max: result.work_years_max ?? 99,
+      salary_min: result.salary_min ?? 0,
+      salary_max: result.salary_max ?? 0,
+      required_skills: result.required_skills || '',
+      soft_requirements: result.soft_requirements || '',
+      greeting_templates: '',
+      jd_text: jdInput.value,
+    }
+    parseStep.value = 'review'
+  } catch (e) {
+    ElMessage.error('解析失败：' + (e.message || e))
+  } finally {
+    parsing.value = false
+  }
 }
 
 async function saveJob() {
@@ -209,13 +266,14 @@ async function saveJob() {
     if (editingJob.value) {
       await jobApi.update(editingJob.value.id, jobForm.value)
       ElMessage.success('更新成功')
+      showCreateDialog.value = false
     } else {
-      await jobApi.create(jobForm.value)
-      ElMessage.success('创建成功')
+      const created = await jobApi.create(jobForm.value)
+      ElMessage.success('创建成功，正在加载能力模型...')
+      currentJobId.value = created.id   // 拿到新建的 job id
+      editingJob.value = created
+      activeTab.value = 'competency'    // 自动切到能力模型 Tab
     }
-    showCreateDialog.value = false
-    editingJob.value = null
-    jobForm.value = { ...defaultForm }
     loadJobs()
   } catch (e) {
     ElMessage.error('保存失败')
