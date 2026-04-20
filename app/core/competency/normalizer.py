@@ -48,27 +48,45 @@ async def normalize_skills(names: list[str], job_id: int) -> list[dict]:
                 output_payload={"canonical_id": best_id, "similarity": best_sim},
             )
             results.append({"name": name, "canonical_id": best_id})
-        else:
-            new_id = lib.insert(
-                canonical_name=name,
-                source="llm_extracted",
-                pending_classification=True,
-                embedding=pack_vector(vec),
-            )
-            HitlService().create(
-                f_stage="F1_skill_classification",
-                entity_type="skill",
-                entity_id=new_id,
-                payload={"name": name, "from_job": job_id},
-            )
+            continue
+
+        # 相似度不足 → 新建. 若同名已存在 (例如 seed 还没 embedding), 直接复用.
+        name_hit = lib.find_by_name(name)
+        if name_hit is not None:
+            if not name_hit["embedding"]:
+                lib.update_embedding(name_hit["id"], pack_vector(vec))
+            lib.increment_usage(name_hit["id"])
             log_event(
                 f_stage="F1_competency_review",
                 action="normalize",
                 entity_type="skill",
-                entity_id=new_id,
+                entity_id=name_hit["id"],
                 input_payload={"name": name, "job_id": job_id},
-                output_payload={"canonical_id": new_id, "similarity": best_sim, "new": True},
+                output_payload={"canonical_id": name_hit["id"], "similarity": best_sim, "name_match": True},
             )
-            results.append({"name": name, "canonical_id": new_id})
+            results.append({"name": name, "canonical_id": name_hit["id"]})
+            continue
+
+        new_id = lib.insert(
+            canonical_name=name,
+            source="llm_extracted",
+            pending_classification=True,
+            embedding=pack_vector(vec),
+        )
+        HitlService().create(
+            f_stage="F1_skill_classification",
+            entity_type="skill",
+            entity_id=new_id,
+            payload={"name": name, "from_job": job_id},
+        )
+        log_event(
+            f_stage="F1_competency_review",
+            action="normalize",
+            entity_type="skill",
+            entity_id=new_id,
+            input_payload={"name": name, "job_id": job_id},
+            output_payload={"canonical_id": new_id, "similarity": best_sim, "new": True},
+        )
+        results.append({"name": name, "canonical_id": new_id})
 
     return results
