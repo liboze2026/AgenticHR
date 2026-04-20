@@ -1,35 +1,32 @@
-"""AI 评估 API 路由"""
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+"""AI 评估 API (F5 will extend)."""
+from fastapi import APIRouter, HTTPException
 
 from app.config import settings
-from app.database import get_db
 from app.adapters.ai_provider import AIProvider
-from app.modules.ai_evaluation.service import AIEvaluationService
-from app.modules.ai_evaluation.schemas import (
-    EvaluationRequest, BatchEvaluationRequest,
-    EvaluationResult, BatchEvaluationResponse,
-)
 
 router = APIRouter()
 
 
-def get_ai_service(db: Session = Depends(get_db)) -> AIEvaluationService:
-    return AIEvaluationService(db)
+@router.post("/evaluate")
+async def deprecated_evaluate_single():
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "msg": "/api/ai-evaluation/evaluate has been removed in favor of F2 structured matching.",
+            "migrate_to": "/api/matching/score",
+        },
+    )
 
 
-@router.post("/evaluate", response_model=EvaluationResult)
-async def evaluate_resume(request: EvaluationRequest, service: AIEvaluationService = Depends(get_ai_service)):
-    if not settings.ai_enabled:
-        raise HTTPException(status_code=400, detail="AI 功能未开启，请在设置中启用")
-    return await service.evaluate_single(request.resume_id, request.job_id)
-
-
-@router.post("/evaluate/batch", response_model=BatchEvaluationResponse)
-async def batch_evaluate(request: BatchEvaluationRequest, service: AIEvaluationService = Depends(get_ai_service)):
-    if not settings.ai_enabled:
-        raise HTTPException(status_code=400, detail="AI 功能未开启，请在设置中启用")
-    return await service.evaluate_batch(request.job_id, request.resume_ids)
+@router.post("/evaluate/batch")
+async def deprecated_evaluate_batch():
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "msg": "/api/ai-evaluation/evaluate/batch has been removed in favor of F2 structured matching.",
+            "migrate_to": "/api/matching/recompute",
+        },
+    )
 
 
 @router.get("/status")
