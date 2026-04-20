@@ -58,7 +58,9 @@ async def auth_middleware(request: Request, call_next):
         return response
     # 测试环境：允许通过环境变量绕过 JWT 认证
     import os as _os
-    if _os.environ.get("AGENTICHR_TEST_BYPASS_AUTH") == "1":
+    _bypass = _os.environ.get("AGENTICHR_TEST_BYPASS_AUTH") == "1"
+    _is_testing = bool(_os.environ.get("PYTEST_CURRENT_TEST"))
+    if _bypass and _is_testing:
         return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _AUTH_WHITELIST:

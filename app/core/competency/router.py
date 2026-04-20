@@ -2,7 +2,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.competency.skill_library import SkillLibrary
+from app.core.competency.skill_library import SkillLibrary, SkillCache, _session_factory
+from app.core.competency.models import Skill
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -79,10 +80,7 @@ def create_skill(body: _SkillCreateBody):
 
 @router.put("/{skill_id}")
 def update_skill(skill_id: int, body: _SkillUpdateBody):
-    from sqlalchemy.orm import sessionmaker
-    from app.database import engine
-    from app.core.competency.models import Skill
-    session = sessionmaker(bind=engine)()
+    session = _session_factory()
     try:
         s = session.query(Skill).filter(Skill.id == skill_id).first()
         if not s:
@@ -94,7 +92,6 @@ def update_skill(skill_id: int, body: _SkillUpdateBody):
         if body.aliases is not None:
             s.aliases = body.aliases
         session.commit()
-        from app.core.competency.skill_library import SkillCache
         SkillCache.invalidate()
         return SkillLibrary().find_by_id(skill_id)
     finally:
@@ -113,19 +110,15 @@ def merge_skill(skill_id: int, body: _MergeBody):
 
 @router.delete("/{skill_id}")
 def delete_skill(skill_id: int):
-    from sqlalchemy.orm import sessionmaker
-    from app.database import engine
-    from app.core.competency.models import Skill
-    session = sessionmaker(bind=engine)()
+    session = _session_factory()
     try:
         s = session.query(Skill).filter(Skill.id == skill_id).first()
         if not s:
             raise HTTPException(status_code=404, detail="not found")
         if s.source == "seed" or (s.usage_count or 0) > 0:
-            raise HTTPException(status_code=400, detail="只能删除未被使用的 llm_extracted 技能")
+            raise HTTPException(status_code=400, detail="只能删除未被使用的技能（seed 来源不可删除）")
         session.delete(s)
         session.commit()
-        from app.core.competency.skill_library import SkillCache
         SkillCache.invalidate()
         return {"status": "deleted"}
     finally:
