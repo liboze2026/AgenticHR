@@ -159,7 +159,8 @@ VISION_PROMPT = (
     '"work_years":工作年限数字,"skills":"技能1,技能2,技能3",'
     '"work_experience":"公司-职位-工作内容摘要",'
     '"project_experience":"项目名称-项目描述摘要",'
-    '"self_evaluation":"自我评价摘要","job_intention":"求职意向"}'
+    '"self_evaluation":"自我评价摘要","job_intention":"求职意向",'
+    '"seniority":"候选人职级，从work_experience推断，取值：初级/中级/高级/专家（无法判断输出\'中级\'）"}'
 )
 
 AI_TEXT_PROMPT = (
@@ -175,7 +176,8 @@ AI_TEXT_PROMPT = (
     '"work_years":工作年限数字,"skills":"技能1,技能2,技能3",'
     '"work_experience":"公司-职位-工作内容摘要",'
     '"project_experience":"项目名称-项目描述摘要",'
-    '"self_evaluation":"自我评价摘要","job_intention":"求职意向"}}'
+    '"self_evaluation":"自我评价摘要","job_intention":"求职意向",'
+    '"seniority":"候选人职级，从work_experience推断，取值：初级/中级/高级/专家（无法判断输出\'中级\'）"}}'
 )
 
 

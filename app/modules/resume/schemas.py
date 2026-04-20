@@ -100,6 +100,7 @@ class ResumeResponse(BaseModel):
     ai_score: float | None
     ai_summary: str
     reject_reason: str
+    seniority: str = ""
     created_at: datetime
     updated_at: datetime
 

@@ -174,6 +174,7 @@ async def _do_parse_all(user_id: int = 0):
                         resume.self_evaluation = _s(parsed["self_evaluation"])
                     if parsed.get("job_intention") and not resume.job_intention:
                         resume.job_intention = _s(parsed["job_intention"])
+                    resume.seniority = (parsed.get("seniority") or "").strip() or ""
 
                     resume.ai_parsed = "yes"
                     _status["completed"] += 1
