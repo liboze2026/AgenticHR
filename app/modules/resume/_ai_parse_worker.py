@@ -180,6 +180,18 @@ async def _do_parse_all(user_id: int = 0):
                     db.commit()
                     logger.info(f"  解析成功: {resume.name}")
 
+                    # F2 T1 trigger: score against all active+approved jobs
+                    try:
+                        import asyncio
+                        from app.modules.matching.triggers import on_resume_parsed
+                        try:
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(on_resume_parsed(db, resume.id))
+                        except RuntimeError:
+                            asyncio.run(on_resume_parsed(db, resume.id))
+                    except Exception as _t1_err:
+                        logger.warning(f"F2 T1 trigger failed (non-fatal): {_t1_err}")
+
                 except Exception as e:
                     logger.error(f"  解析失败 [{resume.name}]: {e}")
                     resume.ai_parsed = "failed"

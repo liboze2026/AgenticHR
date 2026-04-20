@@ -307,6 +307,15 @@ async def ai_parse_single(
     resume.ai_parsed = "yes"
     service.db.commit()
     service.db.refresh(resume)
+
+    # F2 T1 trigger: score resume against all active+approved jobs
+    try:
+        from app.modules.matching.triggers import on_resume_parsed
+        await on_resume_parsed(service.db, resume.id)
+    except Exception as _t1_err:
+        import logging as _log
+        _log.getLogger(__name__).warning(f"F2 T1 trigger failed (non-fatal): {_t1_err}")
+
     return resume
 
 
