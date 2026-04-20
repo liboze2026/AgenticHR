@@ -1,0 +1,104 @@
+"""F2 匹配 REST API."""
+import json
+import logging
+from typing import Optional
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.core.settings.router import _load as _load_scoring_weights
+from app.database import get_db
+from app.modules.matching.hashing import compute_competency_hash, compute_weights_hash
+from app.modules.matching.models import MatchingResult
+from app.modules.matching.schemas import (
+    EvidenceItem,
+    MatchingResultResponse, MatchingResultListResponse,
+    ScoreRequest, RecomputeRequest, RecomputeStatus,
+)
+from app.modules.matching.service import MatchingService
+from app.modules.resume.models import Resume
+from app.modules.screening.models import Job
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/api/matching", tags=["matching"])
+
+
+def _require_matching_enabled():
+    if not getattr(settings, "matching_enabled", True):
+        raise HTTPException(status_code=503, detail="matching feature disabled")
+
+
+@router.post("/score", response_model=MatchingResultResponse)
+async def score_pair(req: ScoreRequest, db: Session = Depends(get_db)):
+    _require_matching_enabled()
+    service = MatchingService(db)
+    try:
+        return await service.score_pair(req.resume_id, req.job_id, triggered_by="T4")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/results", response_model=MatchingResultListResponse)
+def list_results(
+    job_id: Optional[int] = None,
+    resume_id: Optional[int] = None,
+    tag: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    _require_matching_enabled()
+    if not job_id and not resume_id:
+        raise HTTPException(status_code=400, detail="need job_id or resume_id")
+
+    q = db.query(MatchingResult)
+    if job_id:
+        q = q.filter_by(job_id=job_id).order_by(MatchingResult.total_score.desc())
+    if resume_id:
+        q = q.filter_by(resume_id=resume_id).order_by(MatchingResult.total_score.desc())
+
+    all_rows = q.all()
+    if tag:
+        all_rows = [r for r in all_rows if tag in json.loads(r.tags or "[]")]
+
+    total = len(all_rows)
+    start = (page - 1) * page_size
+    rows = all_rows[start: start + page_size]
+
+    # 批量预取 resume/job 信息 + 当前 hash
+    resume_ids = {r.resume_id for r in rows}
+    job_ids = {r.job_id for r in rows}
+    resumes = {r.id: r for r in db.query(Resume).filter(Resume.id.in_(resume_ids)).all()}
+    jobs = {j.id: j for j in db.query(Job).filter(Job.id.in_(job_ids)).all()}
+
+    # 按 job 分组算 current hash
+    current_hashes = {}   # job_id → (competency_hash, weights_hash)
+    weights_hash = compute_weights_hash(_load_scoring_weights())
+    for jid, j in jobs.items():
+        current_hashes[jid] = (compute_competency_hash(j.competency_model or {}), weights_hash)
+
+    items = []
+    for r in rows:
+        resume = resumes.get(r.resume_id)
+        job = jobs.get(r.job_id)
+        current_c, current_w = current_hashes.get(r.job_id, (r.competency_hash, r.weights_hash))
+        evidence_dict = json.loads(r.evidence or "{}")
+        items.append(MatchingResultResponse(
+            id=r.id, resume_id=r.resume_id,
+            resume_name=resume.name if resume else "",
+            job_id=r.job_id, job_title=job.title if job else "",
+            total_score=r.total_score, skill_score=r.skill_score,
+            experience_score=r.experience_score, seniority_score=r.seniority_score,
+            education_score=r.education_score, industry_score=r.industry_score,
+            hard_gate_passed=bool(r.hard_gate_passed),
+            missing_must_haves=json.loads(r.missing_must_haves or "[]"),
+            evidence={k: [EvidenceItem(**e) for e in v] for k, v in evidence_dict.items()},
+            tags=json.loads(r.tags or "[]"),
+            stale=(r.competency_hash != current_c or r.weights_hash != current_w),
+            scored_at=r.scored_at,
+        ))
+    return MatchingResultListResponse(
+        total=total, page=page, page_size=page_size, items=items,
+    )
