@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     ai_model_competency: str = ""
     """F1 能力模型抽取专用模型. 为空则回退 ai_model."""
 
+    # F2 简历匹配模块配置
+    matching_enabled: bool = True
+    matching_evidence_llm_enabled: bool = True
+    matching_trigger_days_back: int = 90
+    matching_skill_sim_exact: float = 0.75
+    matching_skill_sim_edge: float = 0.60
+    matching_industry_sim: float = 0.70
+
     # 邮件 SMTP
     smtp_host: str = ""
     smtp_port: int = 465
