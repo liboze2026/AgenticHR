@@ -34,6 +34,7 @@ class Resume(Base):
     ai_score = Column(Float, nullable=True)
     ai_summary = Column(Text, default="")
     reject_reason = Column(String(200), default="")
+    seniority = Column(String(20), default="", nullable=False)
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
