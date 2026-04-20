@@ -189,6 +189,29 @@
           </el-collapse>
         </el-descriptions-item>
       </el-descriptions>
+      <div class="matching-block" v-if="currentMatching.length">
+        <h4 style="margin: 12px 0 6px; color: #606266">对接岗位分数</h4>
+        <el-table :data="currentMatching" size="small" stripe>
+          <el-table-column prop="job_title" label="岗位" />
+          <el-table-column label="总分" width="80">
+            <template #default="{ row }">
+              <span :style="{ color: scoreColor(row.total_score), fontWeight: 600 }">
+                {{ row.total_score.toFixed(1) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="标签" width="220">
+            <template #default="{ row }">
+              <el-tag v-for="t in row.tags" :key="t" size="small" style="margin-right: 4px">{{ t }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="120">
+            <template #default="{ row }">
+              <el-button size="small" link type="primary" @click="viewMatchingOnJob(row.job_id, row.resume_id)">查看 →</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
       <template #footer>
         <el-button v-if="currentResume?.pdf_path" type="primary" @click="viewPdf(currentResume.id)">查看PDF</el-button>
         <el-button @click="showDetail = false">关闭</el-button>
@@ -201,7 +224,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, WarningFilled, Refresh, ArrowRight } from '@element-plus/icons-vue'
-import { resumeApi } from '../api'
+import { resumeApi, matchingApi } from '../api'
 
 const resumes = ref([])
 const loading = ref(false)
@@ -215,6 +238,7 @@ const currentResume = ref(null)
 const aiParseRunning = ref(false)
 const aiParseProgress = ref({ total: 0, completed: 0, failed: 0, current: '' })
 const expandedId = ref(null)  // 当前展开的简历 id（只允许一个）
+const currentMatching = ref([])
 
 function toggleExpand(id) {
   expandedId.value = (expandedId.value === id) ? null : id
@@ -289,9 +313,27 @@ async function saveField(row, field) {
   }
 }
 
-function viewResume(row) {
+async function viewResume(row) {
   currentResume.value = row
   showDetail.value = true
+  currentMatching.value = []
+  try {
+    const data = await matchingApi.listByResume(row.id)
+    currentMatching.value = data.items || []
+  } catch {
+    currentMatching.value = []
+  }
+}
+
+function scoreColor(s) {
+  if (s >= 80) return '#67c23a'
+  if (s >= 60) return '#409eff'
+  if (s >= 40) return '#e6a23c'
+  return '#f56c6c'
+}
+
+function viewMatchingOnJob(jobId, resumeId) {
+  window.open(`/#/jobs/${jobId}?tab=matching&highlight_resume=${resumeId}`, '_blank')
 }
 
 function viewPdf(resumeId) {
