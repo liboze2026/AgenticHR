@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -15,8 +15,79 @@ from app.modules.scheduling.models import Interview
 from app.core.competency.extractor import extract_competency, ExtractionFailedError
 from app.core.hitl.service import HitlService
 from app.modules.screening.competency_service import apply_competency_to_job
+from app.core.llm.parsing import extract_json
+from app.core.llm.provider import LLMProvider, LLMError
 
 router = APIRouter()
+
+
+def get_llm_provider() -> LLMProvider:
+    """创建 LLMProvider 实例（在 router 模块中定义以便测试 mock）."""
+    return LLMProvider()
+
+
+class _ParseJdBody(BaseModel):
+    jd_text: str
+
+    @validator('jd_text')
+    def not_blank(cls, v):
+        if not v.strip():
+            raise ValueError('jd_text must not be blank')
+        return v
+
+
+_PARSE_JD_SYSTEM = """你是 HR 专家，从 JD 文本提取招聘基本字段，严格输出 JSON，不要 markdown 包装，不要多余字段。
+
+schema:
+{
+  "title": "岗位名称（字符串）",
+  "department": "部门（字符串，JD 未提及则空字符串）",
+  "education_min": "最低学历：大专|本科|硕士|博士（JD 未提及则空字符串）",
+  "work_years_min": 最少年限（整数，JD 未提及则 0）,
+  "work_years_max": 最多年限（整数，JD 未提及则 99），
+  "salary_min": 最低月薪（整数元，JD 未提及则 0），
+  "salary_max": 最高月薪（整数元，JD 未提及则 0），
+  "required_skills": "必备技能，逗号分隔（字符串）",
+  "soft_requirements": "软性要求自然语言（字符串）"
+}
+
+规则：
+1. salary 统一转为月薪（元）；年薪则除以 12
+2. 薪资范围如"20-40k"→ salary_min=20000, salary_max=40000
+3. 只提取 JD 里明确写出的信息，不编造"""
+
+
+@router.post("/jobs/parse-jd")
+async def parse_jd_fields(body: _ParseJdBody):
+    """从 JD 原文用 LLM 提取基本岗位字段，供前端表单预填。"""
+    fallback = {
+        "title": "", "department": "", "education_min": "",
+        "work_years_min": 0, "work_years_max": 99,
+        "salary_min": 0, "salary_max": 0,
+        "required_skills": "", "soft_requirements": "",
+        "jd_text": body.jd_text,
+    }
+    try:
+        llm = get_llm_provider()
+        raw = await llm.complete(
+            messages=[
+                {"role": "system", "content": _PARSE_JD_SYSTEM},
+                {"role": "user", "content": body.jd_text},
+            ],
+            temperature=0.1,
+        )
+        parsed = extract_json(raw)
+        # 合并 fallback（防止 LLM 少输出字段）
+        result = {**fallback, **parsed, "jd_text": body.jd_text}
+        # 确保数值类型正确
+        for k in ("work_years_min", "work_years_max", "salary_min", "salary_max"):
+            try:
+                result[k] = int(result.get(k) or fallback[k])
+            except (TypeError, ValueError):
+                result[k] = fallback[k]
+        return result
+    except Exception:
+        return fallback
 
 
 def get_screening_service(db: Session = Depends(get_db)) -> ScreeningService:
