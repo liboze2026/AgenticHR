@@ -11,6 +11,7 @@ import app.modules.screening.models  # noqa: F401
 import app.modules.scheduling.models  # noqa: F401
 import app.modules.notification.models  # noqa: F401
 import app.modules.matching.models  # noqa: F401
+import app.core.audit.models  # noqa: F401
 
 # Allow test client requests to pass through the JWT auth HTTP middleware.
 # The middleware checks both this env var AND PYTEST_CURRENT_TEST (set by pytest
