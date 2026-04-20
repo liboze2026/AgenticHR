@@ -79,3 +79,72 @@ def build_deterministic_evidence(
             })
 
     return evidence
+
+
+import json
+import logging
+from app.config import settings
+from app.core.llm.parsing import extract_json
+from app.core.llm.provider import LLMError, LLMProvider
+
+_logger = logging.getLogger(__name__)
+
+_EVIDENCE_PROMPT = """你是招聘简历评估专家。给定一份简历摘要和 5 维度匹配分，每维度生成 1-3 条自然语言证据片段。
+每条 ≤ 30 字。只输出 JSON，字段为 skill/experience/seniority/education/industry, 值为字符串数组。
+简历：{resume_name}（技能：{skills}）
+分数：{dim_scores}
+现有 deterministic 证据：{base_evidence}"""
+
+
+async def _call_llm(prompt: str) -> dict:
+    """发起 LLM 调用, 返回解析后的 dict. 失败抛 LLMError."""
+    provider = LLMProvider()
+    content = await provider.complete(
+        messages=[{"role": "user", "content": prompt}],
+        prompt_version="f2_evidence_v1",
+        f_stage="F2",
+        entity_type="matching_result",
+        temperature=0.3,
+        response_format="json",
+    )
+    return extract_json(content)
+
+
+async def enhance_evidence_with_llm(
+    base_evidence: dict,
+    resume: Any,
+    dim_scores: dict,
+) -> dict:
+    """把 LLM 生成的 text 覆盖到 base_evidence 对应项, source/offset 保留.
+    LLM 失败时直接返回 base_evidence 不抛.
+    """
+    if not getattr(settings, "matching_evidence_llm_enabled", True):
+        return base_evidence
+
+    try:
+        prompt = _EVIDENCE_PROMPT.format(
+            resume_name=getattr(resume, "name", ""),
+            skills=getattr(resume, "skills", ""),
+            dim_scores=json.dumps(dim_scores, ensure_ascii=False),
+            base_evidence=json.dumps(
+                {k: [e["text"] for e in v] for k, v in base_evidence.items()},
+                ensure_ascii=False,
+            ),
+        )
+        llm_out = await _call_llm(prompt)
+    except LLMError as e:
+        _logger.info(f"LLM evidence failed, using deterministic only: {e}")
+        return base_evidence
+    except Exception as e:
+        _logger.warning(f"LLM evidence unexpected error: {e}")
+        return base_evidence
+
+    # 覆盖 text, 保留 source/offset
+    for dim, texts in (llm_out or {}).items():
+        if dim not in base_evidence:
+            continue
+        for i, text in enumerate(texts or []):
+            if i < len(base_evidence[dim]):
+                base_evidence[dim][i]["text"] = text
+
+    return base_evidence
