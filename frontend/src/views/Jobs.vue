@@ -29,53 +29,60 @@
     </el-table>
 
     <!-- 创建/编辑岗位弹窗 -->
-    <el-dialog v-model="showCreateDialog" :title="editingJob ? '编辑岗位' : '新建岗位'" width="600px">
-      <el-form :model="jobForm" label-width="100px">
-        <el-form-item label="岗位名称" required>
-          <el-input v-model="jobForm.title" />
-        </el-form-item>
-        <el-form-item label="部门">
-          <el-input v-model="jobForm.department" />
-        </el-form-item>
-        <el-form-item label="最低学历">
-          <el-select v-model="jobForm.education_min" clearable>
-            <el-option label="大专" value="大专" />
-            <el-option label="本科" value="本科" />
-            <el-option label="硕士" value="硕士" />
-            <el-option label="博士" value="博士" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="工作年限">
-          <el-col :span="11">
-            <el-input-number v-model="jobForm.work_years_min" :min="0" />
-          </el-col>
-          <el-col :span="2" style="text-align: center">-</el-col>
-          <el-col :span="11">
-            <el-input-number v-model="jobForm.work_years_max" :min="0" />
-          </el-col>
-        </el-form-item>
-        <el-form-item label="薪资范围">
-          <el-col :span="11">
-            <el-input-number v-model="jobForm.salary_min" :min="0" :step="1000" />
-          </el-col>
-          <el-col :span="2" style="text-align: center">-</el-col>
-          <el-col :span="11">
-            <el-input-number v-model="jobForm.salary_max" :min="0" :step="1000" />
-          </el-col>
-        </el-form-item>
-        <el-form-item label="必备技能">
-          <el-input v-model="jobForm.required_skills" placeholder="逗号分隔，如 Python,FastAPI" />
-        </el-form-item>
-        <el-form-item label="软性要求">
-          <el-input v-model="jobForm.soft_requirements" type="textarea" :rows="3" placeholder="自然语言描述，如：有大厂经历优先" />
-        </el-form-item>
-        <el-form-item label="打招呼话术">
-          <el-input v-model="jobForm.greeting_templates" type="textarea" :rows="2" placeholder="竖线分隔多条，如：你好请发简历|您好方便发简历吗" />
-        </el-form-item>
-      </el-form>
+    <el-dialog v-model="showCreateDialog" :title="editingJob ? '编辑岗位' : '新建岗位'" width="700px">
+      <el-tabs v-model="activeTab">
+        <el-tab-pane label="基本信息" name="basic">
+          <el-form :model="jobForm" label-width="100px">
+            <el-form-item label="岗位名称" required>
+              <el-input v-model="jobForm.title" />
+            </el-form-item>
+            <el-form-item label="部门">
+              <el-input v-model="jobForm.department" />
+            </el-form-item>
+            <el-form-item label="最低学历">
+              <el-select v-model="jobForm.education_min" clearable>
+                <el-option label="大专" value="大专" />
+                <el-option label="本科" value="本科" />
+                <el-option label="硕士" value="硕士" />
+                <el-option label="博士" value="博士" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="工作年限">
+              <el-col :span="11">
+                <el-input-number v-model="jobForm.work_years_min" :min="0" />
+              </el-col>
+              <el-col :span="2" style="text-align: center">-</el-col>
+              <el-col :span="11">
+                <el-input-number v-model="jobForm.work_years_max" :min="0" />
+              </el-col>
+            </el-form-item>
+            <el-form-item label="薪资范围">
+              <el-col :span="11">
+                <el-input-number v-model="jobForm.salary_min" :min="0" :step="1000" />
+              </el-col>
+              <el-col :span="2" style="text-align: center">-</el-col>
+              <el-col :span="11">
+                <el-input-number v-model="jobForm.salary_max" :min="0" :step="1000" />
+              </el-col>
+            </el-form-item>
+            <el-form-item label="必备技能">
+              <el-input v-model="jobForm.required_skills" placeholder="逗号分隔，如 Python,FastAPI" />
+            </el-form-item>
+            <el-form-item label="软性要求">
+              <el-input v-model="jobForm.soft_requirements" type="textarea" :rows="3" placeholder="自然语言描述，如：有大厂经历优先" />
+            </el-form-item>
+            <el-form-item label="打招呼话术">
+              <el-input v-model="jobForm.greeting_templates" type="textarea" :rows="2" placeholder="竖线分隔多条，如：你好请发简历|您好方便发简历吗" />
+            </el-form-item>
+          </el-form>
+        </el-tab-pane>
+        <el-tab-pane :label="competencyLabel" name="competency" v-if="currentJobId">
+          <CompetencyEditor :job-id="currentJobId" @status-change="onStatusChange" />
+        </el-tab-pane>
+      </el-tabs>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
-        <el-button type="primary" @click="saveJob">保存</el-button>
+        <el-button type="primary" @click="saveJob" v-if="activeTab === 'basic'">保存</el-button>
       </template>
     </el-dialog>
 
@@ -130,9 +137,10 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { jobApi, aiApi } from '../api'
+import CompetencyEditor from '../components/CompetencyEditor.vue'
 
 const jobs = ref([])
 const loading = ref(false)
@@ -143,6 +151,19 @@ const screenResult = ref(null)
 const showAiResult = ref(false)
 const aiResult = ref(null)
 const aiLoading = ref(false)
+
+const activeTab = ref('basic')
+const currentJobId = ref(null)
+const competencyStatus = ref('none')
+
+const competencyLabel = computed(() => {
+  if (competencyStatus.value === 'draft') return '能力模型 ●待审'
+  if (competencyStatus.value === 'approved') return '能力模型 ✓'
+  if (competencyStatus.value === 'rejected') return '能力模型 ✕'
+  return '能力模型'
+})
+
+function onStatusChange(s) { competencyStatus.value = s }
 
 const defaultForm = { title: '', department: '', education_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '' }
 const jobForm = ref({ ...defaultForm })
@@ -162,12 +183,16 @@ async function loadJobs() {
 function openNewJob() {
   editingJob.value = null
   jobForm.value = { ...defaultForm }
+  currentJobId.value = null
+  activeTab.value = 'basic'
   showCreateDialog.value = true
 }
 
 function editJob(job) {
   editingJob.value = job
   jobForm.value = { ...job }
+  currentJobId.value = job.id
+  activeTab.value = 'basic'
   showCreateDialog.value = true
 }
 
