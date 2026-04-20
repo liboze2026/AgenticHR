@@ -107,7 +107,7 @@ def list_results(
 from fastapi import BackgroundTasks
 from app.modules.matching.service import (
     _new_task, _get_task, _prune_stale_tasks,
-    recompute_job, recompute_resume,
+    recompute_job_with_fresh_session, recompute_resume_with_fresh_session,
 )
 
 
@@ -125,7 +125,7 @@ async def post_recompute(
     if req.job_id:
         total = db.query(Resume).filter_by(ai_parsed="yes").count()
         task_id = _new_task(total)
-        background.add_task(recompute_job, db, req.job_id, task_id)
+        background.add_task(recompute_job_with_fresh_session, req.job_id, task_id)
         return {"task_id": task_id, "total": total}
 
     total = db.query(Job).filter(
@@ -133,7 +133,7 @@ async def post_recompute(
         Job.competency_model_status == "approved",
     ).count()
     task_id = _new_task(total)
-    background.add_task(recompute_resume, db, req.resume_id, task_id)
+    background.add_task(recompute_resume_with_fresh_session, req.resume_id, task_id)
     return {"task_id": task_id, "total": total}
 
 

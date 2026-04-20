@@ -182,14 +182,15 @@ async def _do_parse_all(user_id: int = 0):
                     logger.info(f"  解析成功: {resume.name}")
 
                     # F2 T1 trigger: score against all active+approved jobs
+                    # Use a fresh session so the trigger's DB work is independent
+                    # of the worker's long-lived session.
                     try:
-                        import asyncio
                         from app.modules.matching.triggers import on_resume_parsed
+                        _t1_db = SessionLocal()
                         try:
-                            loop = asyncio.get_running_loop()
-                            loop.create_task(on_resume_parsed(db, resume.id))
-                        except RuntimeError:
-                            asyncio.run(on_resume_parsed(db, resume.id))
+                            await on_resume_parsed(_t1_db, resume.id)
+                        finally:
+                            _t1_db.close()
                     except Exception as _t1_err:
                         logger.warning(f"F2 T1 trigger failed (non-fatal): {_t1_err}")
 

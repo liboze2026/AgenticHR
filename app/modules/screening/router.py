@@ -349,8 +349,23 @@ def save_competency_draft(job_id: int, body: _SaveBody):
     return {"status": "draft"}
 
 
+import logging as _screening_log
+
+async def _t2_trigger_with_fresh_session(job_id: int) -> None:
+    """Opens its own DB session so it outlives the HTTP response."""
+    from app.database import SessionLocal
+    from app.modules.matching.triggers import on_competency_approved
+    db = SessionLocal()
+    try:
+        await on_competency_approved(db, job_id)
+    except Exception as e:
+        _screening_log.getLogger(__name__).warning(f"T2 trigger failed: {e}")
+    finally:
+        db.close()
+
+
 @router.post("/jobs/{job_id}/competency/approve")
-def approve_competency(job_id: int, body: _SaveBody, background_tasks: BackgroundTasks = BackgroundTasks()):
+def approve_competency(job_id: int, body: _SaveBody, background_tasks: BackgroundTasks):
     """HR 通过发布：保存模型 + 状态置为 approved + 回填扁平字段。若有 pending HITL 任务则一并关闭。"""
     from app.database import SessionLocal
     from app.modules.screening.models import Job
@@ -391,13 +406,6 @@ def approve_competency(job_id: int, body: _SaveBody, background_tasks: Backgroun
     )
 
     # F2 T2 trigger: score recent resumes against newly approved job
-    try:
-        from app.modules.matching.triggers import on_competency_approved
-        from app.database import SessionLocal
-        _t2_db = SessionLocal()
-        background_tasks.add_task(on_competency_approved, _t2_db, job_id)
-    except Exception as _t2_err:
-        import logging as _log
-        _log.getLogger(__name__).warning(f"F2 T2 trigger failed (non-fatal): {_t2_err}")
+    background_tasks.add_task(_t2_trigger_with_fresh_session, job_id)
 
     return {"status": "approved"}

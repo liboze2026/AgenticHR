@@ -239,7 +239,9 @@ async def recompute_job(db: Session, job_id: int, task_id: str) -> None:
     task = _RECOMPUTE_TASKS[task_id]
     try:
         resume_ids = [r.id for r in db.query(Resume).filter_by(ai_parsed="yes").all()]
-        task["total"] = len(resume_ids)
+        # total is pre-set by the endpoint via _new_task; only update if not yet set
+        if not task["total"]:
+            task["total"] = len(resume_ids)
         service = MatchingService(db)
         for rid in resume_ids:
             task["current"] = f"Resume#{rid} × Job#{job_id}"
@@ -262,7 +264,9 @@ async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
             Job.is_active == True,
             Job.competency_model_status == "approved",
         ).all()]
-        task["total"] = len(job_ids)
+        # total is pre-set by the endpoint via _new_task; only update if not yet set
+        if not task["total"]:
+            task["total"] = len(job_ids)
         service = MatchingService(db)
         for jid in job_ids:
             task["current"] = f"Resume#{resume_id} × Job#{jid}"
@@ -275,3 +279,23 @@ async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
     finally:
         task["running"] = False
         task["current"] = ""
+
+
+async def recompute_job_with_fresh_session(job_id: int, task_id: str) -> None:
+    """Wrapper for recompute_job that opens its own DB session so it outlives the HTTP response."""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        await recompute_job(db, job_id, task_id)
+    finally:
+        db.close()
+
+
+async def recompute_resume_with_fresh_session(resume_id: int, task_id: str) -> None:
+    """Wrapper for recompute_resume that opens its own DB session so it outlives the HTTP response."""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        await recompute_resume(db, resume_id, task_id)
+    finally:
+        db.close()
