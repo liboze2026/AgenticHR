@@ -100,6 +100,33 @@ export const aiApi = {
   batchEvaluate: (data) => api.post('/ai/evaluate/batch', data),
 }
 
+// 能力模型 API (F1)
+export const competencyApi = {
+  get: (jobId) => api.get(`/screening/jobs/${jobId}/competency`),
+  extract: (jobId) => api.post(`/screening/jobs/${jobId}/competency/extract`),
+  manual: (jobId, flatFields) => api.post(`/screening/jobs/${jobId}/competency/manual`, { flat_fields: flatFields }),
+}
+
+// HITL API (F1)
+export const hitlApi = {
+  list: (params) => api.get('/hitl/tasks', { params }),
+  get: (id) => api.get(`/hitl/tasks/${id}`),
+  approve: (id, note = '') => api.post(`/hitl/tasks/${id}/approve`, { note }),
+  reject: (id, note) => api.post(`/hitl/tasks/${id}/reject`, { note }),
+  edit: (id, editedPayload, note = '') => api.post(`/hitl/tasks/${id}/edit`, { edited_payload: editedPayload, note }),
+}
+
+// 技能库 API (F1)
+export const skillsApi = {
+  list: (params) => api.get('/skills', { params }),
+  get: (id) => api.get(`/skills/${id}`),
+  create: (data) => api.post('/skills', data),
+  update: (id, data) => api.put(`/skills/${id}`, data),
+  merge: (id, mergeIntoId) => api.post(`/skills/${id}/merge`, { merge_into_id: mergeIntoId }),
+  delete: (id) => api.delete(`/skills/${id}`),
+  categories: () => api.get('/skills/categories'),
+}
+
 // Boss API
 export const bossApi = {
   status: () => api.get('/boss/status'),
