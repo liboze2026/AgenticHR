@@ -134,6 +134,9 @@ app.include_router(boss_router, prefix="/api/boss", tags=["boss_automation"])
 from app.modules.feishu_bot.router import router as feishu_bot_router
 app.include_router(feishu_bot_router, prefix="/api/feishu", tags=["feishu_bot"])
 
+from app.core.hitl.router import router as hitl_router
+app.include_router(hitl_router)
+
 # Serve Vue frontend static files
 import os
 from pathlib import Path
