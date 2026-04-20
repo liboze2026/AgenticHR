@@ -87,7 +87,6 @@ class SkillLibrary:
             )
             session.add(row)
             session.commit()
-            SkillCache.invalidate()
             return row.id
         except Exception:
             session.rollback()
@@ -107,7 +106,6 @@ class SkillLibrary:
                 row.aliases = new_aliases
                 session.add(row)
                 session.commit()
-                SkillCache.invalidate()
         finally:
             session.close()
 
@@ -118,7 +116,6 @@ class SkillLibrary:
                 {Skill.usage_count: Skill.usage_count + 1}
             )
             session.commit()
-            SkillCache.invalidate()
         finally:
             session.close()
 
@@ -151,7 +148,6 @@ class SkillLibrary:
         try:
             session.query(Skill).filter(Skill.id == skill_id).update({Skill.embedding: embedding})
             session.commit()
-            SkillCache.invalidate()
         finally:
             session.close()
 
@@ -177,7 +173,6 @@ class SkillLibrary:
             dst.usage_count = (dst.usage_count or 0) + (src.usage_count or 0)
             session.delete(src)
             session.commit()
-            SkillCache.invalidate()
         except Exception:
             session.rollback()
             raise
