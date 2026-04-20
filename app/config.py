@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     ai_api_key: str = ""
     ai_base_url: str = ""
     ai_model: str = ""
+    ai_model_competency: str = ""
+    """F1 能力模型抽取专用模型. 为空则回退 ai_model."""
 
     # 邮件 SMTP
     smtp_host: str = ""
