@@ -102,3 +102,48 @@ def list_results(
     return MatchingResultListResponse(
         total=total, page=page, page_size=page_size, items=items,
     )
+
+
+from fastapi import BackgroundTasks
+from app.modules.matching.service import (
+    _new_task, _get_task, _prune_stale_tasks,
+    recompute_job, recompute_resume,
+)
+
+
+@router.post("/recompute")
+async def post_recompute(
+    req: RecomputeRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    _require_matching_enabled()
+    _prune_stale_tasks()
+    if not req.job_id and not req.resume_id:
+        raise HTTPException(status_code=400, detail="need job_id or resume_id")
+
+    if req.job_id:
+        total = db.query(Resume).filter_by(ai_parsed="yes").count()
+        task_id = _new_task(total)
+        background.add_task(recompute_job, db, req.job_id, task_id)
+        return {"task_id": task_id, "total": total}
+
+    total = db.query(Job).filter(
+        Job.is_active == True,
+        Job.competency_model_status == "approved",
+    ).count()
+    task_id = _new_task(total)
+    background.add_task(recompute_resume, db, req.resume_id, task_id)
+    return {"task_id": task_id, "total": total}
+
+
+@router.get("/recompute/status/{task_id}", response_model=RecomputeStatus)
+def get_recompute_status(task_id: str):
+    task = _get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="task not found")
+    return RecomputeStatus(
+        task_id=task["task_id"], total=task["total"],
+        completed=task["completed"], failed=task["failed"],
+        running=task["running"], current=task.get("current", ""),
+    )

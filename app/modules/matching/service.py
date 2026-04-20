@@ -204,3 +204,74 @@ class MatchingService:
                    or row.weights_hash != current_weights_hash),
             scored_at=row.scored_at,
         )
+
+
+import uuid
+from datetime import timedelta
+
+# 全局任务状态表（in-memory，进程重启丢；足够 V1 用）
+_RECOMPUTE_TASKS: dict[str, dict] = {}
+
+
+def _new_task(total: int) -> str:
+    task_id = str(uuid.uuid4())
+    _RECOMPUTE_TASKS[task_id] = {
+        "task_id": task_id, "total": total, "completed": 0, "failed": 0,
+        "running": True, "current": "",
+        "started_at": datetime.now(timezone.utc),
+    }
+    return task_id
+
+
+def _get_task(task_id: str) -> dict | None:
+    return _RECOMPUTE_TASKS.get(task_id)
+
+
+def _prune_stale_tasks(hours: int = 24) -> None:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    stale = [k for k, v in _RECOMPUTE_TASKS.items() if v["started_at"] < cutoff]
+    for k in stale:
+        _RECOMPUTE_TASKS.pop(k, None)
+
+
+async def recompute_job(db: Session, job_id: int, task_id: str) -> None:
+    """后台任务：对 job 的所有 ai_parsed='yes' 简历打分."""
+    task = _RECOMPUTE_TASKS[task_id]
+    try:
+        resume_ids = [r.id for r in db.query(Resume).filter_by(ai_parsed="yes").all()]
+        task["total"] = len(resume_ids)
+        service = MatchingService(db)
+        for rid in resume_ids:
+            task["current"] = f"Resume#{rid} × Job#{job_id}"
+            try:
+                await service.score_pair(rid, job_id, triggered_by="T3")
+                task["completed"] += 1
+            except Exception as e:
+                logger.warning(f"recompute failed for resume {rid}: {e}")
+                task["failed"] += 1
+    finally:
+        task["running"] = False
+        task["current"] = ""
+
+
+async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
+    """后台任务：对 resume 的所有 is_active + approved 岗位打分."""
+    task = _RECOMPUTE_TASKS[task_id]
+    try:
+        job_ids = [j.id for j in db.query(Job).filter(
+            Job.is_active == True,
+            Job.competency_model_status == "approved",
+        ).all()]
+        task["total"] = len(job_ids)
+        service = MatchingService(db)
+        for jid in job_ids:
+            task["current"] = f"Resume#{resume_id} × Job#{jid}"
+            try:
+                await service.score_pair(resume_id, jid, triggered_by="T3")
+                task["completed"] += 1
+            except Exception as e:
+                logger.warning(f"recompute failed for job {jid}: {e}")
+                task["failed"] += 1
+    finally:
+        task["running"] = False
+        task["current"] = ""
