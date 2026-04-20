@@ -42,7 +42,11 @@ def get_db():
 
 
 def create_tables():
-    """创建所有表，并执行简单的列迁移"""
+    """仅测试用. 生产/开发走 Alembic (migrations/).
+
+    Alembic 引入后 (M3-kickoff K0), 生产环境的 schema 演化完全由 migration 管理.
+    此函数保留是因为大量单测依赖 `create_all()` 的幂等建表行为.
+    """
     Base.metadata.create_all(bind=engine)
     _migrate(engine)
 
