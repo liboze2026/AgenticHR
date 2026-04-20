@@ -25,6 +25,16 @@
           <el-icon><Briefcase /></el-icon>
           <span>岗位管理</span>
         </el-menu-item>
+        <el-menu-item index="/hitl">
+          <el-icon><View /></el-icon>
+          审核队列
+          <el-badge v-if="hitlPendingCount > 0" :value="hitlPendingCount" class="hitl-badge" />
+        </el-menu-item>
+
+        <el-menu-item index="/skills">
+          <el-icon><Collection /></el-icon>
+          技能库
+        </el-menu-item>
         <el-menu-item index="/interviewers">
           <el-icon><User /></el-icon>
           <span>面试官管理</span>
@@ -59,6 +69,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { hitlApi } from './api'
+import { View, Collection } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -79,6 +91,18 @@ function logout() {
 
 const networkOk = ref(true)
 let healthTimer = null
+
+const hitlPendingCount = ref(0)
+let pollTimer = null
+
+async function refreshPending() {
+  try {
+    const resp = await hitlApi.list({ status: 'pending', limit: 1 })
+    hitlPendingCount.value = resp.total || 0
+  } catch (e) {
+    console.error('refresh pending failed', e)
+  }
+}
 
 const checkHealth = async () => {
   try {
@@ -105,11 +129,14 @@ onMounted(() => {
   checkHealth()
   healthTimer = setInterval(checkHealth, 30000)
   window.addEventListener('beforeunload', beforeUnloadHandler)
+  refreshPending()
+  pollTimer = setInterval(refreshPending, 5 * 60 * 1000)
 })
 
 onUnmounted(() => {
   clearInterval(healthTimer)
   window.removeEventListener('beforeunload', beforeUnloadHandler)
+  if (pollTimer) clearInterval(pollTimer)
 })
 </script>
 
@@ -167,6 +194,9 @@ html, body, #app { height: 100%; }
   color: rgba(255,255,255,0.4);
   font-size: 12px;
   flex-shrink: 0;
+}
+.hitl-badge {
+  margin-left: 8px;
 }
 .app-main {
   background: #f0f2f5;
