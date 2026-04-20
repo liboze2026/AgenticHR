@@ -1,6 +1,6 @@
 # F2: 简历解析 + 匹配打分 + 标签 — 设计文档
 
-**Status**: Draft
+**Status**: Implemented
 **Date**: 2026-04-20
 **Phase**: M3 / F2
 **Supersedes**: 现 `app/modules/ai_evaluation/` 的 `evaluate_single` / `evaluate_batch`（LLM-only 打分路径将被废弃）
