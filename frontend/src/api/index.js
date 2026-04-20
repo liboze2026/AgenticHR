@@ -148,4 +148,14 @@ export const settingsApi = {
   saveScoringWeights: (data) => api.put('/settings/scoring-weights', data),
 }
 
+// 匹配 API (F2)
+export const matchingApi = {
+  score: (resume_id, job_id) => api.post('/matching/score', { resume_id, job_id }),
+  listByJob: (job_id, { page = 1, page_size = 20, tag } = {}) =>
+    api.get('/matching/results', { params: { job_id, page, page_size, tag } }),
+  listByResume: (resume_id) => api.get('/matching/results', { params: { resume_id } }),
+  recomputeJob: (job_id) => api.post('/matching/recompute', { job_id }),
+  recomputeStatus: (task_id) => api.get(`/matching/recompute/status/${task_id}`),
+}
+
 export default api
