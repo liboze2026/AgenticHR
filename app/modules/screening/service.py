@@ -65,30 +65,62 @@ class ScreeningService:
         passed_count = 0
         rejected_count = 0
 
+        # F1: 决定使用 competency_model 还是扁平字段
+        use_model = (
+            job.competency_model is not None
+            and job.competency_model_status == "approved"
+        )
+
+        if use_model:
+            cm = job.competency_model
+            edu_req = (cm.get("education") or {}).get("min_level", "") or ""
+            exp = cm.get("experience") or {}
+            years_min = int(exp.get("years_min") or 0)
+            years_max_val = exp.get("years_max")
+            years_max = int(years_max_val) if years_max_val is not None else 99
+            must_have_skills = [
+                s["name"] for s in (cm.get("hard_skills") or []) if s.get("must_have")
+            ]
+        else:
+            edu_req = job.education_min or ""
+            years_min = job.work_years_min
+            years_max = job.work_years_max
+            must_have_skills = [
+                s.strip() for s in (job.required_skills or "").split(",") if s.strip()
+            ]
+
         for resume in resumes:
             reject_reasons = []
 
-            if job.education_min:
-                min_level = EDUCATION_LEVELS.get(job.education_min, 0)
+            if edu_req:
+                min_level = EDUCATION_LEVELS.get(edu_req, 0)
                 resume_level = EDUCATION_LEVELS.get(resume.education, 0)
                 if resume_level < min_level:
-                    reject_reasons.append(f"学历不符：要求{job.education_min}，实际{resume.education or '未知'}")
+                    reject_reasons.append(
+                        f"学历不符：要求{edu_req}，实际{resume.education or '未知'}"
+                    )
 
-            if resume.work_years < job.work_years_min:
-                reject_reasons.append(f"工作年限不足：要求{job.work_years_min}年，实际{resume.work_years}年")
-            if resume.work_years > job.work_years_max:
-                reject_reasons.append(f"工作年限超出：最高{job.work_years_max}年，实际{resume.work_years}年")
+            if resume.work_years < years_min:
+                reject_reasons.append(
+                    f"工作年限不足：要求{years_min}年，实际{resume.work_years}年"
+                )
+            if resume.work_years > years_max:
+                reject_reasons.append(
+                    f"工作年限超出：最高{years_max}年，实际{resume.work_years}年"
+                )
 
             if job.salary_max > 0 and resume.expected_salary_min > 0:
                 if resume.expected_salary_min > job.salary_max:
-                    reject_reasons.append(f"薪资期望过高：岗位上限{job.salary_max}，期望{resume.expected_salary_min}")
+                    reject_reasons.append(
+                        f"薪资期望过高：岗位上限{job.salary_max}，期望{resume.expected_salary_min}"
+                    )
 
-            if job.required_skills:
-                required = [s.strip().lower() for s in job.required_skills.split(",") if s.strip()]
+            if must_have_skills:
                 resume_skills = (resume.skills or "").lower()
                 resume_text = (resume.raw_text or "").lower()
-                for skill in required:
-                    if skill not in resume_skills and skill not in resume_text:
+                for skill in must_have_skills:
+                    sk = skill.lower()
+                    if sk not in resume_skills and sk not in resume_text:
                         reject_reasons.append(f"缺少必备技能：{skill}")
 
             is_passed = len(reject_reasons) == 0
