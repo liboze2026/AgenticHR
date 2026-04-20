@@ -34,3 +34,6 @@ data/meeting_browser_*/
 
 # Node
 node_modules/
+
+# Superpowers brainstorm mockups
+.superpowers/
