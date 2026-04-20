@@ -6,7 +6,7 @@
 
 ## TL;DR
 
-M3 F1"能力模型抽取"正在执行。**进度 17/33 任务完成（Phase 3 结束），下一步是 Phase 4 的 T20 + T20b（前端 API 模块 + skills 后端路由）**。已完成任务零回归，141 passed / 37 pre-existing failed / 4 skipped。
+**M3 F1"能力模型抽取"已全部完成（2026-04-20）。** 33/33 任务通过，最终 commit `d3bbb39`。测试：150 passed / 37 pre-existing failed / 4 skipped。app/core/ 覆盖率 86%。**等待用户手工验收。通过后可开始 F2。**
 
 ---
 
