@@ -9,6 +9,7 @@ import app.modules.resume.models  # noqa: F401 — ensure models registered with
 import app.modules.screening.models  # noqa: F401
 import app.modules.scheduling.models  # noqa: F401
 import app.modules.notification.models  # noqa: F401
+import app.modules.matching.models  # noqa: F401
 
 
 @pytest.fixture(scope="function")
