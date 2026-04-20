@@ -18,6 +18,7 @@ class _SkillUpdateBody(BaseModel):
     canonical_name: str | None = None
     category: str | None = None
     aliases: list[str] | None = None
+    pending_classification: bool | None = None
 
 
 class _MergeBody(BaseModel):
@@ -91,6 +92,8 @@ def update_skill(skill_id: int, body: _SkillUpdateBody):
             s.category = body.category
         if body.aliases is not None:
             s.aliases = body.aliases
+        if body.pending_classification is not None:
+            s.pending_classification = body.pending_classification
         session.commit()
         SkillCache.invalidate()
         return SkillLibrary().find_by_id(skill_id)
@@ -106,6 +109,100 @@ def merge_skill(skill_id: int, body: _MergeBody):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"status": "merged"}
+
+
+_CATEGORY_KEYWORDS = {
+    "language":  ["python","java","go","rust","c++","c#","typescript","javascript","kotlin","swift","ruby","php","scala","r语言","r "],
+    "framework": ["django","fastapi","flask","spring","react","vue","angular","nextjs","express","laravel","rails","gin","fiber"],
+    "cloud":     ["aws","azure","gcp","docker","kubernetes","k8s","terraform","ansible","ci/cd","devops","linux","nginx","redis","kafka","rabbitmq","elasticsearch"],
+    "database":  ["mysql","postgresql","postgres","sqlite","mongodb","oracle","sqlserver","clickhouse","hive","hadoop","spark","flink"],
+    "tool":      ["git","jira","confluence","jenkins","grafana","prometheus","postman","vscode","intellij","figma","excel","ppt"],
+    "soft":      ["沟通","表达","领导","协作","团队","学习","抗压","责任","执行","创新","分析","解决问题","时间管理"],
+}
+
+def _keyword_classify(name: str) -> str:
+    n = name.lower()
+    for cat, kws in _CATEGORY_KEYWORDS.items():
+        if any(kw in n for kw in kws):
+            return cat
+    return "uncategorized"
+
+
+@router.post("/auto-classify")
+async def auto_classify_pending():
+    """用 LLM 批量归类所有 pending_classification=True 的技能，LLM 失败则关键词兜底。"""
+    import json as _json
+    from app.core.llm.provider import LLMProvider, LLMError
+    from app.core.hitl.service import HitlService
+    from app.core.hitl.models import HitlTask
+
+    lib = SkillLibrary()
+    pending = [s for s in lib.list_all() if s.get("pending_classification")]
+    if not pending:
+        return {"classified": 0, "message": "没有待归类的技能"}
+
+    names = [s["canonical_name"] for s in pending]
+    valid_cats = list(_CATEGORY_KEYWORDS.keys()) + ["domain", "uncategorized"]
+
+    # 尝试 LLM 批量分类
+    llm_map: dict[str, str] = {}
+    try:
+        llm = LLMProvider()
+        prompt = (
+            f"请将以下技能名称各归入一个分类，分类只能从列表中选：{valid_cats}。\n"
+            f"以 JSON 对象返回，格式：{{\"技能名\": \"分类\", ...}}，不要其他内容。\n"
+            f"技能列表：{names}"
+        )
+        raw = await llm.complete(
+            messages=[{"role": "user", "content": prompt}],
+            prompt_version="skill_auto_classify_v1",
+            f_stage="F1_skill_classification",
+            entity_type="skill",
+            entity_id=0,
+            temperature=0.0,
+        )
+        from app.core.llm.parsing import extract_json
+        parsed = extract_json(raw)
+        if isinstance(parsed, dict):
+            for name, cat in parsed.items():
+                if cat in valid_cats:
+                    llm_map[name] = cat
+    except (LLMError, ValueError):
+        pass  # 全量降级到关键词
+
+    # 更新每条技能
+    session = _session_factory()
+    hitl_svc = HitlService()
+    classified = 0
+    try:
+        for s in pending:
+            cat = llm_map.get(s["canonical_name"]) or _keyword_classify(s["canonical_name"])
+            skill_row = session.query(Skill).filter(Skill.id == s["id"]).first()
+            if skill_row:
+                skill_row.category = cat
+                skill_row.pending_classification = False
+            # 找到对应 HITL 任务并自动通过
+            task = (
+                session.query(HitlTask)
+                .filter(
+                    HitlTask.entity_type == "skill",
+                    HitlTask.entity_id == s["id"],
+                    HitlTask.f_stage == "F1_skill_classification",
+                    HitlTask.status == "pending",
+                )
+                .first()
+            )
+            if task:
+                task.status = "approved"
+                task.comment = f"自动归类: {cat}"
+            classified += 1
+        session.commit()
+        SkillCache.invalidate()
+    finally:
+        session.close()
+
+    method = "LLM" if llm_map else "关键词"
+    return {"classified": classified, "method": method}
 
 
 @router.delete("/{skill_id}")

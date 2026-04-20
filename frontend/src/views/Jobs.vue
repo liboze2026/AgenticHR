@@ -13,6 +13,19 @@
         <template #default="{ row }">{{ row.work_years_min }}-{{ row.work_years_max }}年</template>
       </el-table-column>
       <el-table-column prop="required_skills" label="必备技能" show-overflow-tooltip />
+      <el-table-column label="能力模型" width="110">
+        <template #default="{ row }">
+          <el-tag v-if="extractingJobIds.has(row.id)" type="info" size="small">
+            <el-icon style="vertical-align: middle; animation: rotating 1.5s linear infinite">
+              <svg viewBox="0 0 1024 1024" width="12" height="12"><path fill="currentColor" d="M512 64a32 32 0 0 1 32 32v192a32 32 0 0 1-64 0V96a32 32 0 0 1 32-32zm0 640a32 32 0 0 1 32 32v192a32 32 0 0 1-64 0V736a32 32 0 0 1 32-32zm448-192a32 32 0 0 1-32 32H736a32 32 0 0 1 0-64h192a32 32 0 0 1 32 32zm-640 0a32 32 0 0 1-32 32H96a32 32 0 0 1 0-64h192a32 32 0 0 1 32 32zM195.2 195.2a32 32 0 0 1 45.248 0L376.32 331.008a32 32 0 0 1-45.248 45.248L195.2 240.448a32 32 0 0 1 0-45.248zm452.544 452.544a32 32 0 0 1 45.248 0L828.8 783.552a32 32 0 0 1-45.248 45.248L647.744 692.992a32 32 0 0 1 0-45.248zM828.8 195.2a32 32 0 0 1 0 45.248L692.992 376.32a32 32 0 0 1-45.248-45.248L783.552 195.2a32 32 0 0 1 45.248 0zm-452.544 452.544a32 32 0 0 1 0 45.248L240.448 828.8a32 32 0 0 1-45.248-45.248l135.808-135.808a32 32 0 0 1 45.248 0z"/></svg>
+            </el-icon>
+            抽取中…
+          </el-tag>
+          <el-tag v-else :type="competencyTagType(row.competency_model_status)" size="small">
+            {{ competencyTagText(row.competency_model_status) }}
+          </el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag>
@@ -99,7 +112,7 @@
           </div>
         </el-tab-pane>
         <el-tab-pane :label="competencyLabel" name="competency" v-if="currentJobId">
-          <CompetencyEditor :job-id="currentJobId" :initial-jd-text="jobForm.jd_text || ''" @status-change="onStatusChange" />
+          <CompetencyEditor :job-id="currentJobId" :initial-jd-text="jobForm.jd_text || ''" @status-change="onStatusChange" @extract-background="onExtractBackground" />
         </el-tab-pane>
       </el-tabs>
       <template #footer>
@@ -160,9 +173,10 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { jobApi, aiApi, competencyApi } from '../api'
 import CompetencyEditor from '../components/CompetencyEditor.vue'
+import { extractingJobIds } from '../stores/extractingJobs.js'
 
 const jobs = ref([])
 const loading = ref(false)
@@ -191,6 +205,32 @@ const competencyLabel = computed(() => {
 })
 
 function onStatusChange(s) { competencyStatus.value = s }
+
+function onExtractBackground({ jobId, jdText }) {
+  showCreateDialog.value = false
+  extractingJobIds.add(jobId)
+  ElMessage.success('能力模型抽取中，完成后会通知您…')
+  competencyApi.extract(jobId, jdText).then((result) => {
+    extractingJobIds.delete(jobId)
+    loadJobs()
+    if (result?.status === 'failed') {
+      ElNotification({ title: '能力模型抽取失败', message: '请重新进入岗位编辑页触发抽取', type: 'error', duration: 8000 })
+    } else {
+      ElNotification({ title: '能力模型已生成，待 HR 审核', message: '请前往「审核队列」完成审核后方可生效', type: 'warning', duration: 6000 })
+    }
+  }).catch(() => {
+    extractingJobIds.delete(jobId)
+    loadJobs()
+    ElNotification({ title: '能力模型抽取失败', message: '请重新进入岗位编辑页触发抽取', type: 'error', duration: 8000 })
+  })
+}
+
+function competencyTagType(status) {
+  return { none: 'info', draft: 'warning', approved: 'success', rejected: 'danger' }[status] || 'info'
+}
+function competencyTagText(status) {
+  return { none: '未生成', draft: '待审核', approved: '已生效', rejected: '已驳回' }[status] || '未知'
+}
 
 const defaultForm = { title: '', department: '', education_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '', jd_text: '' }
 const jobForm = ref({ ...defaultForm })
@@ -269,10 +309,29 @@ async function saveJob() {
       showCreateDialog.value = false
     } else {
       const created = await jobApi.create(jobForm.value)
-      ElMessage.success('创建成功，正在加载能力模型...')
-      currentJobId.value = created.id   // 拿到新建的 job id
-      editingJob.value = created
-      activeTab.value = 'competency'    // 自动切到能力模型 Tab
+      showCreateDialog.value = false
+      loadJobs()
+      // 后台自动触发能力模型抽取，不阻塞关闭
+      if (created.id && jobForm.value.jd_text?.trim()) {
+        extractingJobIds.add(created.id)
+        ElMessage.success('岗位已创建，正在抽取能力模型…')
+        competencyApi.extract(created.id, jobForm.value.jd_text).then((result) => {
+          extractingJobIds.delete(created.id)
+          loadJobs()
+          if (result?.status === 'failed') {
+            ElNotification({ title: '能力模型抽取失败', message: '请进入岗位编辑页手动触发抽取', type: 'error', duration: 8000 })
+          } else {
+            ElNotification({ title: '能力模型已生成，待 HR 审核', message: '请前往「审核队列」完成审核后方可生效', type: 'warning', duration: 6000 })
+          }
+        }).catch(() => {
+          extractingJobIds.delete(created.id)
+          loadJobs()
+          ElNotification({ title: '能力模型抽取失败', message: '请进入岗位编辑页手动触发抽取', type: 'error', duration: 8000 })
+        })
+      } else {
+        ElMessage.success('岗位已创建')
+      }
+      return
     }
     loadJobs()
   } catch (e) {
@@ -330,3 +389,10 @@ async function screenResumes(jobId) {
 
 onMounted(loadJobs)
 </script>
+
+<style scoped>
+@keyframes rotating {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+</style>

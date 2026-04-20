@@ -244,6 +244,7 @@ const loading = ref(false)
 const showDialog = ref(false)
 const editingId = ref(null)
 const calendarLoading = ref(false)
+let freeBusySeq = 0  // 竞争防护：只采纳最新一次请求的结果
 const candidateOptions = ref([])
 const interviewerOptions = ref([])
 const resumeMap = ref({})
@@ -306,8 +307,10 @@ async function onInterviewerChange() {
     return
   }
   calendarLoading.value = true
+  const seq = ++freeBusySeq
   try {
     const data = await schedulingApi.getFreeBusy(form.value.interviewer_id, 7)
+    if (seq !== freeBusySeq) return  // 已被更新的请求覆盖，丢弃
     const slots = data.busy_slots || []
 
     // 编辑模式下：过滤掉"就是当前正在改的这场面试"的 busy 槽
@@ -348,9 +351,9 @@ async function onInterviewerChange() {
       })
     }
   } catch (e) {
-    console.error('getFreeBusy failed:', e)
+    if (seq === freeBusySeq) ElMessage.error('加载面试官日历失败，请重试')
   } finally {
-    calendarLoading.value = false
+    if (seq === freeBusySeq) calendarLoading.value = false
   }
 }
 
@@ -483,7 +486,10 @@ async function checkAlreadySent(interviewId) {
     const logs = await notificationApi.listLogs({ interview_id: interviewId })
     const items = logs.items || logs || []
     return items.length > 0
-  } catch { return false }
+  } catch (e) {
+    ElMessage.warning('无法查询通知记录，请确认后再发送')
+    throw e  // 中断发送流程，不误判为"未发送"
+  }
 }
 
 async function sendNotification(row) {

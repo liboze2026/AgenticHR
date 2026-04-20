@@ -25,22 +25,29 @@ def test_hard_skill_weight_range():
     HardSkill(name="x", weight=10)
 
 
-def test_hard_skill_level_enum():
-    with pytest.raises(ValidationError):
-        HardSkill(name="x", weight=5, level="大师")
-    HardSkill(name="x", weight=5, level="精通")
+def test_hard_skill_level_normalization():
+    # 未知值降级为默认值"熟练"，不再抛异常
+    s = HardSkill(name="x", weight=5, level="大师")
+    assert s.level == "熟练"
+    # 近义词映射
+    assert HardSkill(name="x", weight=5, level="熟悉").level == "熟练"
+    assert HardSkill(name="x", weight=5, level="了解").level == "了解"
+    assert HardSkill(name="x", weight=5, level="精通").level == "精通"
 
 
-def test_soft_skill_stage_enum():
-    with pytest.raises(ValidationError):
-        SoftSkill(name="沟通", weight=5, assessment_stage="随便")
-    SoftSkill(name="沟通", weight=5, assessment_stage="面试")
+def test_soft_skill_stage_normalization():
+    # 未知值降级为"面试"
+    s = SoftSkill(name="沟通", weight=5, assessment_stage="随便")
+    assert s.assessment_stage == "面试"
+    assert SoftSkill(name="沟通", weight=5, assessment_stage="简历").assessment_stage == "简历"
 
 
-def test_education_level_enum():
-    with pytest.raises(ValidationError):
-        EducationRequirement(min_level="专科以下")
-    EducationRequirement(min_level="本科")
+def test_education_level_normalization():
+    # 未知值降级为"本科"
+    e = EducationRequirement(min_level="专科以下")
+    assert e.min_level == "本科"
+    assert EducationRequirement(min_level="专科").min_level == "大专"
+    assert EducationRequirement(min_level="本科").min_level == "本科"
 
 
 def test_experience_years_optional_max():

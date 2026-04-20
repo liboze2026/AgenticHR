@@ -189,8 +189,12 @@ class _ManualBody(BaseModel):
     flat_fields: dict
 
 
+class _ExtractBody(BaseModel):
+    jd_text: str | None = None
+
+
 @router.post("/jobs/{job_id}/competency/extract")
-async def extract_job_competency(job_id: int):
+async def extract_job_competency(job_id: int, body: _ExtractBody = _ExtractBody()):
     """触发 LLM 抽取能力模型. 成功 → draft + HITL; 失败 → 降级扁平表单."""
     from app.database import SessionLocal
     from app.modules.screening.models import Job
@@ -200,6 +204,10 @@ async def extract_job_competency(job_id: int):
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
+        # 若前端传入 jd_text，更新到 DB 覆盖旧值
+        if body.jd_text and body.jd_text.strip():
+            job.jd_text = body.jd_text.strip()
+            db.commit()
         jd_text = job.jd_text or ""
     finally:
         db.close()
@@ -234,14 +242,27 @@ async def extract_job_competency(job_id: int):
 def get_job_competency(job_id: int):
     from app.database import SessionLocal
     from app.modules.screening.models import Job
+    from app.core.hitl.models import HitlTask
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
+        pending_task = (
+            db.query(HitlTask)
+            .filter(
+                HitlTask.entity_type == "job",
+                HitlTask.entity_id == job_id,
+                HitlTask.f_stage == "F1_competency_review",
+                HitlTask.status == "pending",
+            )
+            .order_by(HitlTask.id.desc())
+            .first()
+        )
         return {
             "competency_model": job.competency_model,
             "status": job.competency_model_status,
+            "pending_hitl_task_id": pending_task.id if pending_task else None,
         }
     finally:
         db.close()
@@ -288,5 +309,84 @@ def manual_competency(job_id: int, body: _ManualBody):
         entity_id=job_id,
         input_payload=body.flat_fields,
         output_payload=model_dict,
+    )
+    return {"status": "approved"}
+
+
+class _SaveBody(BaseModel):
+    competency_model: dict
+
+
+@router.put("/jobs/{job_id}/competency/save")
+def save_competency_draft(job_id: int, body: _SaveBody):
+    """HR 保存草稿：写入 DB，status=draft。若有 pending HITL 任务则同步更新 payload。"""
+    from app.database import SessionLocal
+    from app.modules.screening.models import Job
+    from app.core.hitl.models import HitlTask
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="job not found")
+        job.competency_model = body.competency_model
+        job.competency_model_status = "draft"
+        pending_task = (
+            db.query(HitlTask)
+            .filter(
+                HitlTask.entity_type == "job",
+                HitlTask.entity_id == job_id,
+                HitlTask.f_stage == "F1_competency_review",
+                HitlTask.status == "pending",
+            )
+            .order_by(HitlTask.id.desc())
+            .first()
+        )
+        if pending_task:
+            pending_task.payload = body.competency_model
+        db.commit()
+    finally:
+        db.close()
+    return {"status": "draft"}
+
+
+@router.post("/jobs/{job_id}/competency/approve")
+def approve_competency(job_id: int, body: _SaveBody):
+    """HR 通过发布：保存模型 + 状态置为 approved + 回填扁平字段。若有 pending HITL 任务则一并关闭。"""
+    from app.database import SessionLocal
+    from app.modules.screening.models import Job
+    from app.core.hitl.models import HitlTask
+    from datetime import datetime, timezone
+
+    apply_competency_to_job(job_id, body.competency_model)
+
+    db = SessionLocal()
+    try:
+        pending_task = (
+            db.query(HitlTask)
+            .filter(
+                HitlTask.entity_type == "job",
+                HitlTask.entity_id == job_id,
+                HitlTask.f_stage == "F1_competency_review",
+                HitlTask.status == "pending",
+            )
+            .order_by(HitlTask.id.desc())
+            .first()
+        )
+        if pending_task:
+            pending_task.status = "approved"
+            pending_task.reviewed_at = datetime.now(timezone.utc)
+            pending_task.note = "approved via editor"
+        db.commit()
+    finally:
+        db.close()
+
+    from app.core.audit.logger import log_event
+    log_event(
+        f_stage="F1_competency_review",
+        action="hr_approve",
+        entity_type="job",
+        entity_id=job_id,
+        input_payload=body.competency_model,
+        output_payload=body.competency_model,
     )
     return {"status": "approved"}

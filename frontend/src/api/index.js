@@ -104,8 +104,10 @@ export const aiApi = {
 // 能力模型 API (F1)
 export const competencyApi = {
   get: (jobId) => api.get(`/screening/jobs/${jobId}/competency`),
-  extract: (jobId) => api.post(`/screening/jobs/${jobId}/competency/extract`),
+  extract: (jobId, jdText) => api.post(`/screening/jobs/${jobId}/competency/extract`, jdText ? { jd_text: jdText } : {}),
   manual: (jobId, flatFields) => api.post(`/screening/jobs/${jobId}/competency/manual`, { flat_fields: flatFields }),
+  saveDraft: (jobId, model) => api.put(`/screening/jobs/${jobId}/competency/save`, { competency_model: model }),
+  approve: (jobId, model) => api.post(`/screening/jobs/${jobId}/competency/approve`, { competency_model: model }),
 }
 
 // HITL API (F1)
@@ -126,6 +128,7 @@ export const skillsApi = {
   merge: (id, mergeIntoId) => api.post(`/skills/${id}/merge`, { merge_into_id: mergeIntoId }),
   delete: (id) => api.delete(`/skills/${id}`),
   categories: () => api.get('/skills/categories'),
+  autoClassify: () => api.post('/skills/auto-classify'),
 }
 
 // Boss API
@@ -138,6 +141,11 @@ export const bossApi = {
 // 健康检查
 export const healthApi = {
   check: () => api.get('/health'),
+}
+
+export const settingsApi = {
+  getScoringWeights: () => api.get('/settings/scoring-weights'),
+  saveScoringWeights: (data) => api.put('/settings/scoring-weights', data),
 }
 
 export default api

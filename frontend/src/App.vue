@@ -27,8 +27,8 @@
         </el-menu-item>
         <el-menu-item index="/hitl">
           <el-icon><View /></el-icon>
-          审核队列
-          <el-badge v-if="hitlPendingCount > 0" :value="hitlPendingCount" class="hitl-badge" />
+          <span>审核队列</span>
+          <span v-if="hitlPendingCount > 0" class="hitl-count">{{ hitlPendingCount }}</span>
         </el-menu-item>
 
         <el-menu-item index="/skills">
@@ -69,8 +69,8 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { hitlApi } from './api'
 import { View, Collection } from '@element-plus/icons-vue'
+import { hitlPendingCount, refreshHitlCount } from './stores/hitlState'
 
 const route = useRoute()
 const router = useRouter()
@@ -92,17 +92,7 @@ function logout() {
 const networkOk = ref(true)
 let healthTimer = null
 
-const hitlPendingCount = ref(0)
 let pollTimer = null
-
-async function refreshPending() {
-  try {
-    const resp = await hitlApi.list({ status: 'pending', limit: 1 })
-    hitlPendingCount.value = resp.total || 0
-  } catch (e) {
-    console.error('refresh pending failed', e)
-  }
-}
 
 const checkHealth = async () => {
   try {
@@ -129,8 +119,8 @@ onMounted(() => {
   checkHealth()
   healthTimer = setInterval(checkHealth, 30000)
   window.addEventListener('beforeunload', beforeUnloadHandler)
-  refreshPending()
-  pollTimer = setInterval(refreshPending, 5 * 60 * 1000)
+  refreshHitlCount()
+  pollTimer = setInterval(refreshHitlCount, 30 * 1000)
 })
 
 onUnmounted(() => {
@@ -167,6 +157,8 @@ html, body, #app { height: 100%; }
 }
 .app-menu .el-menu-item {
   color: rgba(255,255,255,0.65);
+  display: flex;
+  align-items: center;
 }
 .app-menu .el-menu-item:hover,
 .app-menu .el-menu-item.is-active {
@@ -195,8 +187,20 @@ html, body, #app { height: 100%; }
   font-size: 12px;
   flex-shrink: 0;
 }
-.hitl-badge {
-  margin-left: 8px;
+.hitl-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin-left: auto;
+  border-radius: 9px;
+  background: #ff4d4f;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
 }
 .app-main {
   background: #f0f2f5;
