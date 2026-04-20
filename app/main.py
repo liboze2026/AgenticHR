@@ -137,6 +137,23 @@ app.include_router(feishu_bot_router, prefix="/api/feishu", tags=["feishu_bot"])
 from app.core.hitl.router import router as hitl_router
 app.include_router(hitl_router)
 
+# F1 HITL wiring: F1_competency_review approve → apply competency_model to jobs
+from app.core.hitl.service import register_approve_callback as _register_hitl_cb
+from app.modules.screening.competency_service import apply_competency_to_job as _apply_comp
+
+
+def _on_competency_approved(task: dict) -> None:
+    """HITL F1_competency_review approve → 写 jobs.competency_model + 双写扁平字段."""
+    if task["entity_type"] != "job":
+        return
+    payload = task.get("edited_payload") or task.get("payload")
+    if payload is None:
+        return
+    _apply_comp(task["entity_id"], payload)
+
+
+_register_hitl_cb("F1_competency_review", _on_competency_approved)
+
 # Serve Vue frontend static files
 import os
 from pathlib import Path

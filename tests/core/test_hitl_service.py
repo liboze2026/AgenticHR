@@ -107,3 +107,26 @@ def test_approve_triggers_registered_callback(svc, monkeypatch):
 
     assert len(seen) == 1
     assert seen[0]["entity_id"] == 42
+
+
+def test_approve_callback_actually_fires_and_does_not_crash_without_matching_type(svc, monkeypatch):
+    """Safety test: callback with non-'job' entity_type should early-return, not crash."""
+    from app.core.hitl.service import register_approve_callback
+    monkeypatch.setattr("app.core.hitl.service._approve_callbacks", {})
+
+    seen = []
+    def cb(task):
+        if task["entity_type"] == "job":
+            seen.append(task)
+
+    register_approve_callback("F1_competency_review", cb)
+
+    # skill entity type should NOT trigger the callback action
+    tid = svc.create("F1_competency_review", "skill", 99, {})
+    svc.approve(tid, reviewer_id=1)
+    assert len(seen) == 0  # skill entity, didn't match "job" in callback logic
+
+    # job entity type DOES trigger
+    tid2 = svc.create("F1_competency_review", "job", 100, {"hard_skills": []})
+    svc.approve(tid2, reviewer_id=1)
+    assert len(seen) == 1
