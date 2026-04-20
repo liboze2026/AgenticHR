@@ -230,7 +230,9 @@ async function doDelete(row) {
     await skillsApi.delete(row.id)
     ElMessage.success('已删除')
     refresh()
-  } catch {}
+  } catch (e) {
+    if (e !== 'cancel' && e?.type !== 'cancel') ElMessage.error('删除失败: ' + (e.message || e))
+  }
 }
 
 function batchClassify() {
@@ -240,12 +242,14 @@ function batchClassify() {
 
 async function doBatchClassify() {
   if (!batchCategory.value) return
-  for (const s of selected.value) {
-    await skillsApi.update(s.id, { category: batchCategory.value })
+  try {
+    await Promise.all(selected.value.map(s => skillsApi.update(s.id, { category: batchCategory.value })))
+    showBatchDialog.value = false
+    ElMessage.success(`已更新 ${selected.value.length} 条`)
+    refresh()
+  } catch (e) {
+    ElMessage.error('批量更新失败: ' + (e.message || e))
   }
-  showBatchDialog.value = false
-  ElMessage.success(`已更新 ${selected.value.length} 条`)
-  refresh()
 }
 
 onMounted(() => { loadCategories(); refresh() })

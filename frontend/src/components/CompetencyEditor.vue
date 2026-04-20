@@ -335,6 +335,9 @@ async function submitApprove() {
   try {
     if (pendingTaskId.value) {
       await hitlApi.edit(pendingTaskId.value, model.value, 'approved via editor')
+    } else {
+      ElMessage.warning('没有待审任务，请先点"从 JD 抽取"或联系管理员')
+      return
     }
     await loadCompetency()
     ElMessage.success('已发布')

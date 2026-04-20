@@ -89,6 +89,7 @@ async function refresh() {
 }
 
 function gotoJob(row) {
+  // F1: 跳转后需用户手动找到岗位打开编辑 dialog，自动定位待 F2 实现
   router.push({ path: '/jobs', query: { id: row.entity_id, tab: 'competency' } })
 }
 function gotoSkill(row) {
@@ -101,7 +102,9 @@ async function quickApprove(row) {
     await hitlApi.approve(row.id, '快速通过')
     ElMessage.success('已通过')
     refresh()
-  } catch {}
+  } catch (e) {
+    if (e !== 'cancel' && e?.type !== 'cancel') ElMessage.error('操作失败: ' + (e.message || e))
+  }
 }
 
 onMounted(refresh)
