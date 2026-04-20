@@ -14,6 +14,9 @@ class JobCreate(BaseModel):
     required_skills: str = Field(default="", description="逗号分��")
     soft_requirements: str = Field(default="")
     greeting_templates: str = Field(default="", description="竖线分隔多条话术")
+    jd_text: str = Field(default="", description="JD 原文")
+    competency_model: dict | None = Field(default=None, description="能力模型 JSON")
+    competency_model_status: str = Field(default="none")
 
     @model_validator(mode='after')
     def validate_ranges(self):
@@ -36,6 +39,9 @@ class JobUpdate(BaseModel):
     soft_requirements: str | None = None
     greeting_templates: str | None = None
     is_active: bool | None = None
+    jd_text: str | None = None
+    competency_model: dict | None = None
+    competency_model_status: str | None = None
 
     @model_validator(mode='after')
     def validate_ranges(self):
@@ -50,6 +56,7 @@ class JobUpdate(BaseModel):
 
 class JobResponse(BaseModel):
     id: int
+    user_id: int = 0
     title: str
     department: str
     education_min: str
@@ -61,8 +68,11 @@ class JobResponse(BaseModel):
     soft_requirements: str
     greeting_templates: str
     is_active: bool
-    created_at: datetime
-    updated_at: datetime
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    jd_text: str = ""
+    competency_model: dict | None = None
+    competency_model_status: str = "none"
     model_config = {"from_attributes": True}
 
 

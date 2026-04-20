@@ -1,6 +1,6 @@
 """岗位与筛选规则数据模型"""
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Text, Float, Boolean, DateTime, JSON
 
 from app.database import Base
 
@@ -28,3 +28,6 @@ class Job(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+    jd_text = Column(Text, default="", nullable=False)
+    competency_model = Column(JSON, nullable=True)
+    competency_model_status = Column(String(20), default="none", nullable=False)
