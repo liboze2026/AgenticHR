@@ -56,6 +56,10 @@ async def auth_middleware(request: Request, call_next):
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
         return response
+    # 测试环境：允许通过环境变量绕过 JWT 认证
+    import os as _os
+    if _os.environ.get("AGENTICHR_TEST_BYPASS_AUTH") == "1":
+        return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _AUTH_WHITELIST:
         # 优先从 Authorization header 取 token
@@ -136,6 +140,9 @@ app.include_router(feishu_bot_router, prefix="/api/feishu", tags=["feishu_bot"])
 
 from app.core.hitl.router import router as hitl_router
 app.include_router(hitl_router)
+
+from app.core.competency.router import router as skills_router
+app.include_router(skills_router)
 
 # F1 HITL wiring: F1_competency_review approve → apply competency_model to jobs
 from app.core.hitl.service import register_approve_callback as _register_hitl_cb
