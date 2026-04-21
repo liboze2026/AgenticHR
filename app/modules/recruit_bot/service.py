@@ -10,6 +10,13 @@ if TYPE_CHECKING:
     from app.modules.recruit_bot.schemas import ScrapedCandidate
 
 
+def _safe_csv(tags: list[str]) -> str:
+    """Join tags into a CSV; strip embedded commas from each tag so downstream
+    ``str.split(',')`` consumers don't get split mid-tag (e.g. a tag
+    ``"C++, Java"`` would otherwise corrupt the skills column)."""
+    return ",".join(t.replace(",", " ") for t in tags)
+
+
 def _summarize_raw_text(c: "ScrapedCandidate") -> str:
     """拼接所有 scraped 字段为调试 summary."""
     parts = [
@@ -22,9 +29,9 @@ def _summarize_raw_text(c: "ScrapedCandidate") -> str:
         f"学校:{c.school}",
         f"专业:{c.major}",
         f"意向:{c.intended_job}",
-        f"技能:{','.join(c.skill_tags)}",
-        f"院校tag:{','.join(c.school_tier_tags)}",
-        f"排名tag:{','.join(c.ranking_tags)}",
+        f"技能:{_safe_csv(c.skill_tags)}",
+        f"院校tag:{_safe_csv(c.school_tier_tags)}",
+        f"排名tag:{_safe_csv(c.ranking_tags)}",
         f"期望薪资:{c.expected_salary}",
         f"活跃:{c.active_status}",
         f"推荐理由:{c.recommendation_reason}",
@@ -39,6 +46,13 @@ def upsert_resume_by_boss_id(
     """按 (user_id, boss_id) 查找或新建 Resume 行.
 
     已存在时更新非状态字段（保留 status / greet_status / greeted_at / ai_* 不动）.
+
+    **Empty-string semantic:** ``candidate.education == ""``, ``work_years == 0`` 等
+    在 update 分支视为 "scraper 本次未观察到该字段, 保留既有值". 这是 Boss 页面
+    DOM 抓取的自然模式 (缺字段 → 空默认), 避免页面偶发渲染失败把已有值清空.
+    如需主动清字段, 不得走 upsert — 必须 DELETE+INSERT 或单独的 dedicated
+    endpoint. 在 ``ScrapedCandidate`` schema 迁移为 None-sentinel 之前, 保留此
+    语义; 任何语义变更应当作独立任务, 不能在 T2 范围内改.
     """
     existing = (
         db.query(Resume)
@@ -46,7 +60,7 @@ def upsert_resume_by_boss_id(
         .first()
     )
     now = datetime.now(timezone.utc)
-    skills_csv = ",".join(candidate.skill_tags)
+    skills_csv = _safe_csv(candidate.skill_tags)
     summary = _summarize_raw_text(candidate)
     raw_text = (
         f"{summary} || 原文:{candidate.raw_text}" if candidate.raw_text else summary
