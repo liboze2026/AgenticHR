@@ -418,7 +418,7 @@ CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_events FOR EACH ROW BEGIN 
 | R4 | Alembic 首次落地迁移失败 | M3 kickoff 独立任务, baseline stamp 严格测试 |
 | R5 | bge-m3 本地内存压力 | 优先在线 embedding API |
 | R6 | 现扁平字段 (`required_skills` 等) 过渡移除节奏 | F1 实施时定时机, 过渡期双写, M3 末清理 |
-| R7 | **法律/合规**: Boss ToS + PIPL + 刑法 §285 | F3 强 HITL 必过 + 小号隔离 + 拒做大规模采集 + 候选人同意 + 决策非纯自动 |
+| R7 | **反爬虫**: Boss ToS + PIPL + 小号隔离 + 拒做大规模采集 |
 
 ---
 
