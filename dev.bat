@@ -50,14 +50,45 @@ start "AgenticHR Backend :%BACKEND_PORT%" cmd /k ""%PY%" -m uvicorn app.main:app
 echo [4/4] Starting Frontend on http://localhost:%FRONTEND_PORT% ...
 start "AgenticHR Frontend :%FRONTEND_PORT%" cmd /k "cd /d "%ROOT%frontend" && npm run dev"
 
-echo Waiting for frontend to listen ...
-set /a tries=0
-:wait_loop
-set /a tries+=1
-if %tries% GTR 30 goto open_browser
+echo Waiting for Backend (%BACKEND_PORT%) ...
+set /a btries=0
+:wait_backend
+set /a btries+=1
+if %btries% GTR 60 (
+    echo [WARN] Backend not ready after 60s, opening browser anyway.
+    goto wait_frontend
+)
+timeout /t 1 /nobreak >nul
+netstat -ano | findstr ":%BACKEND_PORT% " | findstr "LISTENING" >nul 2>&1
+if errorlevel 1 goto wait_backend
+echo        Backend port LISTENING (after %btries%s)
+
+echo Probing Backend health ...
+set /a htries=0
+:wait_health
+set /a htries+=1
+if %htries% GTR 30 (
+    echo [WARN] Backend health probe timeout, opening browser anyway.
+    goto wait_frontend
+)
+timeout /t 1 /nobreak >nul
+"%PY%" -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:%BACKEND_PORT%/openapi.json',timeout=2).status==200 else 1)" >nul 2>&1
+if errorlevel 1 goto wait_health
+echo        Backend healthy (after %htries%s)
+
+:wait_frontend
+echo Waiting for Frontend (%FRONTEND_PORT%) ...
+set /a ftries=0
+:wait_frontend_loop
+set /a ftries+=1
+if %ftries% GTR 30 (
+    echo [WARN] Frontend not ready after 30s, opening browser anyway.
+    goto open_browser
+)
 timeout /t 1 /nobreak >nul
 netstat -ano | findstr ":%FRONTEND_PORT% " | findstr "LISTENING" >nul 2>&1
-if errorlevel 1 goto wait_loop
+if errorlevel 1 goto wait_frontend_loop
+echo        Frontend port LISTENING (after %ftries%s)
 
 :open_browser
 start "" http://localhost:%FRONTEND_PORT%
