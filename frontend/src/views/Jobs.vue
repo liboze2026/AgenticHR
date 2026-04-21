@@ -183,14 +183,18 @@
     </el-dialog>
 
     <!-- 筛选结果弹窗 -->
-    <el-dialog v-model="showScreenResult" title="筛选结果" width="700px">
+    <el-dialog v-model="showScreenResult" title="硬性条件筛选结果（仅供参考，不修改简历状态）" width="700px">
       <div v-if="screenResult">
-        <p style="margin-bottom: 12px">共 {{ screenResult.total }} 份简历，通过 {{ screenResult.passed }}，淘汰 {{ screenResult.rejected }}</p>
+        <p style="margin-bottom: 4px">共 {{ screenResult.total }} 份简历，通过 {{ screenResult.passed }}，未通过 {{ screenResult.rejected }}</p>
+        <p style="margin-bottom: 12px; color: #909399; font-size: 12px">
+          此筛选只是按本岗位的硬性条件做基础匹配；候选人的全局"在库 / 已归档"状态不会变。
+          详细评分进岗位详情的"匹配候选人"Tab 看 F2 AI 评分。
+        </p>
         <el-table :data="screenResult.results" max-height="400">
           <el-table-column prop="resume_name" label="姓名" width="120" />
           <el-table-column label="结果" width="80">
             <template #default="{ row }">
-              <el-tag :type="row.passed ? 'success' : 'danger'" size="small">{{ row.passed ? '通过' : '淘汰' }}</el-tag>
+              <el-tag :type="row.passed ? 'success' : 'warning'" size="small">{{ row.passed ? '通过' : '未通过' }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="原因">
@@ -396,7 +400,7 @@ async function screenResumes(jobId) {
     const result = await jobApi.screen(jobId)
     screenResult.value = result
     showScreenResult.value = true
-    ElMessage.success(`筛选完成：通过 ${result.passed}，淘汰 ${result.rejected}`)
+    ElMessage.success(`筛选完成：通过 ${result.passed}，未通过 ${result.rejected}（简历状态未变更）`)
   } catch (e) {
     ElMessage.error('筛选失败')
   }

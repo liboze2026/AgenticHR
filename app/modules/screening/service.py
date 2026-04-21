@@ -54,8 +54,7 @@ class ScreeningService:
         if not job:
             return {"job_id": job_id, "total": 0, "passed": 0, "rejected": 0, "results": []}
 
-        # 默认候选人都是 passed，筛选对所有未淘汰的候选人生效；
-        # 不合格的会被改成 rejected，合格的保持 passed
+        # 排除已归档（archived）的简历，per-job 状态由 matching_results 管理
         query = self.db.query(Resume).filter(Resume.status != "rejected")
         if resume_ids:
             query = query.filter(Resume.id.in_(resume_ids))
@@ -126,11 +125,8 @@ class ScreeningService:
             is_passed = len(reject_reasons) == 0
             if is_passed:
                 passed_count += 1
-                resume.status = "passed"
             else:
                 rejected_count += 1
-                resume.status = "rejected"
-                resume.reject_reason = "; ".join(reject_reasons)
 
             results.append({
                 "resume_id": resume.id,
@@ -139,7 +135,6 @@ class ScreeningService:
                 "reject_reasons": reject_reasons,
             })
 
-        self.db.commit()
         return {
             "job_id": job_id,
             "total": len(resumes),

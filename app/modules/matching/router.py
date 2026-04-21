@@ -64,7 +64,8 @@ def list_results(
     if raw_rows:
         live_resume_ids = {
             r.id for r in db.query(Resume.id).filter(
-                Resume.id.in_({m.resume_id for m in raw_rows})
+                Resume.id.in_({m.resume_id for m in raw_rows}),
+                Resume.status != "rejected",  # 排除已归档候选人
             ).all()
         }
         live_job_ids = {

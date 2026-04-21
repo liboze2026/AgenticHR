@@ -44,17 +44,25 @@ def test_screen_resumes_api(client):
     })
     job_id = job_resp.json()["id"]
 
-    client.post("/api/resumes/", json={
-        "name": "合格候选人", "phone": "10000000101",
+    r1 = client.post("/api/resumes/", json={
+        "name": "合格候选人", "phone": "13900000101",
         "education": "本科", "work_years": 3, "skills": "Python,Django",
     })
-    client.post("/api/resumes/", json={
-        "name": "不合格候选人", "phone": "10000000102",
+    r2 = client.post("/api/resumes/", json={
+        "name": "不合格候选人", "phone": "13900000102",
         "education": "大专", "work_years": 1, "skills": "HTML",
     })
+    resume1_id = r1.json()["id"]
+    resume2_id = r2.json()["id"]
 
     response = client.post(f"/api/screening/jobs/{job_id}/screen")
     assert response.status_code == 200
     data = response.json()
     assert data["passed"] == 1
     assert data["rejected"] == 1
+
+    # 核心断言：screening 不得修改简历的全局 status（per-job 状态由 matching_results 管理）
+    r1_after = client.get(f"/api/resumes/{resume1_id}").json()
+    r2_after = client.get(f"/api/resumes/{resume2_id}").json()
+    assert r1_after["status"] == "passed", f"合格候选人 status 被意外修改为 {r1_after['status']}"
+    assert r2_after["status"] == "passed", f"不合格候选人 status 被意外修改为 {r2_after['status']}"

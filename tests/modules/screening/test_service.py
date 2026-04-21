@@ -85,3 +85,47 @@ def test_screen_combined(db_session):
     ))
     result = service.screen_resumes(job.id)
     assert result["passed"] == 1
+
+
+def test_screen_does_not_mutate_resume_status(db_session):
+    """screening 是只读操作：不得修改简历的全局 status（per-job 状态由 matching_results 管理）"""
+    from app.modules.resume.models import Resume
+    _create_test_resumes(db_session)
+    service = ScreeningService(db_session)
+
+    # 记录筛选前的所有状态
+    before = {r.id: r.status for r in db_session.query(Resume).all()}
+
+    job = service.create_job(JobCreate(
+        title="只读筛选测试岗", education_min="本科",
+        work_years_min=3, required_skills="Python",
+    ))
+    result = service.screen_resumes(job.id)
+    assert result["passed"] == 1
+    assert result["rejected"] == 2
+
+    # 筛选后状态必须与筛选前完全一致
+    db_session.expire_all()
+    after = {r.id: r.status for r in db_session.query(Resume).all()}
+    assert before == after, f"screening 修改了简历状态：{before} → {after}"
+
+
+def test_multi_job_screening_isolation(db_session):
+    """Job A 的筛选结果不影响 Job B 可见的候选人（核心多岗位 bug 回归）"""
+    _create_test_resumes(db_session)
+    service = ScreeningService(db_session)
+
+    # Job A：要求 Python 技能（候选人C 没有，应该被排除）
+    job_a = service.create_job(JobCreate(title="岗位A", required_skills="Python"))
+    result_a = service.screen_resumes(job_a.id)
+    assert result_a["passed"] == 2
+    assert result_a["rejected"] == 1
+
+    # Job B：要求 Java 技能（候选人A、B 没有，应该被排除）
+    # 如果 Job A 的筛选把候选人C 标记为 rejected，这里就只有 0 人了（旧 bug）
+    job_b = service.create_job(JobCreate(title="岗位B", required_skills="Java"))
+    result_b = service.screen_resumes(job_b.id)
+    assert result_b["passed"] == 1, (
+        f"多岗位隔离 bug：Job A 筛选后 Job B 只看到 {result_b['passed']} 人，应为 1 人"
+    )
+    assert result_b["rejected"] == 2
