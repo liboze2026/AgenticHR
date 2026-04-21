@@ -139,12 +139,18 @@ async def enhance_evidence_with_llm(
         _logger.warning(f"LLM evidence unexpected error: {e}")
         return base_evidence
 
-    # 覆盖 text, 保留 source/offset
+    # 覆盖 text, 保留 source/offset. Non-string values are coerced to string to
+    # prevent downstream Pydantic validation errors (LLM occasionally returns
+    # numbers or nulls for text fields).
     for dim, texts in (llm_out or {}).items():
         if dim not in base_evidence:
             continue
         for i, text in enumerate(texts or []):
             if i < len(base_evidence[dim]):
+                if text is None:
+                    continue  # keep deterministic text
+                if not isinstance(text, str):
+                    text = str(text)
                 base_evidence[dim][i]["text"] = text
 
     return base_evidence

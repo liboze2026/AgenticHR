@@ -137,24 +137,29 @@ async def test_llm_disabled_via_setting_no_call(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_returns_wrong_types_crashes_pydantic(db_session):
-    """已知问题: LLM 返回 int 代替 str 时, enhance_evidence_with_llm 不校验类型,
-    导致 MatchingResultResponse 反序列化时 Pydantic 报 ValidationError.
-
-    这是 F2 的一个真实 bug: enhance_evidence_with_llm 缺少类型校验.
-    当前测试记录此行为, 期望未来修复后本测试应改为断言 result.total_score >= 0.
+async def test_llm_returns_wrong_types_coerced_to_string(db_session):
+    """LLM 返回 int/bool 代替 str 时, enhance_evidence_with_llm 应将其强转为 string.
+    None 值应被跳过以保留 deterministic 文本.
+    这修复了 F2 的一个真实 bug: 缺少类型校验导致 Pydantic ValidationError.
     """
     job = _mk_job(db_session)
     resume = _mk_resume(db_session)
 
-    # 返回非 string 列表（int）
-    llm_out = {"skill": [42, 99], "experience": [True]}
+    # 返回非 string 列表：skill 维度有 int + None，experience 维度有 bool
+    llm_out = {"skill": [42, None], "experience": [True]}
 
     with HIGH_VEC, patch(
         "app.modules.matching.scorers.evidence._call_llm",
         new=AsyncMock(return_value=llm_out),
     ):
-        # 已知 bug: Pydantic ValidationError 因 text=int 崩溃
-        import pydantic
-        with pytest.raises(pydantic.ValidationError):
-            await MatchingService(db_session).score_pair(resume.id, job.id)
+        result = await MatchingService(db_session).score_pair(resume.id, job.id)
+
+    # 打分成功（不崩溃）
+    assert result.total_score >= 0
+    # int 被强转为 string "42"
+    assert result.evidence["skill"][0].text == "42"
+    # None 被跳过 — 保留 deterministic 文本（第二条证据保留）
+    if len(result.evidence["skill"]) > 1:
+        assert result.evidence["skill"][1].text.startswith("匹配到")
+    # bool 被强转为 string "True"
+    assert result.evidence["experience"][0].text == "True"
