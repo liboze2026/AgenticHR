@@ -152,6 +152,9 @@ app.include_router(skills_router)
 from app.core.settings.router import router as settings_router
 app.include_router(settings_router)
 
+from app.modules.recruit_bot.router import router as recruit_router
+app.include_router(recruit_router)
+
 # F1 HITL wiring: F1_competency_review approve → apply competency_model to jobs
 from app.core.hitl.service import register_approve_callback as _register_hitl_cb
 from app.modules.screening.competency_service import apply_competency_to_job as _apply_comp
