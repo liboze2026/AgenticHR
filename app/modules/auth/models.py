@@ -13,3 +13,4 @@ class User(Base):
     display_name = Column(String(100), default="")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    daily_cap = Column(Integer, default=1000, nullable=False)

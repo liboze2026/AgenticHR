@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     boss_delay_min: float = 3.0
     boss_delay_max: float = 8.0
 
+    # F3 Boss 推荐牛人自动打招呼
+    f3_default_greet_threshold: int = 60
+    f3_default_daily_cap: int = 1000
+    f3_ai_parse_enabled: bool = False
+
     # 简历存储路径
     resume_storage_path: str = "./data/resumes"
 
