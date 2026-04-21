@@ -500,8 +500,33 @@ async function simulateHumanClick(el) {
 }
 
 /**
+ * 取推荐牛人 iframe 的 contentDocument. 推荐页结构:
+ *   top frame: /web/chat/recommend (空壳)
+ *   iframe[src*=/web/frame/recommend/]: 真正的卡片 + 岗位下拉所在处
+ * 2026-04-21 live 探查证实.
+ */
+function _getRecommendDoc() {
+  for (const f of document.querySelectorAll('iframe')) {
+    try {
+      const src = f.src || '';
+      if (!src.includes(F3_SELECTORS.RECOMMEND_IFRAME_PATH)) continue;
+      const doc = f.contentDocument;
+      if (doc && doc.body) return doc;
+    } catch (_) { /* cross-origin fallback */ }
+  }
+  // 回退: 任一 same-origin 且含 '打招呼' 文本的 iframe
+  for (const f of document.querySelectorAll('iframe')) {
+    try {
+      const doc = f.contentDocument;
+      if (doc && doc.body && doc.body.innerText.includes('打招呼')) return doc;
+    } catch (_) {}
+  }
+  return null;
+}
+
+/**
  * 检测风控告警. 命中返 true + halt 主循环.
- * spec §7.3.
+ * spec §7.3. 扫描 top frame 和推荐 iframe 两个 document.
  */
 function detectRiskControl() {
   const riskSelectors = [
@@ -510,20 +535,24 @@ function detectRiskControl() {
     F3_SELECTORS.RISK_ALERT,
     F3_SELECTORS.PAID_GREET_DIALOG,
   ];
-  for (const sel of riskSelectors) {
-    try {
-      const el = document.querySelector(sel);
-      if (el && el.offsetParent !== null) {
-        return { detected: true, source: `selector:${sel}` };
-      }
-    } catch (e) {
-      // 无效 selector (如 CARD_GREET_BTN 的 :contains fallback), 跳过
+  const docs = [document];
+  const iframeDoc = _getRecommendDoc();
+  if (iframeDoc) docs.push(iframeDoc);
+
+  for (const doc of docs) {
+    for (const sel of riskSelectors) {
+      try {
+        const el = doc.querySelector(sel);
+        if (el && el.offsetParent !== null) {
+          return { detected: true, source: `selector:${sel}` };
+        }
+      } catch (_) {}
     }
-  }
-  const bodyText = document.body?.innerText || '';
-  for (const pattern of F3_SELECTORS.RISK_TEXT_PATTERNS) {
-    if (bodyText.includes(pattern)) {
-      return { detected: true, source: `text:${pattern}` };
+    const bodyText = doc.body?.innerText || '';
+    for (const pattern of F3_SELECTORS.RISK_TEXT_PATTERNS) {
+      if (bodyText.includes(pattern)) {
+        return { detected: true, source: `text:${pattern}` };
+      }
     }
   }
   return { detected: false };
@@ -536,34 +565,47 @@ function detectRiskControl() {
 function scrapeRecommendCard(cardEl) {
   if (!cardEl) return null;
 
-  const bossId = cardEl.getAttribute('data-id')
-    || cardEl.getAttribute('data-geek-id')
-    || (cardEl.querySelector('a[href*="geek"]')?.href?.match(/geek=([^&]+)/)?.[1])
+  // boss_id 在 .card-inner 上 (2026-04-21 live 校准)
+  const innerEl = cardEl.querySelector(F3_SELECTORS.CARD_INNER) || cardEl;
+  const bossId = innerEl.getAttribute('data-id')
+    || cardEl.getAttribute('data-id')
     || '';
   if (!bossId) return null;
 
   const name = cardEl.querySelector(F3_SELECTORS.CARD_NAME)?.textContent?.trim() || '';
   if (!name) return null;
 
-  const baseText = cardEl.querySelector(F3_SELECTORS.CARD_BASE_INFO)?.textContent || '';
+  // base-info: "22岁 27年应届生 硕士 刚刚活跃"
+  const baseText = (cardEl.querySelector(F3_SELECTORS.CARD_BASE_INFO)?.textContent || '')
+    .replace(/\s+/g, ' ').trim();
   const age = parseInt(baseText.match(/(\d+)岁/)?.[1] || '', 10) || null;
   const gradMatch = baseText.match(/(\d{2})年(应届生|毕业)/);
   const gradYear = gradMatch ? (2000 + parseInt(gradMatch[1], 10)) : null;
   const eduMatch = baseText.match(/博士|硕士|研究生|本科|学士|大专|专科|高中|中专|MBA/);
   const education = normEdu(eduMatch?.[0] || '');
   const activeStatus =
-    (baseText.match(/刚刚活跃|今日活跃|在线|\d+日内活跃/) || [''])[0];
+    (baseText.match(/刚刚活跃|今日活跃|在线|\d+日内活跃|\d+小时前活跃/) || [''])[0];
 
-  const focusText = cardEl.querySelector(F3_SELECTORS.CARD_RECENT_FOCUS)?.textContent || '';
-  const intendedJob = (focusText.match(/·\s*([^·]+?)(\s*\(|\s*·|$)/) || [,''])[1].trim();
+  // expect-wrap .content: "北京 全栈工程师" — 空格分 (无 · 分隔). 末 token 视为岗位.
+  const focusText = (cardEl.querySelector(F3_SELECTORS.CARD_RECENT_FOCUS)?.textContent || '')
+    .replace(/\s+/g, ' ').trim();
+  const focusTokens = focusText.split(' ').filter(Boolean);
+  const intendedJob = focusTokens.length > 0 ? focusTokens[focusTokens.length - 1] : '';
 
-  const eduRow = cardEl.querySelector(F3_SELECTORS.CARD_EDUCATION_ROW)?.textContent || '';
-  const eduParts = eduRow.replace(/^学历/, '').split('·').map(s => s.trim()).filter(Boolean);
+  // edu-wrap .content: "北京交通大学 软件工程 硕士" — 空格分 (首=学校 / 中=专业 / 末=学位)
+  const eduRow = (cardEl.querySelector(F3_SELECTORS.CARD_EDUCATION_ROW)?.textContent || '')
+    .replace(/\s+/g, ' ').trim();
+  const eduParts = eduRow.split(' ').filter(Boolean);
   const school = eduParts[0] || '';
-  const major = eduParts[1] || '';
+  const major = eduParts.length >= 3 ? eduParts[1] : (eduParts.length === 2 ? '' : (eduParts[1] || ''));
 
-  const workRow = cardEl.querySelector(F3_SELECTORS.CARD_WORK_ROW)?.textContent?.trim() || '';
-  const latestWorkBrief = workRow === '未填写工作经历' ? '' : workRow;
+  // col-3 工作经历: 有则 timeline-wrap 里 "2024.09 2024.11 公司 岗位"; 无则显示 "未填写工作经历"
+  const timelineEl = cardEl.querySelector(F3_SELECTORS.CARD_WORK_ROW_TIMELINE);
+  const col3Text = (cardEl.querySelector(F3_SELECTORS.CARD_WORK_ROW)?.textContent || '')
+    .replace(/\s+/g, ' ').trim();
+  const latestWorkBrief = timelineEl
+    ? (timelineEl.textContent || '').replace(/\s+/g, ' ').trim()
+    : (col3Text === '未填写工作经历' ? '' : col3Text);
 
   const workYears = parseWorkYearsFromBrief(latestWorkBrief);
 
@@ -575,10 +617,16 @@ function scrapeRecommendCard(cardEl) {
   tagEls.forEach(t => {
     const txt = t.textContent.trim();
     if (!txt) return;
-    if (/^\d+院校$|^985$|^211$|^双一流$/.test(txt)) school_tier_tags.push(txt);
-    else if (/专业前\d+%/.test(txt)) ranking_tags.push(txt);
-    else if (/来自相似职位|推荐理由/.test(txt)) recommendation_reason = txt;
-    else skill_tags.push(txt);
+    // .tag-item.highlight = 推荐理由 (live 校准)
+    if (t.classList?.contains('highlight') || /来自相似职位|推荐理由/.test(txt)) {
+      recommendation_reason = txt;
+    } else if (/^\d+院校$|^985$|^211$|^双一流$/.test(txt)) {
+      school_tier_tags.push(txt);
+    } else if (/专业前\d+%/.test(txt)) {
+      ranking_tags.push(txt);
+    } else {
+      skill_tags.push(txt);
+    }
   });
 
   const expected_salary = cardEl.querySelector(F3_SELECTORS.CARD_SALARY)?.textContent?.trim() || '';
@@ -598,7 +646,8 @@ function scrapeRecommendCard(cardEl) {
 
 function parseWorkYearsFromBrief(brief) {
   if (!brief || brief === '未填写工作经历') return 0;
-  const m = brief.match(/(\d{4})\.(\d{1,2})\s*-\s*(\d{4})\.(\d{1,2})/);
+  // 两种格式: "2024.09 - 2024.11 公司 岗位" (带 hyphen) 或 "2024.09 2024.11 公司 岗位" (无 hyphen)
+  const m = brief.match(/(\d{4})\.(\d{1,2})\s*-?\s*(\d{4})\.(\d{1,2})/);
   if (m) {
     const start = parseInt(m[1], 10) * 12 + parseInt(m[2], 10);
     const end = parseInt(m[3], 10) * 12 + parseInt(m[4], 10);
@@ -608,10 +657,12 @@ function parseWorkYearsFromBrief(brief) {
 }
 
 function getBossTopJobTitle() {
-  const el = document.querySelector(F3_SELECTORS.TOP_JOB_TEXT);
+  // 岗位下拉在 iframe 里 (2026-04-21 live 校准), 非 top frame
+  const doc = _getRecommendDoc() || document;
+  const el = doc.querySelector(F3_SELECTORS.TOP_JOB_TEXT);
   if (!el) return '';
-  const full = el.textContent.trim();
-  // "全栈工程师_北京 400-500元/天" → 取 _ 前
+  const full = (el.textContent || '').replace(/\s+/g, ' ').trim();
+  // "全栈工程师 _ 北京  400-500元/天" → 取 _ 前
   return full.split('_')[0].split('(')[0].trim();
 }
 
@@ -665,11 +716,19 @@ async function autoGreetRecommend({ jobId, serverUrl, authToken }) {
         };
       }
 
-      const cards = Array.from(document.querySelectorAll(F3_SELECTORS.CARD_ITEM));
+      // 卡片全在 iframe 里 (2026-04-21 live 校准)
+      const recDoc = _getRecommendDoc();
+      if (!recDoc) {
+        _setRunning(false);
+        return { success: false, message: '未找到推荐牛人 iframe, 请刷新页面', summary: stats, log: LOG };
+      }
+      const cards = Array.from(recDoc.querySelectorAll(F3_SELECTORS.CARD_ITEM));
       if (idx >= cards.length) {
-        window.scrollTo(0, document.body.scrollHeight);
+        // 滚动在 iframe 的 scroll 容器里, 不是 top window
+        const scrollable = recDoc.querySelector('.list-body') || recDoc.scrollingElement || recDoc.body;
+        scrollable.scrollTop = scrollable.scrollHeight;
         await sleep(2000);
-        const newCards = Array.from(document.querySelectorAll(F3_SELECTORS.CARD_ITEM));
+        const newCards = Array.from(recDoc.querySelectorAll(F3_SELECTORS.CARD_ITEM));
         if (newCards.length === cards.length) {
           log(`列表到底. 处理完 ${idx} 人`);
           break;
@@ -837,22 +896,14 @@ function stringSimilarity(a, b) {
 }
 
 /**
- * 在 card 里找"打招呼"按钮. F3_SELECTORS.CARD_GREET_BTN 含 :contains 非法 CSS,
- * 拆成 valid-CSS 部分 + textContent 扫描两段.
+ * 在 card 里找"打招呼"按钮. 2026-04-21 live 校准: 选择器 "button.btn.btn-greet" valid.
+ * 保留 textContent fallback 防未来 DOM 变.
  */
 function findGreetButtonInCard(card) {
-  // 先尝试 valid CSS: 剥离 `:contains(...)` 部分
-  const rawSel = F3_SELECTORS.CARD_GREET_BTN;
-  const validParts = rawSel.split(',')
-    .map(s => s.trim())
-    .filter(s => !s.includes(':contains('));
-  for (const sel of validParts) {
-    try {
-      const el = card.querySelector(sel);
-      if (el && el.offsetParent !== null) return el;
-    } catch {}
-  }
-  // 降级: 扫所有 button, textContent 含"打招呼"
+  const primary = card.querySelector(F3_SELECTORS.CARD_GREET_BTN);
+  if (primary && primary.offsetParent !== null) return primary;
+
+  // fallback: 扫 button/.btn-greet 任一含 "打招呼" 文本且可见
   const btns = card.querySelectorAll('button, [role="button"], .btn-greet');
   for (const b of btns) {
     if ((b.textContent || '').includes('打招呼') && b.offsetParent !== null) {
