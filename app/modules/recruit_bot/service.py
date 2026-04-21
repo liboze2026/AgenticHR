@@ -2,6 +2,7 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.resume.models import Resume
@@ -98,10 +99,24 @@ def upsert_resume_by_boss_id(
         created_at=now,
         updated_at=now,
     )
-    db.add(r)
-    db.commit()
-    db.refresh(r)
-    return r
+    try:
+        db.add(r)
+        db.commit()
+        db.refresh(r)
+        return r
+    except IntegrityError:
+        # Race: 另一路并发 writer 先插入了相同 (user_id, boss_id).
+        # UNIQUE 索引触发 IntegrityError → rollback 并回查获胜行返回.
+        db.rollback()
+        winner = (
+            db.query(Resume)
+            .filter(Resume.user_id == user_id, Resume.boss_id == candidate.boss_id)
+            .first()
+        )
+        if winner is None:
+            # 若 IntegrityError 但没查到行 (不应发生), 抛出以暴露问题.
+            raise
+        return winner
 
 
 import logging

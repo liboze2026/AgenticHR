@@ -816,15 +816,24 @@ function _setStats(stats) {
 
 function stringSimilarity(a, b) {
   if (!a || !b) return 0;
-  const la = a.length, lb = b.length;
-  if (la === 0 || lb === 0) return 0;
-  const short = la < lb ? a : b;
-  const long_ = la < lb ? b : a;
-  let matches = 0;
-  for (const ch of short) {
-    if (long_.includes(ch)) matches++;
-  }
-  return matches / Math.max(la, lb);
+  // Chinese-friendly: use character bigrams + unigrams, compute Jaccard
+  const tokens = s => {
+    const set = new Set();
+    const t = s.trim().toLowerCase();
+    if (t.length === 0) return set;
+    if (t.length === 1) { set.add(t); return set; }
+    for (let i = 0; i < t.length - 1; i++) {
+      set.add(t.slice(i, i + 2));  // bigram
+    }
+    for (const ch of t) set.add(ch);  // unigram for robustness
+    return set;
+  };
+  const A = tokens(a), B = tokens(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
 }
 
 /**

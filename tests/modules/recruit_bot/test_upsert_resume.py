@@ -72,3 +72,66 @@ def test_upsert_raw_text_includes_all_fields(db):
     r = upsert_resume_by_boss_id(db, user_id=1, candidate=c)
     assert "Python" in r.raw_text
     assert "张三" in r.raw_text or "后端" in r.raw_text
+
+
+def test_upsert_catches_integrity_error_and_returns_existing(db, monkeypatch):
+    """并发 race: 首轮 SELECT 漏看对手, INSERT 触发 UNIQUE → service 捕 IntegrityError,
+    rollback, 重新 SELECT, 返回对手插入的获胜行. 该测试证明 try/except 分支有效."""
+    from app.modules.recruit_bot import service as svc
+    from app.modules.resume.models import Resume
+
+    # 获胜行: 模拟另一并发 writer 已提交的插入
+    winner = Resume(
+        user_id=1, name="race_winner", boss_id="race_boss",
+        source="boss_zhipin", greet_status="none",
+    )
+    db.add(winner)
+    db.commit()
+    winner_id = winner.id
+
+    cand = _mk_candidate(boss_id="race_boss", name="race_loser")
+
+    # 拦截首个针对 Resume 的 SELECT, 强制返回 None 以走 INSERT 分支.
+    # 这模拟了 "两路并发 reader 都没看到对方" 的 race 窗口.
+    real_query = db.query
+    call_n = {"c": 0}
+
+    def _query_patch(*args, **kwargs):
+        q = real_query(*args, **kwargs)
+        if (
+            call_n["c"] == 0
+            and args
+            and getattr(args[0], "__name__", "") == "Resume"
+        ):
+            call_n["c"] += 1
+
+            class _Fake:
+                def filter(self, *a, **kw):
+                    return self
+
+                def first(self):
+                    return None
+
+            return _Fake()
+        return q
+
+    monkeypatch.setattr(db, "query", _query_patch)
+
+    # SELECT 返 None → INSERT → UNIQUE 触发 IntegrityError →
+    # rollback → 二次 SELECT 找到 winner → 返回 winner.
+    r = svc.upsert_resume_by_boss_id(db, user_id=1, candidate=cand)
+    assert r.id == winner_id
+    assert r.name == "race_winner"  # 未被 loser 覆盖
+
+
+def test_upsert_source_has_integrity_error_handler():
+    """静态保证: upsert_resume_by_boss_id 函数源码含 IntegrityError + rollback.
+
+    防止 refactor 意外把 race-catch 分支删掉 (或改成只有 try/except 外层).
+    """
+    import inspect
+    from app.modules.recruit_bot.service import upsert_resume_by_boss_id
+
+    src = inspect.getsource(upsert_resume_by_boss_id)
+    assert "IntegrityError" in src, "upsert 必须 catch IntegrityError 以处理并发 race"
+    assert "rollback" in src.lower(), "catch 分支必须 rollback"
