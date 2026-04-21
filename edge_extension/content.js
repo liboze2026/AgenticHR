@@ -471,3 +471,141 @@ function waitForSel(sel, timeout = 3000) {
 }
 function parseYr(t) { if (!t) return 0; if (t.includes('应届')) return 0; const m = t.match(/(\d+)\s*年/); return m ? parseInt(m[1]) : 0; }
 function normEdu(t) { if (!t) return ''; for (const [k,v] of Object.entries({'博士':'博士','硕士':'硕士','研究生':'硕士','本科':'本科','学士':'本科','大专':'大专','专科':'大专'})) if (t.includes(k)) return v; return t; }
+
+// ════════════════════════════════════════════════════════════════════
+// F3 工具 — 反检测人类式操作 (spec §7.2, §7.3)
+// ════════════════════════════════════════════════════════════════════
+
+/**
+ * 人类式点击: scrollIntoView + mouseover → mousedown → mouseup → click
+ * spec §7.2 反检测要求. 不直接 .click() 因为 isTrusted=false 更易被检出.
+ */
+async function simulateHumanClick(el) {
+  if (!el) throw new Error('simulateHumanClick: element is null');
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  await sleep(300);
+
+  const opts = { bubbles: true, cancelable: true, view: window, button: 0 };
+  el.dispatchEvent(new MouseEvent('mouseover', opts));
+  await sleep(150 + Math.random() * 100);
+  el.dispatchEvent(new MouseEvent('mousedown', opts));
+  await sleep(50 + Math.random() * 50);
+  el.dispatchEvent(new MouseEvent('mouseup', opts));
+  el.dispatchEvent(new MouseEvent('click', opts));
+}
+
+/**
+ * 检测风控告警. 命中返 true + halt 主循环.
+ * spec §7.3.
+ */
+function detectRiskControl() {
+  const riskSelectors = [
+    F3_SELECTORS.RISK_CAPTCHA,
+    F3_SELECTORS.RISK_VERIFY,
+    F3_SELECTORS.RISK_ALERT,
+    F3_SELECTORS.PAID_GREET_DIALOG,
+  ];
+  for (const sel of riskSelectors) {
+    try {
+      const el = document.querySelector(sel);
+      if (el && el.offsetParent !== null) {
+        return { detected: true, source: `selector:${sel}` };
+      }
+    } catch (e) {
+      // 无效 selector (如 CARD_GREET_BTN 的 :contains fallback), 跳过
+    }
+  }
+  const bodyText = document.body?.innerText || '';
+  for (const pattern of F3_SELECTORS.RISK_TEXT_PATTERNS) {
+    if (bodyText.includes(pattern)) {
+      return { detected: true, source: `text:${pattern}` };
+    }
+  }
+  return { detected: false };
+}
+
+/**
+ * 从 Boss 推荐牛人 list 卡片抠字段. LIST-only (spec §5.2).
+ * 返回 ScrapedCandidate-shaped plain object 或 null (信号 scrape 失败).
+ */
+function scrapeRecommendCard(cardEl) {
+  if (!cardEl) return null;
+
+  const bossId = cardEl.getAttribute('data-id')
+    || cardEl.getAttribute('data-geek-id')
+    || (cardEl.querySelector('a[href*="geek"]')?.href?.match(/geek=([^&]+)/)?.[1])
+    || '';
+  if (!bossId) return null;
+
+  const name = cardEl.querySelector(F3_SELECTORS.CARD_NAME)?.textContent?.trim() || '';
+  if (!name) return null;
+
+  const baseText = cardEl.querySelector(F3_SELECTORS.CARD_BASE_INFO)?.textContent || '';
+  const age = parseInt(baseText.match(/(\d+)岁/)?.[1] || '', 10) || null;
+  const gradMatch = baseText.match(/(\d{2})年(应届生|毕业)/);
+  const gradYear = gradMatch ? (2000 + parseInt(gradMatch[1], 10)) : null;
+  const eduMatch = baseText.match(/博士|硕士|研究生|本科|学士|大专|专科|高中|中专|MBA/);
+  const education = normEdu(eduMatch?.[0] || '');
+  const activeStatus =
+    (baseText.match(/刚刚活跃|今日活跃|在线|\d+日内活跃/) || [''])[0];
+
+  const focusText = cardEl.querySelector(F3_SELECTORS.CARD_RECENT_FOCUS)?.textContent || '';
+  const intendedJob = (focusText.match(/·\s*([^·]+?)(\s*\(|\s*·|$)/) || [,''])[1].trim();
+
+  const eduRow = cardEl.querySelector(F3_SELECTORS.CARD_EDUCATION_ROW)?.textContent || '';
+  const eduParts = eduRow.replace(/^学历/, '').split('·').map(s => s.trim()).filter(Boolean);
+  const school = eduParts[0] || '';
+  const major = eduParts[1] || '';
+
+  const workRow = cardEl.querySelector(F3_SELECTORS.CARD_WORK_ROW)?.textContent?.trim() || '';
+  const latestWorkBrief = workRow === '未填写工作经历' ? '' : workRow;
+
+  const workYears = parseWorkYearsFromBrief(latestWorkBrief);
+
+  const tagEls = cardEl.querySelectorAll(F3_SELECTORS.CARD_TAG_ITEM);
+  const skill_tags = [];
+  const school_tier_tags = [];
+  const ranking_tags = [];
+  let recommendation_reason = '';
+  tagEls.forEach(t => {
+    const txt = t.textContent.trim();
+    if (!txt) return;
+    if (/^\d+院校$|^985$|^211$|^双一流$/.test(txt)) school_tier_tags.push(txt);
+    else if (/专业前\d+%/.test(txt)) ranking_tags.push(txt);
+    else if (/来自相似职位|推荐理由/.test(txt)) recommendation_reason = txt;
+    else skill_tags.push(txt);
+  });
+
+  const expected_salary = cardEl.querySelector(F3_SELECTORS.CARD_SALARY)?.textContent?.trim() || '';
+
+  return {
+    name, boss_id: bossId,
+    age, education, grad_year: gradYear, work_years: workYears,
+    school, major, intended_job: intendedJob,
+    skill_tags, school_tier_tags, ranking_tags,
+    expected_salary, active_status: activeStatus,
+    recommendation_reason,
+    latest_work_brief: latestWorkBrief,
+    raw_text: '',
+    boss_current_job_title: getBossTopJobTitle(),
+  };
+}
+
+function parseWorkYearsFromBrief(brief) {
+  if (!brief || brief === '未填写工作经历') return 0;
+  const m = brief.match(/(\d{4})\.(\d{1,2})\s*-\s*(\d{4})\.(\d{1,2})/);
+  if (m) {
+    const start = parseInt(m[1], 10) * 12 + parseInt(m[2], 10);
+    const end = parseInt(m[3], 10) * 12 + parseInt(m[4], 10);
+    return Math.max(0, Math.round((end - start) / 12));
+  }
+  return 0;
+}
+
+function getBossTopJobTitle() {
+  const el = document.querySelector(F3_SELECTORS.TOP_JOB_TEXT);
+  if (!el) return '';
+  const full = el.textContent.trim();
+  // "全栈工程师_北京 400-500元/天" → 取 _ 前
+  return full.split('_')[0].split('(')[0].trim();
+}
