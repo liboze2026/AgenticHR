@@ -3,6 +3,12 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# 单 HR 单日打招呼上限绝对上界。业务侧默认 1000（`Settings.f3_default_daily_cap`），
+# 但此处 schema 保护不让任何 PUT 写超过 DAILY_CAP_MAX 的值。
+# 超过就让 HR 去联系运维加大总量阈值，而不是单点改 DB。
+DAILY_CAP_MAX = 10000
+
+
 class ScrapedCandidate(BaseModel):
     """Edge 扩展从 Boss 推荐列表 list card 抠出的字段.
 
@@ -29,6 +35,8 @@ class ScrapedCandidate(BaseModel):
 
 
 class RecruitEvaluateRequest(BaseModel):
+    """F3 核心端点请求体。携带 HR 当前选中的系统岗位 + 一张从 Boss 推荐页抓来的
+    ScrapedCandidate。后端据此跑 upsert+F2 打分+阈值判定，返回 RecruitDecision。"""
     job_id: int
     candidate: ScrapedCandidate
 
@@ -50,16 +58,21 @@ class RecruitDecision(BaseModel):
 
 
 class GreetRecordRequest(BaseModel):
+    """Edge 扩展点击"打招呼"按钮后回传动作结果。success=True 表示 Boss UI 的
+    按钮状态确实变成"已打招呼"；False 表示点了但按钮没反应或异常，error_msg
+    必填。"""
     resume_id: int
     success: bool
     error_msg: str = ""
 
 
 class UsageInfo(BaseModel):
+    """GET /api/recruit/daily-usage 的返回体。"""
     used: int
     cap: int
     remaining: int
 
 
 class DailyCapUpdateRequest(BaseModel):
-    cap: int = Field(..., ge=0, le=10000)
+    """PUT /api/recruit/daily-cap 请求体。上限受 DAILY_CAP_MAX 硬约束。"""
+    cap: int = Field(..., ge=0, le=DAILY_CAP_MAX)
