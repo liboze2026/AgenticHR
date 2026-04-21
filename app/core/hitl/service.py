@@ -19,6 +19,10 @@ class InvalidHitlStateError(RuntimeError):
     """试图对已终态 (approved/rejected/edited) 的任务再次操作."""
 
 
+class HitlCallbackError(RuntimeError):
+    """approve/edit callback 执行失败. 任务已回退到 pending, 需 HR 重试或手工修复."""
+
+
 def register_approve_callback(f_stage: str, callback: Callable) -> None:
     """注册 stage-specific 的 approve 后 callback. 参数是 task dict."""
     _approve_callbacks.setdefault(f_stage, []).append(callback)
@@ -143,13 +147,22 @@ class HitlService:
                 input_payload=t.payload, output_payload=edited_payload,
                 reviewer_id=reviewer_id,
             )
-            for cb in _approve_callbacks.get(t.f_stage, []):
-                try:
-                    cb(_row_to_dict(t))
-                except Exception as e:
-                    logger.error(f"edit callback failed: {e}")
+            row_snapshot = _row_to_dict(t)
+            f_stage_snapshot = t.f_stage
+            entity_type_snapshot = t.entity_type
+            entity_id_snapshot = t.entity_id
         finally:
             session.close()
+
+        self._run_callbacks(
+            task_id=task_id,
+            row_snapshot=row_snapshot,
+            f_stage=f_stage_snapshot,
+            entity_type=entity_type_snapshot,
+            entity_id=entity_id_snapshot,
+            reviewer_id=reviewer_id,
+            action="hitl_edit_callback_failed",
+        )
 
     def _transition(self, task_id: int, new_status: str,
                      reviewer_id: int | None, note: str, action: str) -> None:
@@ -172,11 +185,70 @@ class HitlService:
                 entity_type=t.entity_type, entity_id=t.entity_id,
                 input_payload=t.payload, reviewer_id=reviewer_id,
             )
-            if new_status == "approved":
-                for cb in _approve_callbacks.get(t.f_stage, []):
-                    try:
-                        cb(_row_to_dict(t))
-                    except Exception as e:
-                        logger.error(f"approve callback failed: {e}")
+            row_snapshot = _row_to_dict(t)
+            f_stage_snapshot = t.f_stage
+            entity_type_snapshot = t.entity_type
+            entity_id_snapshot = t.entity_id
         finally:
             session.close()
+
+        if new_status == "approved":
+            self._run_callbacks(
+                task_id=task_id,
+                row_snapshot=row_snapshot,
+                f_stage=f_stage_snapshot,
+                entity_type=entity_type_snapshot,
+                entity_id=entity_id_snapshot,
+                reviewer_id=reviewer_id,
+                action="hitl_approve_callback_failed",
+            )
+
+    def _run_callbacks(
+        self,
+        *,
+        task_id: int,
+        row_snapshot: dict,
+        f_stage: str,
+        entity_type: str,
+        entity_id: int,
+        reviewer_id: int | None,
+        action: str,
+    ) -> None:
+        """按注册顺序跑 callbacks. 任一失败: 回退 task → pending, 记 audit, 抛 HitlCallbackError.
+
+        Callbacks 必须原子 (自带事务). 若 callback 部分写库后抛异常, 那部分写入不会因本方法
+        回退而被撤销 - 所以 callback 实现方有责任用 try/rollback 自愈.
+        """
+        errors: list[str] = []
+        for cb in _approve_callbacks.get(f_stage, []):
+            try:
+                cb(row_snapshot)
+            except Exception as e:
+                errors.append(f"{cb.__name__ if hasattr(cb, '__name__') else 'cb'}: {e}")
+                logger.error(f"{action}: task={task_id} cb={cb} err={e}")
+                break  # 一失败即止, 不继续跑后续 callbacks
+
+        if not errors:
+            return
+
+        err_msg = "; ".join(errors)
+        # 回退 task 到 pending, 清 reviewer 痕迹, 写 note
+        session = _session_factory()
+        try:
+            t = session.query(HitlTask).filter(HitlTask.id == task_id).first()
+            if t is not None:
+                t.status = "pending"
+                t.reviewer_id = None
+                t.reviewed_at = None
+                t.note = f"callback failed: {err_msg}"
+                session.commit()
+        finally:
+            session.close()
+
+        log_event(
+            f_stage=f_stage, action=action,
+            entity_type=entity_type, entity_id=entity_id,
+            input_payload={"error": err_msg}, reviewer_id=reviewer_id,
+        )
+
+        raise HitlCallbackError(err_msg)

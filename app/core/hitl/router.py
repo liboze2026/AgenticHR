@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from app.core.hitl.service import HitlService, InvalidHitlStateError
+from app.core.hitl.service import HitlService, InvalidHitlStateError, HitlCallbackError
 
 router = APIRouter(prefix="/api/hitl", tags=["hitl"])
 
@@ -44,6 +44,8 @@ def approve(task_id: int, body: _ApproveBody) -> dict:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HitlCallbackError as e:
+        raise HTTPException(status_code=502, detail=f"审批已登记但业务未生效, 任务回退到待审: {e}")
     return {"status": "approved"}
 
 
@@ -66,4 +68,6 @@ def edit(task_id: int, body: _EditBody) -> dict:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except HitlCallbackError as e:
+        raise HTTPException(status_code=502, detail=f"修改已登记但业务未生效, 任务回退到待审: {e}")
     return {"status": "edited"}

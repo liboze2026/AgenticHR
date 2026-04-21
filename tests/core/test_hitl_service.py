@@ -22,6 +22,8 @@ def svc(tmp_path, monkeypatch):
     monkeypatch.setattr(svc_mod, "_session_factory", factory)
     from app.core.audit import logger as audit_mod
     monkeypatch.setattr(audit_mod, "_session_factory", factory)
+    # 隔离 callback 注册表, 避免 app.main 全局注册的 callback 在测试中误触发
+    monkeypatch.setattr("app.core.hitl.service._approve_callbacks", {})
     return HitlService()
 
 
