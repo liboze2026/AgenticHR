@@ -40,6 +40,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     collectCurrentResume: () => collectSingle(message.serverUrl, message.authToken || ''),
     batchCollect: () => batchCollect(message.serverUrl, message.authToken || ''),
     autoGreet: () => autoGreet(),
+    autoGreetRecommend: () => autoGreetRecommend({
+      jobId: message.jobId,
+      serverUrl: message.serverUrl,
+      authToken: message.authToken || '',
+    }),
   };
   if (h[message.action]) {
     h[message.action]().then(r => sendResponse(r)).catch(e => sendResponse({ success: false, message: e.message, log: LOG }));
@@ -608,4 +613,242 @@ function getBossTopJobTitle() {
   const full = el.textContent.trim();
   // "全栈工程师_北京 400-500元/天" → 取 _ 前
   return full.split('_')[0].split('(')[0].trim();
+}
+
+// ════════════════════════════════════════════════════════════════════
+// F3 主循环 — autoGreetRecommend
+// ════════════════════════════════════════════════════════════════════
+
+async function autoGreetRecommend({ jobId, serverUrl, authToken }) {
+  LOG.length = 0; _paused = false; _stopped = false; _setRunning(true);
+  const stats = { total: 0, greeted: 0, skipped: 0, rejected: 0, failed: 0, blocked: false };
+  _setStats(stats);
+
+  try {
+    if (!location.pathname.includes(F3_SELECTORS.PAGE_URL_PATH)) {
+      return { success: false, message: '请先打开 Boss 推荐牛人页', log: LOG };
+    }
+
+    // 岗位对齐检查 (Q8 B)
+    const jobResp = await fetch(`${serverUrl}/api/screening/jobs/${jobId}`, {
+      headers: { 'Authorization': `Bearer ${authToken}` },
+    });
+    if (!jobResp.ok) {
+      return { success: false, message: `加载岗位失败: HTTP ${jobResp.status}`, log: LOG };
+    }
+    const sysJob = await jobResp.json();
+    const bossJobName = getBossTopJobTitle();
+    const sim = stringSimilarity(sysJob.title || '', bossJobName || '');
+    if (sim < 0.7 && bossJobName) {
+      const ok = confirm(
+        `岗位可能不匹配:\n  Boss 页: ${bossJobName}\n  系统选的: ${sysJob.title}\n继续?`
+      );
+      if (!ok) { _setRunning(false); return { success: false, message: '用户取消', log: LOG }; }
+    }
+
+    let idx = 0;
+    const processedBossIds = new Set();
+    let silentMissCount = 0;
+
+    while (!_stopped) {
+      await waitIfPaused();
+
+      const risk = detectRiskControl();
+      if (risk.detected) {
+        stats.blocked = true;
+        log(`风控命中: ${risk.source}`);
+        _setRunning(false);
+        return {
+          success: false,
+          message: `检测到 Boss 风控，已自动停止 (${risk.source})`,
+          summary: stats, log: LOG,
+        };
+      }
+
+      const cards = Array.from(document.querySelectorAll(F3_SELECTORS.CARD_ITEM));
+      if (idx >= cards.length) {
+        window.scrollTo(0, document.body.scrollHeight);
+        await sleep(2000);
+        const newCards = Array.from(document.querySelectorAll(F3_SELECTORS.CARD_ITEM));
+        if (newCards.length === cards.length) {
+          log(`列表到底. 处理完 ${idx} 人`);
+          break;
+        }
+        continue;
+      }
+
+      const card = cards[idx];
+      idx++;
+
+      const scraped = scrapeRecommendCard(card);
+      if (!scraped) { stats.skipped++; _setStats(stats); continue; }
+      if (processedBossIds.has(scraped.boss_id)) { stats.skipped++; _setStats(stats); continue; }
+      processedBossIds.add(scraped.boss_id);
+
+      stats.total++;
+      log(`[${idx}] ${scraped.name} (${scraped.boss_id.substring(0,12)})`);
+
+      let decision;
+      try {
+        const evalResp = await fetch(`${serverUrl}/api/recruit/evaluate_and_record`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ job_id: jobId, candidate: scraped }),
+        });
+        if (evalResp.status === 401) {
+          _setRunning(false);
+          return { success: false, message: '登录已过期', summary: stats, log: LOG };
+        }
+        if (!evalResp.ok) {
+          log(`后端错 HTTP ${evalResp.status}, 跳过`);
+          stats.failed++; _setStats(stats); continue;
+        }
+        decision = await evalResp.json();
+      } catch (e) {
+        log(`网络错: ${e.message}, 跳过`);
+        stats.failed++; _setStats(stats); continue;
+      }
+
+      if (decision.decision === 'blocked_daily_cap') {
+        stats.blocked = true;
+        log(`每日配额已满: ${decision.reason}`);
+        _setRunning(false);
+        return {
+          success: false, message: `今日配额已满 (${decision.reason})`,
+          summary: stats, log: LOG,
+        };
+      }
+      if (decision.decision === 'error_no_competency') {
+        _setRunning(false);
+        return {
+          success: false, message: `岗位能力模型未生成`,
+          summary: stats, log: LOG,
+        };
+      }
+      if (decision.decision === 'skipped_already_greeted') {
+        stats.skipped++; log('历史已打过招呼，跳过');
+        _setStats(stats);
+      } else if (decision.decision === 'rejected_low_score') {
+        stats.rejected++;
+        log(`分 ${decision.score} < 阈值 ${decision.threshold}, 跳过`);
+        _setStats(stats);
+      } else if (decision.decision === 'error_scoring') {
+        stats.failed++;
+        log(`打分异常: ${decision.reason}, 跳过`);
+        _setStats(stats);
+      } else if (decision.decision === 'should_greet') {
+        const greetBtn = findGreetButtonInCard(card);
+        if (!greetBtn) {
+          log('打招呼按钮找不到, 记失败');
+          await reportGreetResult(serverUrl, authToken, decision.resume_id, false, 'button_not_found');
+          stats.failed++; _setStats(stats); continue;
+        }
+        try {
+          await simulateHumanClick(greetBtn);
+          await sleep(1000 + Math.random() * 500);
+          const btnText = greetBtn.textContent.trim();
+          const done = greetBtn.classList.contains('done')
+                    || btnText.includes('已打招呼')
+                    || card.querySelector(F3_SELECTORS.CARD_GREET_BTN_DONE);
+          if (done) {
+            await reportGreetResult(serverUrl, authToken, decision.resume_id, true, '');
+            stats.greeted++; log('打招呼成功');
+            silentMissCount = 0;
+          } else {
+            await reportGreetResult(serverUrl, authToken, decision.resume_id, false, 'button_no_response');
+            stats.failed++; silentMissCount++;
+            log(`按钮无反应 (silent miss ${silentMissCount}/3)`);
+            if (silentMissCount >= 3) {
+              _setRunning(false);
+              return {
+                success: false, message: '连续 3 次按钮无反应, 熔断',
+                summary: stats, log: LOG,
+              };
+            }
+          }
+        } catch (e) {
+          log(`点击异常: ${e.message}`);
+          await reportGreetResult(serverUrl, authToken, decision.resume_id, false, e.message);
+          stats.failed++;
+        }
+        _setStats(stats);
+      }
+
+      // 节流
+      const delay = 2000 + Math.random() * 3000;
+      await sleep(delay);
+      if (stats.greeted > 0 && stats.greeted % 10 === 0) {
+        const longPause = 3000 + Math.random() * 3000;
+        log(`已打 ${stats.greeted}, 长停 ${Math.round(longPause/1000)}s`);
+        await sleep(longPause);
+      }
+    }
+
+    _setRunning(false);
+    return { success: true, summary: stats, log: LOG };
+  } catch (e) {
+    _setRunning(false);
+    return { success: false, message: `异常: ${e.message}`, summary: stats, log: LOG };
+  }
+}
+
+async function reportGreetResult(serverUrl, authToken, resumeId, success, errorMsg) {
+  try {
+    await fetch(`${serverUrl}/api/recruit/record-greet`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${authToken}`,
+      },
+      body: JSON.stringify({ resume_id: resumeId, success, error_msg: errorMsg }),
+    });
+  } catch (e) {
+    log(`record-greet 上报失败: ${e.message}`);
+  }
+}
+
+function _setStats(stats) {
+  chrome.storage.local.set({ recruitStats: stats });
+}
+
+function stringSimilarity(a, b) {
+  if (!a || !b) return 0;
+  const la = a.length, lb = b.length;
+  if (la === 0 || lb === 0) return 0;
+  const short = la < lb ? a : b;
+  const long_ = la < lb ? b : a;
+  let matches = 0;
+  for (const ch of short) {
+    if (long_.includes(ch)) matches++;
+  }
+  return matches / Math.max(la, lb);
+}
+
+/**
+ * 在 card 里找"打招呼"按钮. F3_SELECTORS.CARD_GREET_BTN 含 :contains 非法 CSS,
+ * 拆成 valid-CSS 部分 + textContent 扫描两段.
+ */
+function findGreetButtonInCard(card) {
+  // 先尝试 valid CSS: 剥离 `:contains(...)` 部分
+  const rawSel = F3_SELECTORS.CARD_GREET_BTN;
+  const validParts = rawSel.split(',')
+    .map(s => s.trim())
+    .filter(s => !s.includes(':contains('));
+  for (const sel of validParts) {
+    try {
+      const el = card.querySelector(sel);
+      if (el && el.offsetParent !== null) return el;
+    } catch {}
+  }
+  // 降级: 扫所有 button, textContent 含"打招呼"
+  const btns = card.querySelectorAll('button, [role="button"], .btn-greet');
+  for (const b of btns) {
+    if ((b.textContent || '').includes('打招呼') && b.offsetParent !== null) {
+      return b;
+    }
+  }
+  return null;
 }
