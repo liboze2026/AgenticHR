@@ -3,7 +3,7 @@ import shutil
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -233,6 +233,7 @@ async def ai_parse_all_resumes(user_id: int = Depends(get_current_user_id)):
 @router.post("/{resume_id}/ai-parse", response_model=ResumeResponse)
 async def ai_parse_single(
     resume_id: int,
+    background_tasks: BackgroundTasks,
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
@@ -304,14 +305,23 @@ async def ai_parse_single(
     if parsed.get("job_intention") and not resume.job_intention:
         resume.job_intention = _s(parsed["job_intention"])
 
+    resume.seniority = (parsed.get("seniority") or "").strip() or ""
+
     resume.ai_parsed = "yes"
     service.db.commit()
     service.db.refresh(resume)
 
-    # F2 T1 trigger: score resume against all active+approved jobs
+    # F2 T1 trigger: score resume against all active+approved jobs (background, non-blocking)
     try:
-        from app.modules.matching.triggers import on_resume_parsed
-        await on_resume_parsed(service.db, resume.id)
+        async def _t1_bg():
+            from app.database import SessionLocal
+            from app.modules.matching.triggers import on_resume_parsed
+            _db = SessionLocal()
+            try:
+                await on_resume_parsed(_db, resume.id)
+            finally:
+                _db.close()
+        background_tasks.add_task(_t1_bg)
     except Exception as _t1_err:
         import logging as _log
         _log.getLogger(__name__).warning(f"F2 T1 trigger failed (non-fatal): {_t1_err}")

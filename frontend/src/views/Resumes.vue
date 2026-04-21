@@ -20,7 +20,7 @@
           :disabled="aiParseRunning"
         >
           <el-icon v-if="aiParseRunning" class="is-loading" style="margin-right: 4px"><Loading /></el-icon>
-          {{ aiParseRunning ? `后台 AI 解析中 ${aiParseProgress.completed}/${aiParseProgress.total}` : '手动启动 AI 解析' }}
+          {{ aiParseRunning ? `后台内容解析中 ${aiParseProgress.completed}/${aiParseProgress.total}` : '手动启动内容解析' }}
         </el-button>
         <el-button type="danger" plain @click="clearAll">清空全部</el-button>
       </div>
@@ -49,10 +49,10 @@
               <el-tag v-else-if="row.status === 'pending'" type="info" size="small">待筛选</el-tag>
               <el-tag v-else type="success" size="small">已通过</el-tag>
               <el-tag v-if="row.ai_parsed === 'parsing'" type="primary" effect="plain" size="small">
-                <el-icon class="is-loading" style="margin-right: 3px"><Loading /></el-icon>AI解析中
+                <el-icon class="is-loading" style="margin-right: 3px"><Loading /></el-icon>内容解析中
               </el-tag>
-              <el-tag v-else-if="row.ai_parsed === 'failed'" type="danger" effect="plain" size="small">AI解析失败</el-tag>
-              <el-tag v-else-if="row.ai_parsed === 'no'" type="info" effect="plain" size="small">待AI解析</el-tag>
+              <el-tag v-else-if="row.ai_parsed === 'failed'" type="danger" effect="plain" size="small">内容解析失败</el-tag>
+              <el-tag v-else-if="row.ai_parsed === 'no'" type="info" effect="plain" size="small">待内容解析</el-tag>
             </div>
           </div>
 
@@ -147,7 +147,8 @@
                 <div>
                   <el-button v-if="row.pdf_path" size="small" link type="primary" @click.stop="viewPdf(row.id)">查看PDF</el-button>
                   <el-button size="small" link @click.stop="viewResume(row)">更多详情</el-button>
-                  <el-button size="small" link type="warning" @click.stop="aiParseSingle(row)" :loading="row._aiLoading">AI解析</el-button>
+                  <el-button size="small" link type="warning" @click.stop="aiParseSingle(row)" :loading="row._aiLoading">简历内容解析</el-button>
+                  <el-button size="small" link type="primary" @click.stop="aiScoreSingle(row)" :loading="row._aiScoringLoading">AI评分</el-button>
                   <el-button size="small" link type="danger" @click.stop="deleteResume(row)">删除</el-button>
                 </div>
               </div>
@@ -447,6 +448,34 @@ async function aiParseSingle(row) {
     ElMessage.error(e.response?.data?.detail || 'AI解析失败')
   } finally {
     row._aiLoading = false
+  }
+}
+
+async function aiScoreSingle(row) {
+  // 对该简历 × 所有 is_active + 能力模型已通过的岗位打分 (F2)
+  row._aiScoringLoading = true
+  try {
+    const { task_id, total } = await matchingApi.recomputeResume(row.id)
+    if (!total || total === 0) {
+      ElMessage.warning('暂无启用中的岗位（需要岗位 is_active + 能力模型已发布）')
+      return
+    }
+    ElMessage.success(`已启动评分任务（共 ${total} 个岗位）`)
+    // 轮询进度直到完成
+    const pollStart = Date.now()
+    while (Date.now() - pollStart < 300000) {  // 最多等 5 分钟
+      await new Promise(r => setTimeout(r, 2000))
+      const s = await matchingApi.recomputeStatus(task_id)
+      if (!s.running) {
+        ElMessage.success(`评分完成：${s.completed} 成功 / ${s.failed} 失败`)
+        return
+      }
+    }
+    ElMessage.warning('评分超时，请稍后到岗位页"匹配候选人"Tab 查看结果')
+  } catch (e) {
+    ElMessage.error(e.response?.data?.detail || 'AI 评分启动失败')
+  } finally {
+    row._aiScoringLoading = false
   }
 }
 
