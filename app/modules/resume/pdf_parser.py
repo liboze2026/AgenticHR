@@ -51,14 +51,13 @@ def is_image_pdf(file_path: str) -> bool:
 
 
 def extract_boss_qr(pdf_path: str, output_path: str) -> str:
-    """从简历 PDF 首页**左上角固定坐标 (0, 0, 60, 60) 点**裁剪二维码图片。
+    """从简历 PDF 首页**左上角固定坐标 (0, 0, 80, 80) 点**裁剪二维码图片。
 
-    Boss / 拉勾 / 51job 等多数招聘网站把候选人扫码 QR 放在简历首页左上角顶部
-    横幅，固定区域 ≈ 60×60 pt（21mm × 21mm）。300 DPI 渲染输出 250×250 px 的
-    PNG，足够清晰扫码。
+    Boss / 拉勾 / 51job 等多数招聘网站把候选人扫码 QR 放在简历首页左上角顶部，
+    QR 本体约 60-65 pt 宽，外加 10-15 pt 安全边距。80 pt 区域足以完整覆盖
+    QR 的 3 个对齐标记（右上 / 左上 / 左下），保证扫码可读。
 
-    简单粗暴 = 可预测 = 不容易出错。先前的"嵌入位图扫描 + 二值化打分 + banner
-    左裁"智能策略试图通用化，但被头像 / 多张 banner 等案例反复打脸，得不偿失。
+    300 DPI 渲染 → 334×334 px PNG，约 5KB，扫码识别率良好。
 
     成功返回 output_path，失败返回空字符串。
     """
@@ -70,11 +69,11 @@ def extract_boss_qr(pdf_path: str, output_path: str) -> str:
             return ""
         page = doc[0]
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        crop_rect = fitz.Rect(0, 0, 60, 60)
+        crop_rect = fitz.Rect(0, 0, 80, 80)
         pix = page.get_pixmap(clip=crop_rect, dpi=300)
         pix.save(output_path)
         doc.close()
-        logger.info(f"QR extracted (top-left 60pt fixed crop): {output_path}")
+        logger.info(f"QR extracted (top-left 80pt fixed crop): {output_path}")
         return output_path
     except Exception as e:
         logger.error(f"QR extract error [{pdf_path}]: {e}")
