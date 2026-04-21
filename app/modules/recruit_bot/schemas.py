@@ -41,6 +41,7 @@ class RecruitDecision(BaseModel):
         "rejected_low_score",
         "blocked_daily_cap",
         "error_no_competency",
+        "error_scoring",
     ]
     resume_id: int | None = None
     score: int | None = None

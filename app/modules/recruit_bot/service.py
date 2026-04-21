@@ -199,20 +199,26 @@ async def evaluate_and_record(
         result = await svc.score_pair(resume.id, job.id, triggered_by="F3")
     except Exception as e:
         logger.exception(f"F3 score_pair failed: {e}")
+        log_event(
+            f_stage="F3_evaluate", action="error_scoring",
+            entity_type="resume", entity_id=resume.id,
+            input_payload={"boss_id": candidate.boss_id},
+            output_payload={"error": str(e)},
+            reviewer_id=user_id,
+        )
         return RecruitDecision(
-            decision="error_no_competency",
+            decision="error_scoring",
             resume_id=resume.id,
             reason=f"打分异常: {e}",
         )
 
-    threshold = job.greet_threshold or 60
+    threshold = job.greet_threshold
     score = int(result.total_score)
 
     # 6. 阈值判定 + 更新 resume
     if score >= threshold:
         resume.status = "passed"
         resume.greet_status = "pending_greet"
-        resume.updated_at = datetime.now(timezone.utc)
         db.commit()
         log_event(
             f_stage="F3_evaluate", action="should_greet",
@@ -228,7 +234,6 @@ async def evaluate_and_record(
     else:
         resume.status = "rejected"
         resume.reject_reason = f"F3 分{score}低于阈值{threshold}"
-        resume.updated_at = datetime.now(timezone.utc)
         db.commit()
         log_event(
             f_stage="F3_evaluate", action="rejected_low_score",

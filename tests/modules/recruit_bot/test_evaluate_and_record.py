@@ -139,3 +139,42 @@ async def test_evaluate_foreign_job_raises(db):
     c = _mk_candidate()
     with pytest.raises(ValueError, match="not found"):
         await evaluate_and_record(db, user_id=1, job_id=job.id, candidate=c)
+
+
+@pytest.mark.asyncio
+async def test_evaluate_threshold_zero_greets_everyone(db):
+    """HR 设 threshold=0 表示"全部打招呼"; 不能被 `or 60` 覆盖."""
+    from app.modules.recruit_bot.service import evaluate_and_record
+    _mk_user(db)
+    job = _mk_job(db, threshold=0)
+    # 用一个分数会很低的候选人（无 Python 必要技能）
+    c = _mk_candidate(boss_id="low_score_but_greet", skills=["Nothing"])
+    dec = await evaluate_and_record(db, user_id=1, job_id=job.id, candidate=c)
+    # 无论分多低, threshold=0 都该返 should_greet
+    assert dec.decision == "should_greet"
+    assert dec.threshold == 0
+
+
+@pytest.mark.asyncio
+async def test_evaluate_scoring_exception_returns_error_scoring_with_audit(db, monkeypatch):
+    from app.modules.recruit_bot.service import evaluate_and_record
+    from app.modules.matching import service as matching_svc_mod
+    from app.core.audit.models import AuditEvent
+
+    async def boom(*a, **kw):
+        raise RuntimeError("simulated scorer crash")
+
+    monkeypatch.setattr(matching_svc_mod.MatchingService, "score_pair", boom)
+
+    _mk_user(db)
+    job = _mk_job(db, threshold=30)
+    dec = await evaluate_and_record(db, user_id=1, job_id=job.id, candidate=_mk_candidate())
+    assert dec.decision == "error_scoring"
+    assert dec.resume_id is not None
+    assert "simulated scorer crash" in dec.reason
+
+    events = db.query(AuditEvent).filter(
+        AuditEvent.f_stage == "F3_evaluate",
+        AuditEvent.action == "error_scoring",
+    ).all()
+    assert len(events) >= 1
