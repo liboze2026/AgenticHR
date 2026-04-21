@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.core.settings.router import _load as _load_scoring_weights
 from app.database import get_db
 from app.modules.matching.hashing import compute_competency_hash, compute_weights_hash
+from app.modules.matching.weights import get_effective_weights
 from app.modules.matching.models import MatchingResult
 from app.modules.matching.schemas import (
     EvidenceItem,
@@ -92,11 +92,13 @@ def list_results(
     resumes = {r.id: r for r in db.query(Resume).filter(Resume.id.in_(resume_ids)).all()}
     jobs = {j.id: j for j in db.query(Job).filter(Job.id.in_(job_ids)).all()}
 
-    # 按 job 分组算 current hash
+    # 按 job 分组算 current hash — 每个 job 用自己的 effective weights
     current_hashes = {}   # job_id → (competency_hash, weights_hash)
-    weights_hash = compute_weights_hash(_load_scoring_weights())
     for jid, j in jobs.items():
-        current_hashes[jid] = (compute_competency_hash(j.competency_model or {}), weights_hash)
+        current_hashes[jid] = (
+            compute_competency_hash(j.competency_model or {}),
+            compute_weights_hash(get_effective_weights(j)),
+        )
 
     items = []
     for r in rows:

@@ -399,6 +399,74 @@ def save_competency_draft(job_id: int, body: _SaveBody):
 
 import logging as _screening_log
 
+# ── Per-job scoring weights endpoints ─────────────────────────────────────────
+
+class _ScoringWeightsBody(BaseModel):
+    skill_match: int
+    experience: int
+    seniority: int
+    education: int
+    industry: int
+
+
+@router.get("/jobs/{job_id}/scoring-weights")
+def get_job_scoring_weights(
+    job_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """返回岗位当前生效权重及来源（custom 或 global）."""
+    from app.modules.matching.weights import get_effective_weights
+    from app.modules.screening.models import Job
+    job = db.query(Job).filter_by(id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+    if job.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问该岗位")
+    custom = bool(job.scoring_weights and isinstance(job.scoring_weights, dict)
+                  and job.scoring_weights.get("skill_match") is not None)
+    return {"custom": custom, "weights": get_effective_weights(job)}
+
+
+@router.put("/jobs/{job_id}/scoring-weights")
+def set_job_scoring_weights(
+    job_id: int,
+    body: _ScoringWeightsBody,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """设置岗位自定义评分权重，5 维度之和必须为 100."""
+    from app.modules.screening.models import Job
+    job = db.query(Job).filter_by(id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+    if job.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权修改该岗位")
+    total = body.skill_match + body.experience + body.seniority + body.education + body.industry
+    if total != 100:
+        raise HTTPException(status_code=422, detail=f"各维度权重之和必须为 100，当前为 {total}")
+    job.scoring_weights = body.model_dump()
+    db.commit()
+    db.refresh(job)
+    return {"custom": True, "weights": job.scoring_weights}
+
+
+@router.delete("/jobs/{job_id}/scoring-weights", status_code=204)
+def reset_job_scoring_weights(
+    job_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """清除岗位自定义权重，恢复使用全局默认."""
+    from app.modules.screening.models import Job
+    job = db.query(Job).filter_by(id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+    if job.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权修改该岗位")
+    job.scoring_weights = None
+    db.commit()
+
 async def _t2_trigger_with_fresh_session(job_id: int) -> None:
     """Opens its own DB session so it outlives the HTTP response."""
     from app.database import SessionLocal

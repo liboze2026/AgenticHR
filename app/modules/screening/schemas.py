@@ -17,6 +17,7 @@ class JobCreate(BaseModel):
     jd_text: str = Field(default="", description="JD 原文")
     competency_model: dict | None = Field(default=None, description="能力模型 JSON")
     competency_model_status: str = Field(default="none")
+    scoring_weights: dict | None = Field(default=None, description="岗位自定义评分权重（5 维度，总和 100）")
 
     @model_validator(mode='after')
     def validate_ranges(self):
@@ -42,6 +43,7 @@ class JobUpdate(BaseModel):
     jd_text: str | None = None
     competency_model: dict | None = None
     competency_model_status: str | None = None
+    scoring_weights: dict | None = None
 
     @model_validator(mode='after')
     def validate_ranges(self):
@@ -73,6 +75,7 @@ class JobResponse(BaseModel):
     jd_text: str = ""
     competency_model: dict | None = None
     competency_model_status: str = "none"
+    scoring_weights: dict | None = None
     model_config = {"from_attributes": True}
 
 

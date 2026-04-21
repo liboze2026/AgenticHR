@@ -147,6 +147,13 @@ export const settingsApi = {
   saveScoringWeights: (data) => api.put('/settings/scoring-weights', data),
 }
 
+// 岗位评分权重 API (F2 per-job weights)
+export const weightsApi = {
+  getJobWeights: (jobId) => api.get(`/screening/jobs/${jobId}/scoring-weights`),
+  setJobWeights: (jobId, weights) => api.put(`/screening/jobs/${jobId}/scoring-weights`, weights),
+  resetJobWeights: (jobId) => api.delete(`/screening/jobs/${jobId}/scoring-weights`),
+}
+
 // 匹配 API (F2)
 export const matchingApi = {
   score: (resume_id, job_id) => api.post('/matching/score', { resume_id, job_id }),

@@ -125,6 +125,51 @@
             <span v-if="matching.staleCount > 0" class="stale-warn">
               ⚠ {{ matching.staleCount }} 份分数基于旧能力模型
             </span>
+            <el-button
+              type="default"
+              plain
+              size="small"
+              style="margin-left: auto"
+              @click="weightsPanel.open = !weightsPanel.open"
+            >{{ weightsPanel.open ? '收起权重' : '评分权重' }}</el-button>
+          </div>
+
+          <!-- 评分权重面板 -->
+          <div v-if="weightsPanel.open" class="weights-panel">
+            <div class="weights-status">
+              <span v-if="weightsPanel.custom" class="weights-status-custom">✓ 当前使用：本岗位自定义权重</span>
+              <span v-else class="weights-status-global">○ 当前使用：全局默认权重（可在设置页修改）</span>
+            </div>
+            <div class="weights-inputs">
+              <div class="weights-field" v-for="f in weightsFields" :key="f.key">
+                <label>{{ f.label }}</label>
+                <el-input-number
+                  v-model="weightsPanel.form[f.key]"
+                  :min="0"
+                  :max="100"
+                  size="small"
+                  style="width: 100px"
+                  @change="weightsPanel.dirty = true"
+                />
+              </div>
+            </div>
+            <div class="weights-sum-hint" :class="{ 'weights-sum-error': weightsSum !== 100 }">
+              当前总和: {{ weightsSum }}（需为 100）
+            </div>
+            <div class="weights-actions">
+              <el-button
+                type="primary"
+                size="small"
+                :disabled="weightsSum !== 100"
+                :loading="weightsPanel.saving"
+                @click="saveJobWeights"
+              >保存并重新打分</el-button>
+              <el-button
+                size="small"
+                :loading="weightsPanel.resetting"
+                @click="resetJobWeights"
+              >重置为全局默认</el-button>
+            </div>
           </div>
 
           <div v-loading="matching.loading">
@@ -216,7 +261,7 @@
 import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { ArrowRight } from '@element-plus/icons-vue'
-import { jobApi, competencyApi, matchingApi } from '../api'
+import { jobApi, competencyApi, matchingApi, weightsApi } from '../api'
 import CompetencyEditor from '../components/CompetencyEditor.vue'
 import { extractingJobIds } from '../stores/extractingJobs.js'
 
@@ -435,6 +480,74 @@ const matching = ref({
   pollTimer: null,
 })
 
+// ── 评分权重面板 ────────────────────────────────────────────────────────────
+const weightsFields = [
+  { key: 'skill_match', label: '技能匹配' },
+  { key: 'experience', label: '工作经验' },
+  { key: 'seniority', label: '职级对齐' },
+  { key: 'education', label: '教育背景' },
+  { key: 'industry', label: '行业经验' },
+]
+
+const weightsPanel = ref({
+  open: false,
+  custom: false,
+  saving: false,
+  resetting: false,
+  dirty: false,
+  form: { skill_match: 35, experience: 30, seniority: 15, education: 10, industry: 10 },
+})
+
+const weightsSum = computed(() => {
+  const f = weightsPanel.value.form
+  return (f.skill_match || 0) + (f.experience || 0) + (f.seniority || 0) + (f.education || 0) + (f.industry || 0)
+})
+
+async function loadJobWeights() {
+  if (!editingJob.value) return
+  try {
+    const data = await weightsApi.getJobWeights(editingJob.value.id)
+    weightsPanel.value.custom = data.custom
+    weightsPanel.value.form = { ...data.weights }
+    weightsPanel.value.dirty = false
+  } catch (_e) {
+    // non-fatal: fall back to defaults
+  }
+}
+
+async function saveJobWeights() {
+  if (!editingJob.value) return
+  if (weightsSum.value !== 100) { ElMessage.warning('权重总和必须为 100'); return }
+  weightsPanel.value.saving = true
+  try {
+    await weightsApi.setJobWeights(editingJob.value.id, weightsPanel.value.form)
+    weightsPanel.value.custom = true
+    weightsPanel.value.dirty = false
+    ElMessage.success('自定义权重已保存，正在重新打分…')
+    await recomputeMatching()
+    await loadJobWeights()
+  } catch (e) {
+    ElMessage.error('保存失败：' + (e.response?.data?.detail || e.message || '请重试'))
+  } finally {
+    weightsPanel.value.saving = false
+  }
+}
+
+async function resetJobWeights() {
+  if (!editingJob.value) return
+  weightsPanel.value.resetting = true
+  try {
+    await weightsApi.resetJobWeights(editingJob.value.id)
+    ElMessage.success('已恢复全局默认权重')
+    await loadJobWeights()
+    loadMatching()
+  } catch (e) {
+    ElMessage.error('重置失败：' + (e.message || '请重试'))
+  } finally {
+    weightsPanel.value.resetting = false
+  }
+}
+
 function jobActionOrder(action) {
   if (action === 'passed') return 0
   if (action == null) return 1
@@ -554,7 +667,11 @@ function jumpToResume(resumeId, source, offset) {
 }
 
 watch(activeTab, (tab) => {
-  if (tab === 'matching' && editingJob.value) loadMatching()
+  if (tab === 'matching' && editingJob.value) {
+    loadMatching()
+    loadJobWeights()
+    weightsPanel.value.open = false
+  }
 })
 
 onUnmounted(() => {
@@ -628,4 +745,29 @@ onMounted(loadJobs)
 .expand-enter-active, .expand-leave-active { transition: all 0.2s ease-out; overflow: hidden; }
 .expand-enter-from, .expand-leave-to { max-height: 0; opacity: 0; }
 .expand-enter-to, .expand-leave-from { max-height: 800px; opacity: 1; }
+
+/* 评分权重面板 */
+.weights-panel {
+  border: 1px solid #e4e7ed;
+  border-radius: 6px;
+  background: #fafbfc;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.weights-status { margin-bottom: 10px; font-size: 13px; }
+.weights-status-custom { color: #67c23a; font-weight: 600; }
+.weights-status-global { color: #909399; }
+.weights-inputs {
+  display: flex; flex-wrap: wrap; gap: 12px 24px;
+  margin-bottom: 8px;
+}
+.weights-field {
+  display: flex; align-items: center; gap: 6px;
+}
+.weights-field label { font-size: 12px; color: #606266; min-width: 60px; }
+.weights-sum-hint {
+  font-size: 12px; color: #909399; margin-bottom: 10px;
+}
+.weights-sum-error { color: #f56c6c; font-weight: 600; }
+.weights-actions { display: flex; gap: 8px; }
 </style>

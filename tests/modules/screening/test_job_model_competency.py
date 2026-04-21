@@ -16,7 +16,8 @@ def session(tmp_path, monkeypatch):
     cfg = Config("migrations/alembic.ini")
     cfg.set_main_option("script_location", "migrations")
     cfg.set_main_option("sqlalchemy.url", url)
-    # Need jobs table pre-seed for migration 0005 ALTER TABLE
+    # Need jobs + resumes tables pre-seeded: jobs for migration 0005 ALTER TABLE,
+    # resumes for migration 0007 ALTER TABLE resumes ADD COLUMN seniority
     import sqlite3
     conn = sqlite3.connect(str(db))
     conn.execute("""
@@ -38,10 +39,42 @@ def session(tmp_path, monkeypatch):
             updated_at DATETIME
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS resumes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER DEFAULT 0,
+            name VARCHAR(100) NOT NULL,
+            phone VARCHAR(20) DEFAULT '',
+            email VARCHAR(200) DEFAULT '',
+            education VARCHAR(50) DEFAULT '',
+            bachelor_school VARCHAR(200) DEFAULT '',
+            master_school VARCHAR(200) DEFAULT '',
+            phd_school VARCHAR(200) DEFAULT '',
+            qr_code_path VARCHAR(500) DEFAULT '',
+            work_years INTEGER DEFAULT 0,
+            expected_salary_min REAL DEFAULT 0,
+            expected_salary_max REAL DEFAULT 0,
+            job_intention VARCHAR(200) DEFAULT '',
+            skills TEXT DEFAULT '',
+            work_experience TEXT DEFAULT '',
+            project_experience TEXT DEFAULT '',
+            self_evaluation TEXT DEFAULT '',
+            source VARCHAR(50) DEFAULT '',
+            raw_text TEXT DEFAULT '',
+            pdf_path VARCHAR(500) DEFAULT '',
+            status VARCHAR(20) DEFAULT 'passed',
+            ai_parsed VARCHAR(10) DEFAULT 'no',
+            ai_score REAL,
+            ai_summary TEXT DEFAULT '',
+            reject_reason VARCHAR(200) DEFAULT '',
+            created_at DATETIME,
+            updated_at DATETIME
+        )
+    """)
     conn.commit()
     conn.close()
     command.stamp(cfg, "0001")
-    command.upgrade(cfg, "0006")
+    command.upgrade(cfg, "head")
     engine = sa.create_engine(url, connect_args={"check_same_thread": False})
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr("app.database.engine", engine)

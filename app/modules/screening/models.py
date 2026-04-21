@@ -31,3 +31,4 @@ class Job(Base):
     jd_text = Column(Text, default="", nullable=False)
     competency_model = Column(JSON, nullable=True)
     competency_model_status = Column(String(20), default="none", nullable=False)
+    scoring_weights = Column(JSON, nullable=True)

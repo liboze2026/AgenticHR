@@ -7,8 +7,8 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.core.audit.logger import log_event
-from app.core.settings.router import _load as _load_scoring_weights
 from app.modules.matching.hashing import compute_competency_hash, compute_weights_hash
+from app.modules.matching.weights import get_effective_weights
 from app.modules.matching.models import MatchingResult
 from app.modules.matching.schemas import EvidenceItem, MatchingResultResponse
 from app.modules.matching.scorers.aggregator import aggregate, derive_tags
@@ -43,7 +43,7 @@ class MatchingService:
             raise ValueError(f"job {job_id} has no competency_model (not approved yet)")
 
         cm = job.competency_model
-        weights = _load_scoring_weights()
+        weights = get_effective_weights(job)
 
         # 分维度打分
         skill_score, missing_must = score_skill(
