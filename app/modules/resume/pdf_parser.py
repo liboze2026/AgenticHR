@@ -51,11 +51,14 @@ def is_image_pdf(file_path: str) -> bool:
 
 
 def extract_boss_qr(pdf_path: str, output_path: str) -> str:
-    """从 Boss 简历 PDF 首页左上角裁剪二维码图片，保存到 output_path。
+    """从简历 PDF 首页提取二维码图片，保存到 output_path。
 
-    Boss 下载的简历 PDF 在首页左上角顶部横幅里放了一个固定尺寸的二维码
-    （约 (0,0) 到 (70,70) pt），扫码后才能看到手机号。用固定坐标裁剪，300 DPI
-    保证扫码清晰度。成功返回 output_path，失败返回空字符串。
+    策略（按优先级尝试）：
+    1. 扫描首页所有嵌入的位图，挑出"近正方形 + 中等尺寸"的最佳候选（通常就是 QR）。
+       Boss / 拉勾 / 51job 等多数招聘 PDF 都把 QR 作为独立位图嵌入。
+    2. 若步骤 1 无候选，回退到 Boss 固定坐标 (0, 0, 70, 70) 点裁剪（300 DPI）。
+
+    成功返回 output_path，失败返回空字符串。
     """
     try:
         import fitz
@@ -64,12 +67,51 @@ def extract_boss_qr(pdf_path: str, output_path: str) -> str:
             doc.close()
             return ""
         page = doc[0]
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        # 策略 1：扫描嵌入的位图，找最像 QR 的候选
+        best_pix = None
+        best_score = 0.0
+        for img_info in page.get_images(full=True):
+            xref = img_info[0]
+            try:
+                pix = fitz.Pixmap(doc, xref)
+                if pix.width < 60 or pix.height < 60:
+                    pix = None
+                    continue
+                if pix.width > 1000 or pix.height > 1000:
+                    pix = None
+                    continue
+                aspect = min(pix.width, pix.height) / max(pix.width, pix.height)
+                if aspect < 0.85:
+                    pix = None
+                    continue
+                # 中等尺寸打分（边长靠近 200 px 得高分）
+                size_score = max(0.1, 1.0 - abs(min(pix.width, pix.height) - 200) / 400.0)
+                score = aspect * size_score
+                if score > best_score:
+                    best_pix = pix
+                    best_score = score
+                else:
+                    pix = None
+            except Exception:
+                continue
+
+        if best_pix is not None:
+            # CMYK / 灰度 → 转 RGB 才能存 PNG
+            if best_pix.colorspace and best_pix.colorspace.n > 3:
+                best_pix = fitz.Pixmap(fitz.csRGB, best_pix)
+            best_pix.save(output_path)
+            doc.close()
+            logger.info(f"QR extracted (embedded image, {best_pix.width}x{best_pix.height}): {output_path}")
+            return output_path
+
+        # 策略 2：固定坐标裁剪（Boss 兼容）
         crop_rect = fitz.Rect(0, 0, 70, 70)
         pix = page.get_pixmap(clip=crop_rect, dpi=300)
-        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         pix.save(output_path)
         doc.close()
-        logger.info(f"QR extracted: {output_path}")
+        logger.info(f"QR extracted (fixed Boss crop): {output_path}")
         return output_path
     except Exception as e:
         logger.error(f"QR extract error [{pdf_path}]: {e}")

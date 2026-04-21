@@ -155,9 +155,7 @@ export const matchingApi = {
     api.get('/matching/results', { params: { job_id, page, page_size, tag } }),
   listByResume: (resume_id) => api.get('/matching/results', { params: { resume_id } }),
   recomputeJob: (job_id) => api.post('/matching/recompute', { job_id }),
-  recomputeResume(resume_id) {
-    return api.post('/matching/recompute', { resume_id }).then(r => r.data)
-  },
+  recomputeResume: (resume_id) => api.post('/matching/recompute', { resume_id }),
   recomputeStatus: (task_id) => api.get(`/matching/recompute/status/${task_id}`),
 }
 
