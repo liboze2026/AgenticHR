@@ -229,6 +229,19 @@
     </div>
   </div>
 
+  <div class="section" style="padding-top: 0;">
+    <div class="section-title">F3 推荐牛人自动打招呼</div>
+    <select id="recruitJobSelect" style="width:100%;padding:8px;border:1px solid #d9d9d9;border-radius:6px;margin-bottom:8px;">
+      <option value="">-- 选择岗位 --</option>
+    </select>
+    <div style="font-size:12px;color:#666;margin-bottom:8px;">
+      今日已打: <span id="usageUsed">0</span> / <span id="usageCap">1000</span>
+      <a href="#" id="editCap" style="color:#00b38a;margin-left:8px;">修改</a>
+    </div>
+    <button class="btn btn-primary" id="btnRecruitStart" style="background:#00b38a;">开始自动打招呼</button>
+    <div id="recruitStats" style="font-size:12px;color:#666;margin-top:6px;"></div>
+  </div>
+
   <div class="section" style="padding-top: 12px;">
     <div class="section-title">自动打招呼</div>
     <button class="btn btn-primary" id="btnAutoGreet" style="background: #ff9500;">自动求简历（新招呼列表）</button>

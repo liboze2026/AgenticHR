@@ -376,6 +376,7 @@ function setButtonsDisabled(disabled) {
   btnBatchCollect.disabled = disabled;
   btnTestConnection.disabled = disabled;
   btnAutoGreet.disabled = disabled;
+  btnRecruitStart.disabled = disabled;
 
   if (disabled) {
     isRunning = true;
@@ -463,3 +464,142 @@ btnCollect.addEventListener("click", collectCurrentResume);
 btnBatchCollect.addEventListener("click", batchCollectFromList);
 serverUrlInput.addEventListener("change", saveServerUrl);
 // authToken is now managed via login/logout, no manual input needed
+
+// ── F3 Recruit ──────────────────────────────────────────────────────
+
+const recruitJobSelect = document.getElementById('recruitJobSelect');
+const usageUsed = document.getElementById('usageUsed');
+const usageCap = document.getElementById('usageCap');
+const editCap = document.getElementById('editCap');
+const btnRecruitStart = document.getElementById('btnRecruitStart');
+const recruitStats = document.getElementById('recruitStats');
+
+async function loadJobs() {
+  const url = getServerUrl();
+  const token = getAuthToken();
+  if (!token) return;
+  try {
+    const r = await fetch(`${url}/api/screening/jobs?active_only=true`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    recruitJobSelect.innerHTML = '<option value="">-- 选择岗位 --</option>';
+    const jobs = Array.isArray(data) ? data : (data.items || []);
+    jobs.forEach(j => {
+      if (j.competency_model_status !== 'approved') return;
+      const opt = document.createElement('option');
+      opt.value = j.id;
+      opt.textContent = `${j.title} (阈值 ${j.greet_threshold || 60})`;
+      recruitJobSelect.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('loadJobs fail', e);
+  }
+}
+
+async function loadDailyUsage() {
+  const url = getServerUrl();
+  const token = getAuthToken();
+  if (!token) return;
+  try {
+    const r = await fetch(`${url}/api/recruit/daily-usage`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    usageUsed.textContent = d.used;
+    usageCap.textContent = d.cap;
+  } catch (e) {
+    console.error('loadDailyUsage fail', e);
+  }
+}
+
+async function editDailyCap() {
+  const url = getServerUrl();
+  const token = getAuthToken();
+  const newCap = prompt('输入新的每日配额 (0-10000)', usageCap.textContent);
+  if (newCap === null) return;
+  const n = parseInt(newCap, 10);
+  if (!(n >= 0 && n <= 10000)) {
+    showResult('配额必须 0-10000', 'error'); return;
+  }
+  try {
+    const r = await fetch(`${url}/api/recruit/daily-cap`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ cap: n }),
+    });
+    if (r.ok) { await loadDailyUsage(); showResult(`配额已改为 ${n}`, 'success'); }
+    else { showResult(`修改失败: HTTP ${r.status}`, 'error'); }
+  } catch (e) {
+    showResult(`网络错: ${e.message}`, 'error');
+  }
+}
+
+async function startAutoRecruit() {
+  const url = getServerUrl();
+  const token = getAuthToken();
+  if (!token) { showResult('请先登录', 'error'); return; }
+  const jobId = parseInt(recruitJobSelect.value, 10);
+  if (!jobId) { showResult('请选择岗位', 'error'); return; }
+
+  recruitStats.textContent = '';
+  showResult('F3 自动打招呼已启动，请勿操作 Boss 推荐牛人页...', '');
+  setButtonsDisabled(true);
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.url?.includes('zhipin.com/web/chat/recommend')) {
+      showResult('请先打开 Boss 推荐牛人页', 'error');
+      setButtonsDisabled(false); return;
+    }
+
+    const resp = await chrome.tabs.sendMessage(tab.id, {
+      action: 'autoGreetRecommend',
+      jobId, serverUrl: url, authToken: token,
+    });
+
+    if (resp?.success) {
+      const s = resp.summary;
+      showResult(
+        [
+          'F3 自动打招呼完成',
+          `总 ${s.total} 人: 打招呼 ${s.greeted}, 跳过 ${s.skipped}, 淘汰 ${s.rejected}, 失败 ${s.failed}`,
+        ].join('\n'),
+        'success'
+      );
+    } else {
+      const s = resp?.summary;
+      showResult(
+        [
+          resp?.message || '未知错误',
+          s ? `进度: 总 ${s.total}, 成 ${s.greeted}, 淘 ${s.rejected}, 失 ${s.failed}` : '',
+        ].filter(Boolean).join('\n'),
+        'error'
+      );
+    }
+    await loadDailyUsage();
+  } catch (e) {
+    showResult(`异常: ${e.message}`, 'error');
+  } finally {
+    setButtonsDisabled(false);
+  }
+}
+
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.recruitStats) {
+    const s = changes.recruitStats.newValue || {};
+    if (s.total !== undefined) {
+      recruitStats.textContent = `进度: 总 ${s.total}, 成 ${s.greeted||0}, 淘 ${s.rejected||0}, 跳 ${s.skipped||0}, 失 ${s.failed||0}`;
+    }
+  }
+});
+
+document.addEventListener('DOMContentLoaded', async () => {
+  await loadJobs();
+  await loadDailyUsage();
+});
+
+editCap.addEventListener('click', (e) => { e.preventDefault(); editDailyCap(); });
+btnRecruitStart.addEventListener('click', startAutoRecruit);
