@@ -20,6 +20,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadAuthToken();
   await checkConnection();
   updateAuthUI();
+  // F3: load after token is available
+  await loadJobs();
+  await loadDailyUsage();
 
   document.getElementById("btnLogin").addEventListener("click", doLogin);
   document.getElementById("btnLogout").addEventListener("click", doLogout);
@@ -95,6 +98,8 @@ async function doLogin() {
     chrome.storage.local.set({ authToken: _authToken, authUser: _authUser });
     updateAuthUI();
     showResult("登录成功", "success");
+    await loadJobs();
+    await loadDailyUsage();
   } catch {
     showResult("无法连接服务器", "error");
   }
@@ -105,6 +110,11 @@ function doLogout() {
   _authUser = '';
   chrome.storage.local.remove(["authToken", "authUser"]);
   updateAuthUI();
+  // F3: clear
+  if (recruitJobSelect) recruitJobSelect.innerHTML = '<option value="">-- 选择岗位 --</option>';
+  if (usageUsed) usageUsed.textContent = '0';
+  if (usageCap) usageCap.textContent = '0';
+  if (recruitStats) recruitStats.textContent = '';
   showResult("已退出登录", "");
 }
 
@@ -594,11 +604,6 @@ chrome.storage.onChanged.addListener((changes) => {
       recruitStats.textContent = `进度: 总 ${s.total}, 成 ${s.greeted||0}, 淘 ${s.rejected||0}, 跳 ${s.skipped||0}, 失 ${s.failed||0}`;
     }
   }
-});
-
-document.addEventListener('DOMContentLoaded', async () => {
-  await loadJobs();
-  await loadDailyUsage();
 });
 
 editCap.addEventListener('click', (e) => { e.preventDefault(); editDailyCap(); });
