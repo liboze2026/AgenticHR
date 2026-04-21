@@ -259,9 +259,13 @@ def get_job_competency(job_id: int):
             .order_by(HitlTask.id.desc())
             .first()
         )
+        cm = job.competency_model
+        # Defensive: 若 model 为 None / 空 dict / 缺核心字段, 视为未生成。
+        # 防止前端进入 view 模式后访问 model.hard_skills 抛 TypeError。
+        cm_valid = bool(cm) and isinstance(cm, dict) and isinstance(cm.get("hard_skills"), list)
         return {
-            "competency_model": job.competency_model,
-            "status": job.competency_model_status,
+            "competency_model": cm if cm_valid else None,
+            "status": job.competency_model_status if cm_valid else "none",
             "pending_hitl_task_id": pending_task.id if pending_task else None,
         }
     finally:

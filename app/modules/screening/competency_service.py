@@ -20,6 +20,14 @@ def apply_competency_to_job(job_id: int, competency_model: dict) -> None:
       - experience.years_max → work_years_max (null → 99)
       - hard_skills where must_have=True → required_skills (CSV)
     """
+    # 防御：拒绝把空 / 残缺的 model 写为 approved（防止 GET 后前端崩溃）
+    if not competency_model or not isinstance(competency_model, dict) \
+            or not isinstance(competency_model.get("hard_skills"), list):
+        raise ValueError(
+            f"competency_model is empty or missing hard_skills list; "
+            f"refuse to persist as approved. Got: {type(competency_model).__name__}"
+        )
+
     session = _session_factory()
     try:
         job = session.query(Job).filter(Job.id == job_id).first()

@@ -290,11 +290,18 @@ function statusText(s) {
   return { none: '未生成', draft: '待 HR 审核', approved: '已发布', rejected: '已驳回' }[s] || s
 }
 
+function _isValidModel(m) {
+  // 必须是非空 dict + 有 hard_skills 数组（避免 view 模式崩在 model.hard_skills.length）
+  return m && typeof m === 'object' && Array.isArray(m.hard_skills)
+}
+
 async function loadCompetency() {
   try {
     const resp = await competencyApi.get(props.jobId)
-    model.value = resp.competency_model || null
-    status.value = resp.status || 'none'
+    const m = resp.competency_model
+    model.value = _isValidModel(m) ? m : null
+    // 若 model 残缺，无论 status 是什么都展示为 none，避免 ✓ 标签 + 空模型的矛盾
+    status.value = model.value ? (resp.status || 'none') : 'none'
     emit('status-change', status.value)
   } catch {
     ElMessage.error('加载能力模型失败，请刷新页面重试')
