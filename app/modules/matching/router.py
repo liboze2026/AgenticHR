@@ -59,7 +59,25 @@ def list_results(
     if resume_id:
         q = q.filter_by(resume_id=resume_id).order_by(MatchingResult.total_score.desc())
 
-    all_rows = q.all()
+    raw_rows = q.all()
+    # 防御性过滤：剔除引用已删除 Resume / Job 的孤儿行（matching_results 无 FK）
+    if raw_rows:
+        live_resume_ids = {
+            r.id for r in db.query(Resume.id).filter(
+                Resume.id.in_({m.resume_id for m in raw_rows})
+            ).all()
+        }
+        live_job_ids = {
+            j.id for j in db.query(Job.id).filter(
+                Job.id.in_({m.job_id for m in raw_rows})
+            ).all()
+        }
+        all_rows = [
+            r for r in raw_rows
+            if r.resume_id in live_resume_ids and r.job_id in live_job_ids
+        ]
+    else:
+        all_rows = []
     if tag:
         all_rows = [r for r in all_rows if tag in json.loads(r.tags or "[]")]
 

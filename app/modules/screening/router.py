@@ -167,6 +167,15 @@ def delete_job(
             status_code=409,
             detail=f"该岗位下有 {linked} 场待面试，请先处理后再删除"
         )
+    # 级联清 F2 匹配结果（无 FK，需手动）
+    try:
+        from app.modules.matching.models import MatchingResult
+        db.query(MatchingResult).filter(
+            MatchingResult.job_id == job_id
+        ).delete(synchronize_session=False)
+        db.commit()
+    except Exception:
+        pass
     service.delete_job(job_id)
 
 

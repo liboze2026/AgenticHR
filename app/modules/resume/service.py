@@ -142,6 +142,14 @@ class ResumeService:
         resume = self.get_by_id(resume_id)
         if not resume:
             return False
+        # 级联清理：matching_results 没有 FK，需要手动清，否则会留孤儿行
+        try:
+            from app.modules.matching.models import MatchingResult
+            self.db.query(MatchingResult).filter(
+                MatchingResult.resume_id == resume_id
+            ).delete(synchronize_session=False)
+        except Exception:
+            pass
         self.db.delete(resume)
         self.db.commit()
         return True

@@ -45,6 +45,14 @@ def clear_all_resumes(
         if user_interview_ids:
             db.query(NotificationLog).filter(NotificationLog.interview_id.in_(user_interview_ids)).delete(synchronize_session=False)
         db.query(Interview).filter(Interview.resume_id.in_(user_resume_ids)).delete(synchronize_session=False)
+        # 级联清 F2 匹配结果（无 FK，需手动）
+        try:
+            from app.modules.matching.models import MatchingResult
+            db.query(MatchingResult).filter(
+                MatchingResult.resume_id.in_(user_resume_ids)
+            ).delete(synchronize_session=False)
+        except Exception:
+            pass
     else:
         notification_count = 0
     count = db.query(Resume).filter(Resume.user_id == user_id).count()
