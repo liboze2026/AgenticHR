@@ -50,40 +50,15 @@ def is_image_pdf(file_path: str) -> bool:
     return False
 
 
-def _binary_score(pix) -> float:
-    """评估一张位图的"二值化"程度（0-1）。
-    真二维码 ≈ 0.7+（黑+白占绝大多数像素），照片/头像 < 0.4，渐变/灰图 < 0.5。
-    """
-    try:
-        import fitz
-        if pix.colorspace and pix.colorspace.n > 1:
-            gray = fitz.Pixmap(fitz.csGRAY, pix)
-        else:
-            gray = pix
-        samples = bytes(gray.samples)
-        if not samples:
-            return 0.0
-        step = max(1, len(samples) // 5000)
-        binary = 0
-        total = 0
-        for i in range(0, len(samples), step):
-            v = samples[i]
-            if v < 30 or v > 225:
-                binary += 1
-            total += 1
-        return binary / total if total else 0.0
-    except Exception:
-        return 0.0
-
-
 def extract_boss_qr(pdf_path: str, output_path: str) -> str:
-    """从简历 PDF 首页提取二维码图片，保存到 output_path。
+    """从简历 PDF 首页**左上角固定坐标 (0, 0, 60, 60) 点**裁剪二维码图片。
 
-    多策略（按优先级尝试）：
-    1. 嵌入位图 + 方形 + **二值化得分高** → 标准 QR 码（避开头像）。
-    2. 嵌入位图 + 横长 banner（aspect < 0.3）+ 左侧方形二值化得分高
-       → Boss "QR + 文案" 横幅样式，裁左方形输出。
-    3. 兜底：固定坐标 (0, 0, 70, 70) 点裁剪。
+    Boss / 拉勾 / 51job 等多数招聘网站把候选人扫码 QR 放在简历首页左上角顶部
+    横幅，固定区域 ≈ 60×60 pt（21mm × 21mm）。300 DPI 渲染输出 250×250 px 的
+    PNG，足够清晰扫码。
+
+    简单粗暴 = 可预测 = 不容易出错。先前的"嵌入位图扫描 + 二值化打分 + banner
+    左裁"智能策略试图通用化，但被头像 / 多张 banner 等案例反复打脸，得不偿失。
 
     成功返回 output_path，失败返回空字符串。
     """
@@ -95,77 +70,11 @@ def extract_boss_qr(pdf_path: str, output_path: str) -> str:
             return ""
         page = doc[0]
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
-        images = page.get_images(full=True)
-
-        # ── 策略 1：方形 + 二值化高 ─────────────────────────
-        best_square = None
-        best_square_score = 0.0
-        for img_info in images:
-            try:
-                pix = fitz.Pixmap(doc, img_info[0])
-                if pix.width < 60 or pix.height < 60:
-                    continue
-                if pix.width > 1500 or pix.height > 1500:
-                    continue
-                aspect = min(pix.width, pix.height) / max(pix.width, pix.height)
-                if aspect < 0.85:
-                    continue  # 不够方
-                bin_score = _binary_score(pix)
-                if bin_score < 0.55:
-                    continue  # 像照片/头像
-                size_score = max(0.1, 1.0 - abs(min(pix.width, pix.height) - 200) / 400.0)
-                score = bin_score * size_score
-                if score > best_square_score:
-                    best_square = pix
-                    best_square_score = score
-            except Exception:
-                continue
-
-        if best_square is not None:
-            if best_square.colorspace and best_square.colorspace.n > 3:
-                best_square = fitz.Pixmap(fitz.csRGB, best_square)
-            best_square.save(output_path)
-            doc.close()
-            logger.info(f"QR extracted (square embedded, {best_square.width}x{best_square.height}, bin={best_square_score:.2f}): {output_path}")
-            return output_path
-
-        # ── 策略 2：横长 banner 左侧裁剪 ─────────────────────
-        for img_info in images:
-            try:
-                pix = fitz.Pixmap(doc, img_info[0])
-                w, h = pix.width, pix.height
-                if w < 300 or h < 60 or w > 3000 or h > 600:
-                    continue
-                if w / h < 3:
-                    continue  # 不够横长
-                # 取该图在 page 上的 bbox，渲染左侧方形 (高 = bbox.height) 区域
-                bboxes = page.get_image_rects(img_info[0])
-                if not bboxes:
-                    continue
-                bbox = bboxes[0]
-                left_square = fitz.Rect(
-                    bbox.x0,
-                    bbox.y0,
-                    bbox.x0 + bbox.height,
-                    bbox.y1,
-                )
-                rendered = page.get_pixmap(clip=left_square, dpi=300)
-                bin_score = _binary_score(rendered)
-                if bin_score >= 0.55:
-                    rendered.save(output_path)
-                    doc.close()
-                    logger.info(f"QR extracted (banner left-square crop, bin={bin_score:.2f}): {output_path}")
-                    return output_path
-            except Exception:
-                continue
-
-        # ── 策略 3：兜底固定 70×70 pt 裁剪 ───────────────────
-        crop_rect = fitz.Rect(0, 0, 70, 70)
+        crop_rect = fitz.Rect(0, 0, 60, 60)
         pix = page.get_pixmap(clip=crop_rect, dpi=300)
         pix.save(output_path)
         doc.close()
-        logger.info(f"QR extracted (fallback fixed crop): {output_path}")
+        logger.info(f"QR extracted (top-left 60pt fixed crop): {output_path}")
         return output_path
     except Exception as e:
         logger.error(f"QR extract error [{pdf_path}]: {e}")

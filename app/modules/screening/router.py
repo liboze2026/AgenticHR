@@ -142,6 +142,23 @@ def update_job(
         raise HTTPException(status_code=404, detail="岗位不存在")
     if job.user_id != user_id:
         raise HTTPException(status_code=403, detail="无权修改该岗位")
+
+    # 防御：JD 文本变了 → 旧能力模型已过时，重置 status 强制重抽
+    new_jd = getattr(data, "jd_text", None)
+    if new_jd is not None and new_jd.strip() and (job.jd_text or "").strip() != new_jd.strip():
+        if job.competency_model_status in ("draft", "approved"):
+            from app.database import SessionLocal as _SL
+            from app.modules.screening.models import Job as _J
+            _db = _SL()
+            try:
+                _job = _db.query(_J).filter(_J.id == job_id).first()
+                if _job:
+                    _job.competency_model_status = "none"
+                    _job.competency_model = None
+                    _db.commit()
+            finally:
+                _db.close()
+
     updated = service.update_job(job_id, data)
     return updated
 
@@ -231,9 +248,27 @@ async def extract_job_competency(job_id: int, body: _ExtractBody = _ExtractBody(
 
     db = SessionLocal()
     try:
+        from app.core.hitl.models import HitlTask
+        from datetime import datetime, timezone
         job = db.query(Job).filter(Job.id == job_id).first()
         job.competency_model = model.model_dump(mode="json")
         job.competency_model_status = "draft"
+        # 关掉同一岗位之前所有 HITL 任务（包括 pending + approved），避免审核队列堆孤儿
+        # 也保证审计血脉清晰：只有最新一条任务是当前生效版本
+        stale = (
+            db.query(HitlTask)
+            .filter(
+                HitlTask.entity_type == "job",
+                HitlTask.entity_id == job_id,
+                HitlTask.f_stage == "F1_competency_review",
+                HitlTask.status.in_(["pending", "approved"]),
+            )
+            .all()
+        )
+        for t in stale:
+            t.status = "superseded"
+            t.reviewed_at = datetime.now(timezone.utc)
+            t.note = "superseded by new extraction"
         db.commit()
     finally:
         db.close()
