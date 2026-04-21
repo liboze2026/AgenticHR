@@ -246,3 +246,41 @@ async def evaluate_and_record(
             resume_id=resume.id, score=score, threshold=threshold,
             reason=f"分 {score} < 阈值 {threshold}",
         )
+
+
+def record_greet_sent(
+    db: Session, user_id: int, resume_id: int,
+    success: bool, error_msg: str = "",
+) -> None:
+    """记录打招呼动作结果. 幂等: 已 greeted 的 resume 再调 success=True 不动 greeted_at."""
+    resume = (
+        db.query(Resume)
+        .filter(Resume.id == resume_id, Resume.user_id == user_id)
+        .first()
+    )
+    if not resume:
+        raise ValueError(f"resume {resume_id} not found for user {user_id}")
+
+    now = datetime.now(timezone.utc)
+
+    if success:
+        if resume.greet_status != "greeted":
+            resume.greet_status = "greeted"
+            resume.greeted_at = now
+            db.commit()
+        log_event(
+            f_stage="F3_greet_sent", action="greet_sent",
+            entity_type="resume", entity_id=resume_id,
+            input_payload={"boss_id": resume.boss_id},
+            reviewer_id=user_id,
+        )
+    else:
+        resume.greet_status = "failed"
+        db.commit()
+        log_event(
+            f_stage="F3_greet_failed", action="greet_failed",
+            entity_type="resume", entity_id=resume_id,
+            input_payload={"boss_id": resume.boss_id},
+            output_payload={"error": error_msg},
+            reviewer_id=user_id,
+        )
