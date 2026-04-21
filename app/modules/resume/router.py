@@ -332,6 +332,7 @@ async def ai_parse_single(
 @router.get("/{resume_id}/qr")
 def get_resume_qr(
     resume_id: int,
+    regen: int = 0,
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
@@ -339,6 +340,8 @@ def get_resume_qr(
 
     自愈机制：如果磁盘上没有缓存的 QR 图（被误删、从未生成过等），
     尝试从 PDF 现场裁剪一张回来。成功则写回 DB、返回图片。
+
+    `?regen=1`：强制忽略缓存，立即重跑算法（用于算法升级后让旧缓存重生成）。
     """
     resume = service.get_by_id(resume_id)
     if not resume:
@@ -346,12 +349,18 @@ def get_resume_qr(
     if resume.user_id != user_id:
         raise HTTPException(status_code=403, detail="无权访问该简历")
 
-    # 先尝试用 DB 记录的路径；不存在则走兜底从 PDF 即时生成
+    # 先尝试用 DB 记录的路径；不存在或 regen=1 则从 PDF 即时生成
     qr_path = resume.qr_code_path
-    need_regen = not qr_path or not Path(qr_path).exists()
+    need_regen = regen == 1 or (not qr_path) or (not Path(qr_path).exists())
     if need_regen and resume.pdf_path and Path(resume.pdf_path).exists():
         from app.modules.resume.pdf_parser import extract_boss_qr
         qr_out = Path("data/qrcodes") / f"{resume.id}.png"
+        # 强制重生成时先删旧文件
+        if regen == 1 and qr_out.exists():
+            try:
+                qr_out.unlink()
+            except Exception:
+                pass
         qr_path = extract_boss_qr(resume.pdf_path, str(qr_out))
         if qr_path:
             resume.qr_code_path = qr_path

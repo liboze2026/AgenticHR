@@ -288,10 +288,13 @@ function ensurePollingIfNeeded() {
 const qrNonce = ref(Date.now())
 function qrSrc(row) {
   const token = localStorage.getItem('token') || ''
-  return `/api/resumes/${row.id}/qr?v=${row._qrNonce || qrNonce.value}&token=${token}`
+  const regen = row._qrRegen ? '&regen=1' : ''
+  return `/api/resumes/${row.id}/qr?v=${row._qrNonce || qrNonce.value}&token=${token}${regen}`
 }
 function retryQr(row) {
+  // 点击"重试"会强制服务端重跑提取算法（旧缓存丢弃）
   row._qrError = false
+  row._qrRegen = true
   row._qrNonce = Date.now()
 }
 
