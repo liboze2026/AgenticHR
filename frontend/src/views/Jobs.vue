@@ -31,11 +31,10 @@
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
+      <el-table-column label="操作" width="240" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="editJob(row)">编辑</el-button>
           <el-button size="small" type="primary" @click="screenResumes(row.id)">筛选简历</el-button>
-          <el-button size="small" type="warning" @click="aiEvaluate(row)" :loading="row._aiLoading">AI评估</el-button>
           <el-button size="small" type="danger" link @click="deleteJob(row.id)">删除</el-button>
         </template>
       </el-table-column>
@@ -200,43 +199,14 @@
         </el-table>
       </div>
     </el-dialog>
-    <!-- AI评估结果弹窗 -->
-    <el-dialog v-model="showAiResult" title="AI 岗位匹配评估" width="800px">
-      <div v-if="aiResult">
-        <p style="margin-bottom: 12px">共评估 {{ aiResult.total }} 人，成功 {{ aiResult.succeeded }}，失败 {{ aiResult.failed }}</p>
-        <el-table :data="aiResult.results" max-height="500">
-          <el-table-column prop="resume_name" label="姓名" width="100" />
-          <el-table-column label="评分" width="80" sortable :sort-by="row => row.score">
-            <template #default="{ row }">
-              <span :style="{ color: row.score >= 70 ? '#52c41a' : row.score >= 40 ? '#faad14' : '#ff4d4f', fontWeight: 'bold' }">
-                {{ row.score >= 0 ? row.score : '-' }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="建议" width="80">
-            <template #default="{ row }">
-              <el-tag :type="row.recommendation === '推荐' ? 'success' : row.recommendation === '待定' ? 'warning' : 'danger'" size="small">
-                {{ row.recommendation }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="优势">
-            <template #default="{ row }">{{ row.strengths?.join('、') || '-' }}</template>
-          </el-table-column>
-          <el-table-column label="风险">
-            <template #default="{ row }">{{ row.risks?.join('、') || '-' }}</template>
-          </el-table-column>
-          <el-table-column prop="summary" label="综合评价" show-overflow-tooltip />
-        </el-table>
-      </div>
-    </el-dialog>
+    <!-- AI 评估弹窗已废弃 — F2 评分进入岗位详情看 "匹配候选人" Tab -->
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
-import { jobApi, aiApi, competencyApi, matchingApi } from '../api'
+import { jobApi, competencyApi, matchingApi } from '../api'
 import CompetencyEditor from '../components/CompetencyEditor.vue'
 import { extractingJobIds } from '../stores/extractingJobs.js'
 
@@ -246,8 +216,6 @@ const showCreateDialog = ref(false)
 const editingJob = ref(null)
 const showScreenResult = ref(false)
 const screenResult = ref(null)
-const showAiResult = ref(false)
-const aiResult = ref(null)
 const aiLoading = ref(false)
 
 const activeTab = ref('basic')
@@ -365,39 +333,43 @@ async function saveJob() {
     ElMessage.warning('最高薪资不能低于最低薪资'); return
   }
   try {
+    let targetJobId = null
+    let jdChanged = false
     if (editingJob.value) {
+      // 检测 JD 是否变更（变更则需要重抽能力模型）
+      jdChanged = (jobForm.value.jd_text || '').trim() !== (editingJob.value.jd_text || '').trim()
       await jobApi.update(editingJob.value.id, jobForm.value)
       ElMessage.success('更新成功')
       showCreateDialog.value = false
+      targetJobId = editingJob.value.id
     } else {
       const created = await jobApi.create(jobForm.value)
       showCreateDialog.value = false
-      loadJobs()
-      // 后台自动触发能力模型抽取，不阻塞关闭
-      if (created.id && jobForm.value.jd_text?.trim()) {
-        extractingJobIds.add(created.id)
-        ElMessage.success('岗位已创建，正在抽取能力模型…')
-        competencyApi.extract(created.id, jobForm.value.jd_text).then((result) => {
-          extractingJobIds.delete(created.id)
-          loadJobs()
-          if (result?.status === 'failed') {
-            ElNotification({ title: '能力模型抽取失败', message: '请进入岗位编辑页手动触发抽取', type: 'error', duration: 8000 })
-          } else {
-            ElNotification({ title: '能力模型已生成，待 HR 审核', message: '请前往「审核队列」完成审核后方可生效', type: 'warning', duration: 6000 })
-          }
-        }).catch(() => {
-          extractingJobIds.delete(created.id)
-          loadJobs()
-          ElNotification({ title: '能力模型抽取失败', message: '请进入岗位编辑页手动触发抽取', type: 'error', duration: 8000 })
-        })
-      } else {
-        ElMessage.success('岗位已创建')
-      }
-      return
+      targetJobId = created.id
+      jdChanged = !!jobForm.value.jd_text?.trim()
     }
     loadJobs()
+    // 自动触发抽取：新建有 JD，或编辑改了 JD
+    if (targetJobId && jdChanged && jobForm.value.jd_text?.trim()) {
+      extractingJobIds.add(targetJobId)
+      ElMessage.success(editingJob.value ? 'JD 已变更，正在重抽能力模型…' : '岗位已创建，正在抽取能力模型…')
+      competencyApi.extract(targetJobId, jobForm.value.jd_text).then((result) => {
+        extractingJobIds.delete(targetJobId)
+        loadJobs()
+        if (result?.status === 'failed') {
+          ElNotification({ title: '能力模型抽取失败', message: '请进入岗位编辑页手动触发抽取', type: 'error', duration: 8000 })
+        } else {
+          ElNotification({ title: '能力模型已生成，待 HR 审核', message: '请前往「审核队列」完成审核后方可生效', type: 'warning', duration: 6000 })
+        }
+      }).catch((e) => {
+        extractingJobIds.delete(targetJobId)
+        loadJobs()
+        const msg = e?.code === 'ECONNABORTED' ? 'LLM 调用超时（>120s），请稍后到岗位编辑页重试' : '请进入岗位编辑页手动触发抽取'
+        ElNotification({ title: '能力模型抽取失败', message: msg, type: 'error', duration: 8000 })
+      })
+    }
   } catch (e) {
-    ElMessage.error('保存失败')
+    ElMessage.error('保存失败：' + (e.response?.data?.detail || e.message || '请重试'))
   }
 }
 
@@ -417,26 +389,7 @@ async function deleteJob(id) {
   }
 }
 
-async function aiEvaluate(row) {
-  row._aiLoading = true
-  try {
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('timeout')), 60000)
-    )
-    const result = await Promise.race([aiApi.batchEvaluate({ job_id: row.id }), timeoutPromise])
-    aiResult.value = result
-    showAiResult.value = true
-    ElMessage.success(`AI评估完成：${result.succeeded} 人`)
-  } catch (e) {
-    if (e.message === 'timeout') {
-      ElMessage.warning('AI评估超时，请稍后重试')
-    } else {
-      ElMessage.error(e.response?.data?.detail || 'AI评估失败，请检查AI配置')
-    }
-  } finally {
-    row._aiLoading = false
-  }
-}
+// AI 评估按钮已废弃 — F2 用 matchingApi.recomputeJob 在岗位详情 "匹配候选人" Tab 触发
 
 async function screenResumes(jobId) {
   try {

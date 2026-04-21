@@ -2,7 +2,7 @@ import axios from 'axios'
 
 const api = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 120000,   // 120s — LLM 抽取/评分类调用经常 30-90s
 })
 
 // 请求拦截器：自动带 Token
@@ -94,11 +94,10 @@ export const notificationApi = {
   clearAll: () => api.delete('/notification/clear-all'),
 }
 
-// AI API
+// AI API — F2 已废弃 evaluate / batchEvaluate（路由 410 Gone）
+// 评分用 matchingApi.score / matchingApi.recomputeJob / matchingApi.recomputeResume
 export const aiApi = {
-  status: () => api.get('/ai/status'),
-  evaluate: (data) => api.post('/ai/evaluate', data),
-  batchEvaluate: (data) => api.post('/ai/evaluate/batch', data),
+  status: () => api.get('/ai-evaluation/status'),
 }
 
 // 能力模型 API (F1)
