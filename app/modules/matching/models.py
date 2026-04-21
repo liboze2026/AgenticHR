@@ -27,6 +27,8 @@ class MatchingResult(Base):
     evidence = Column(Text, nullable=False, default="{}")
     tags = Column(Text, nullable=False, default="[]")
 
+    job_action = Column(String(20), nullable=True)  # 'passed' / 'rejected' / null — per-(resume, job) HR decision
+
     competency_hash = Column(String(40), nullable=False)
     weights_hash = Column(String(40), nullable=False)
 

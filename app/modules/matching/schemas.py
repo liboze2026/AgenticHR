@@ -29,6 +29,8 @@ class MatchingResultResponse(BaseModel):
     evidence: dict[str, list[EvidenceItem]] = Field(default_factory=dict)
     tags: list[str] = []
 
+    job_action: str | None = None  # per-(resume, job) HR decision: 'passed' / 'rejected' / null
+
     stale: bool = False
     scored_at: datetime
 

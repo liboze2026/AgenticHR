@@ -6,8 +6,9 @@
       <div class="toolbar-actions">
         <el-input v-model="keyword" placeholder="搜索姓名/技能" style="width: 220px" @keyup.enter="loadResumes" clearable />
         <el-select v-model="statusFilter" placeholder="状态" clearable @change="loadResumes" style="width: 120px">
-          <el-option label="在库" value="active" />
-          <el-option label="已归档" value="archived" />
+          <el-option label="已通过" value="passed" />
+          <el-option label="已淘汰" value="rejected" />
+          <el-option label="待筛选" value="pending" />
         </el-select>
         <el-upload :show-file-list="false" accept=".pdf" :http-request="handleUpload">
           <el-button type="primary">上传PDF简历</el-button>
@@ -44,7 +45,9 @@
             <span class="row-phone">{{ row.phone || '—' }}</span>
             <div class="row-tags">
               <el-tag v-if="!row.phone && !row.email" type="warning" size="small" effect="plain">缺联系方式</el-tag>
-              <el-tag v-if="row.status === 'rejected'" type="info" size="small">已归档</el-tag>
+              <el-tag v-if="row.status === 'rejected'" type="danger" size="small">已淘汰</el-tag>
+              <el-tag v-else-if="row.status === 'pending'" type="info" size="small">待筛选</el-tag>
+              <el-tag v-else type="success" size="small">已通过</el-tag>
               <el-tag v-if="row.ai_parsed === 'parsing'" type="primary" effect="plain" size="small">
                 <el-icon class="is-loading" style="margin-right: 3px"><Loading /></el-icon>内容解析中
               </el-tag>
@@ -136,10 +139,10 @@
               <!-- 操作栏 -->
               <div class="detail-footer">
                 <el-button-group>
-                  <el-button v-if="row.status !== 'rejected'" size="small" type="info" plain
-                    @click.stop="toggleStatus(row, 'rejected')">归档</el-button>
-                  <el-button v-else size="small" type="success" plain
-                    @click.stop="toggleStatus(row, 'passed')">激活</el-button>
+                  <el-button :type="row.status === 'passed' ? 'success' : 'default'" size="small"
+                    @click.stop="toggleStatus(row, 'passed')">{{ row.status === 'passed' ? '已通过' : '通过' }}</el-button>
+                  <el-button :type="row.status === 'rejected' ? 'danger' : 'default'" size="small"
+                    @click.stop="toggleStatus(row, 'rejected')">{{ row.status === 'rejected' ? '已淘汰' : '淘汰' }}</el-button>
                 </el-button-group>
                 <div>
                   <el-button v-if="row.pdf_path" size="small" link type="primary" @click.stop="viewPdf(row.id)">查看PDF</el-button>
@@ -255,13 +258,11 @@ function getSchoolDisplay(row) {
 async function loadResumes() {
   loading.value = true
   try {
-    const apiStatus = statusFilter.value === 'active' ? 'passed' :
-                      statusFilter.value === 'archived' ? 'rejected' : undefined
     const data = await resumeApi.list({
       page: page.value,
       page_size: pageSize,
       keyword: keyword.value || undefined,
-      status: apiStatus,
+      status: statusFilter.value || undefined,
     })
     resumes.value = data.items
     total.value = data.total
@@ -349,16 +350,16 @@ async function toggleStatus(row, targetStatus) {
   if (targetStatus === 'rejected') {
     try {
       await ElMessageBox.confirm(
-        `确定将 "${row.name}" 归档？归档后该候选人不会出现在任何岗位的匹配候选人 Tab 里（仍可通过状态筛选 → 已归档 找回）。`,
-        '确认归档',
-        { type: 'warning', confirmButtonText: '确认归档', cancelButtonText: '取消' }
+        `确定将 "${row.name}" 标记为已淘汰？`,
+        '确认淘汰',
+        { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }
       )
     } catch { return }
   }
   try {
     await resumeApi.update(row.id, { status: targetStatus })
     row.status = targetStatus
-    const msgs = { passed: '已激活，候选人重新进入在库状态', rejected: '已归档' }
+    const msgs = { passed: '已标记为通过', rejected: '已标记为淘汰' }
     ElMessage.success(msgs[targetStatus])
   } catch (e) {
     ElMessage.error('操作失败')
@@ -418,11 +419,9 @@ function pollAiParseStatus() {
         return
       }
 
-      const pollApiStatus = statusFilter.value === 'active' ? 'passed' :
-                            statusFilter.value === 'archived' ? 'rejected' : undefined
       const data = await resumeApi.list({
         page: page.value, page_size: pageSize,
-        keyword: keyword.value || undefined, status: pollApiStatus,
+        keyword: keyword.value || undefined, status: statusFilter.value || undefined,
       })
       resumes.value = data.items
       total.value = data.total
@@ -553,7 +552,9 @@ onUnmounted(() => {
   transition: background 0.15s, border-left-color 0.15s;
 }
 .resume-list-item:last-child { border-bottom: none; }
-.resume-list-item.status-rejected { border-left-color: #c0c4cc; opacity: 0.6; }
+.resume-list-item.status-passed { border-left-color: #67c23a; }
+.resume-list-item.status-pending { border-left-color: #e6a23c; }
+.resume-list-item.status-rejected { border-left-color: #f56c6c; opacity: 0.65; }
 .resume-list-item.expanded {
   background: #fafbfc;
   border-left-color: #409eff !important;

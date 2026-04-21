@@ -137,6 +137,8 @@
                 <div class="m-tags">
                   <el-tag v-for="t in item.tags" :key="t" :type="tagType(t)" size="small">{{ t }}</el-tag>
                   <el-tag v-if="item.stale" type="warning" effect="plain" size="small">⚠ 过时</el-tag>
+                  <el-tag v-if="item.job_action === 'passed'" type="success" size="small" effect="dark">本岗位通过</el-tag>
+                  <el-tag v-else-if="item.job_action === 'rejected'" type="danger" size="small" effect="dark">本岗位淘汰</el-tag>
                 </div>
               </div>
 
@@ -160,6 +162,30 @@
                         <el-button v-if="e.source && e.offset" link size="small" @click="jumpToResume(item.resume_id, e.source, e.offset)">查看原文</el-button>
                       </div>
                     </div>
+                  </div>
+
+                  <!-- 本岗位决策按钮 -->
+                  <div class="job-action-bar">
+                    <span class="job-action-label">本岗位决策：</span>
+                    <el-button
+                      :type="item.job_action === 'passed' ? 'success' : 'default'"
+                      size="small"
+                      @click.stop="setJobAction(item, 'passed')"
+                      :loading="item._actionLoading"
+                    >{{ item.job_action === 'passed' ? '已通过' : '通过' }}</el-button>
+                    <el-button
+                      :type="item.job_action === 'rejected' ? 'danger' : 'default'"
+                      size="small"
+                      @click.stop="setJobAction(item, 'rejected')"
+                      :loading="item._actionLoading"
+                    >{{ item.job_action === 'rejected' ? '已淘汰' : '淘汰' }}</el-button>
+                    <el-button
+                      v-if="item.job_action"
+                      size="small"
+                      link
+                      @click.stop="setJobAction(item, null)"
+                      :loading="item._actionLoading"
+                    >清除决策</el-button>
                   </div>
                 </div>
               </transition>
@@ -420,6 +446,12 @@ const matching = ref({
   pollTimer: null,
 })
 
+function jobActionOrder(action) {
+  if (action === 'passed') return 0
+  if (action == null) return 1
+  return 2  // 'rejected'
+}
+
 async function loadMatching() {
   if (!editingJob.value) return
   matching.value.loading = true
@@ -429,13 +461,51 @@ async function loadMatching() {
       page_size: matching.value.pageSize,
       tag: matching.value.tagFilter || undefined,
     })
-    matching.value.items = data.items
+    // Sort: passed first, then unevaluated, then rejected; within each group by total_score desc
+    const sorted = [...data.items].sort((a, b) => {
+      const ao = jobActionOrder(a.job_action)
+      const bo = jobActionOrder(b.job_action)
+      if (ao !== bo) return ao - bo
+      return b.total_score - a.total_score
+    })
+    matching.value.items = sorted
     matching.value.total = data.total
     matching.value.staleCount = data.items.filter(i => i.stale).length
   } catch (e) {
     ElMessage.error('加载匹配候选人失败')
   } finally {
     matching.value.loading = false
+  }
+}
+
+async function setJobAction(item, action) {
+  if (item._actionLoading) return
+  if (action === 'rejected' && item.job_action !== 'rejected') {
+    try {
+      await ElMessageBox.confirm(
+        `确定将 "${item.resume_name}" 在本岗位标记为淘汰？不影响该候选人的全局状态。`,
+        '确认淘汰',
+        { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }
+      )
+    } catch { return }
+  }
+  item._actionLoading = true
+  try {
+    await matchingApi.setAction(item.id, action)
+    item.job_action = action
+    ElMessage.success(action === 'passed' ? '已标记本岗位通过' : action === 'rejected' ? '已标记本岗位淘汰' : '已清除本岗位决策')
+    // Re-sort after action change
+    const sorted = [...matching.value.items].sort((a, b) => {
+      const ao = jobActionOrder(a.job_action)
+      const bo = jobActionOrder(b.job_action)
+      if (ao !== bo) return ao - bo
+      return b.total_score - a.total_score
+    })
+    matching.value.items = sorted
+  } catch (e) {
+    ElMessage.error('操作失败')
+  } finally {
+    item._actionLoading = false
   }
 }
 
@@ -547,6 +617,13 @@ onMounted(loadJobs)
 .evidence-item { display: flex; gap: 6px; align-items: center; font-size: 13px; margin: 3px 0; }
 .ev-dim { color: #909399; font-size: 11px; min-width: 70px; }
 .ev-text { flex: 1; }
+
+.job-action-bar {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 14px; padding-top: 10px;
+  border-top: 1px dashed #e8e8e8;
+}
+.job-action-label { font-size: 12px; color: #909399; }
 
 .expand-enter-active, .expand-leave-active { transition: all 0.2s ease-out; overflow: hidden; }
 .expand-enter-from, .expand-leave-to { max-height: 0; opacity: 0; }

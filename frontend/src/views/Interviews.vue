@@ -103,12 +103,31 @@
       <el-form :model="form" label-width="100px">
         <el-row :gutter="16">
           <el-col :span="10">
+            <el-form-item label="目标岗位" required>
+              <el-select v-model="form.job_id" filterable placeholder="请选择岗位" style="width: 100%"
+                @change="onJobChange">
+                <el-option v-for="j in jobOptions" :key="j.id"
+                  :label="`${j.title}${j.department ? '（' + j.department + '）' : ''}`"
+                  :value="j.id" />
+              </el-select>
+            </el-form-item>
+
             <el-form-item label="候选人" required>
-              <el-select v-model="form.resume_id" filterable placeholder="搜索候选人" style="width: 100%">
-                <el-option v-for="r in candidateOptions" :key="r.id"
-                  :label="`${r.name}（${r.education || ''}${r.education && r.job_intention ? ' · ' : ''}${r.job_intention || ''}）`"
+              <el-select v-model="form.resume_id" filterable
+                :placeholder="form.job_id ? (passedCandidatesLoading ? '加载中…' : '选择通过候选人') : '请先选择岗位'"
+                :disabled="!form.job_id"
+                style="width: 100%">
+                <template v-if="form.job_id && !passedCandidatesLoading && passedCandidatesForJob.length === 0">
+                  <el-option disabled :value="null" label="该岗位下还没有标记'通过'的候选人" />
+                </template>
+                <el-option v-for="r in passedCandidatesForJob" :key="r.id"
+                  :label="`${r.name}${r.phone ? '（' + r.phone + '）' : ''}`"
                   :value="r.id" />
               </el-select>
+              <div v-if="form.job_id && !passedCandidatesLoading && passedCandidatesForJob.length === 0"
+                style="font-size: 11px; color: #f56c6c; margin-top: 4px; line-height: 1.4">
+                该岗位下还没有标记"通过"的候选人。请先去岗位详情的"匹配候选人"Tab 标记。
+              </div>
             </el-form-item>
 
             <el-alert v-if="selectedCandidate && !selectedCandidate.phone && !selectedCandidate.email"
@@ -234,7 +253,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, UserFilled } from '@element-plus/icons-vue'
-import { schedulingApi, notificationApi, resumeApi, meetingApi } from '../api'
+import { schedulingApi, notificationApi, resumeApi, meetingApi, jobApi, matchingApi } from '../api'
 import FullCalendar from '@fullcalendar/vue3'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
@@ -251,9 +270,12 @@ const resumeMap = ref({})
 const interviewerMap = ref({})
 const calendarRef = ref(null)
 const calendarEvents = ref([])
+const jobOptions = ref([])
+const passedCandidatesForJob = ref([])
+const passedCandidatesLoading = ref(false)
 
 const form = ref({
-  resume_id: null, interviewer_id: null, timeRange: null,
+  job_id: null, resume_id: null, interviewer_id: null, timeRange: null,
   meeting_topic: '', meeting_link: '', meeting_password: '', status: 'scheduled', notes: ''
 })
 // 追踪用户是否手动改过会议名称，没改过时跟随候选人/面试官自动更新
@@ -369,7 +391,7 @@ async function loadInterviews() {
   }
 }
 async function loadOptions() {
-  // 加载所有简历（存完整对象到 resumeMap 用于卡片展示），candidateOptions 只保留 passed 用于选择。
+  // 加载所有简历（存完整对象到 resumeMap 用于卡片展示）
   // 后端 page_size 上限 100，翻页拉取直到取完。
   try {
     const all = []
@@ -393,6 +415,30 @@ async function loadOptions() {
   } catch (e) {
     console.error('listInterviewers failed:', e)
   }
+  try {
+    const d = await jobApi.list()
+    jobOptions.value = (d.items || []).filter(j => j.is_active && j.competency_model_status === 'approved')
+  } catch (e) {
+    console.error('loadJobs failed:', e)
+  }
+}
+
+async function onJobChange(jobId) {
+  form.value.resume_id = null
+  passedCandidatesForJob.value = []
+  if (!jobId) return
+  passedCandidatesLoading.value = true
+  try {
+    const data = await matchingApi.listPassedForJob(jobId)
+    passedCandidatesForJob.value = data
+    // Also update resumeMap with these candidates so card display works
+    data.forEach(r => { if (!resumeMap.value[r.id]) resumeMap.value[r.id] = r })
+  } catch (e) {
+    console.error('listPassedForJob failed:', e)
+    passedCandidatesForJob.value = []
+  } finally {
+    passedCandidatesLoading.value = false
+  }
 }
 function getResume(id) { return resumeMap.value[id] || null }
 function getResumeName(id) { const r = resumeMap.value[id]; return r ? r.name : `候选人#${id}` }
@@ -411,7 +457,8 @@ function getEduInfo(resume) {
 // 选中候选人的完整对象（给新建面试弹窗用）
 const selectedCandidate = computed(() => {
   if (!form.value.resume_id) return null
-  return candidateOptions.value.find(r => r.id === form.value.resume_id)
+  return passedCandidatesForJob.value.find(r => r.id === form.value.resume_id)
+    || candidateOptions.value.find(r => r.id === form.value.resume_id)
     || resumeMap.value[form.value.resume_id]
     || null
 })
@@ -419,15 +466,18 @@ const selectedCandidate = computed(() => {
 // === dialog ===
 function openDialog(row) {
   calendarEvents.value = []; calendarLoading.value = false; loadOptions()
+  passedCandidatesForJob.value = []
   if (row) {
     editingId.value = row.id
-    form.value = { resume_id: row.resume_id, interviewer_id: row.interviewer_id, timeRange: [new Date(row.start_time + 'Z'), new Date(row.end_time + 'Z')], meeting_topic: row.meeting_topic || '', meeting_link: row.meeting_link || '', meeting_password: row.meeting_password || '', status: row.status, notes: row.notes || '' }
+    form.value = { job_id: row.job_id || null, resume_id: row.resume_id, interviewer_id: row.interviewer_id, timeRange: [new Date(row.start_time + 'Z'), new Date(row.end_time + 'Z')], meeting_topic: row.meeting_topic || '', meeting_link: row.meeting_link || '', meeting_password: row.meeting_password || '', status: row.status, notes: row.notes || '' }
     // 编辑模式：视已存储的名称为"用户已设置"，不再自动覆盖
     meetingTopicEdited.value = !!row.meeting_topic
     if (row.interviewer_id) onInterviewerChange()
+    // 编辑模式：如有 job_id，预加载通过候选人
+    if (row.job_id) onJobChange(row.job_id)
   } else {
     editingId.value = null
-    form.value = { resume_id: null, interviewer_id: null, timeRange: null, meeting_topic: '', meeting_link: '', meeting_password: '', status: 'scheduled', notes: '' }
+    form.value = { job_id: null, resume_id: null, interviewer_id: null, timeRange: null, meeting_topic: '', meeting_link: '', meeting_password: '', status: 'scheduled', notes: '' }
     meetingTopicEdited.value = false
   }
   showDialog.value = true
@@ -445,6 +495,7 @@ watch(() => [form.value.resume_id, form.value.interviewer_id], ([rid, iid]) => {
 })
 
 async function saveInterview() {
+  if (!form.value.job_id) { ElMessage.warning('请先选择目标岗位'); return }
   if (!form.value.resume_id || !form.value.interviewer_id || !form.value.timeRange) { ElMessage.warning('请填写完整信息'); return }
   const [s, e] = form.value.timeRange
   const sd = s instanceof Date ? s : new Date(s), ed = e instanceof Date ? e : new Date(e)
@@ -453,7 +504,7 @@ async function saveInterview() {
       await schedulingApi.updateInterview(editingId.value, { start_time: sd.toISOString(), end_time: ed.toISOString(), meeting_topic: form.value.meeting_topic, meeting_link: form.value.meeting_link, meeting_password: form.value.meeting_password, status: form.value.status, notes: form.value.notes })
       ElMessage.success('已更新')
     } else {
-      await schedulingApi.createInterview({ resume_id: form.value.resume_id, interviewer_id: form.value.interviewer_id, start_time: sd.toISOString(), end_time: ed.toISOString(), meeting_topic: form.value.meeting_topic, meeting_link: form.value.meeting_link, meeting_password: form.value.meeting_password })
+      await schedulingApi.createInterview({ job_id: form.value.job_id, resume_id: form.value.resume_id, interviewer_id: form.value.interviewer_id, start_time: sd.toISOString(), end_time: ed.toISOString(), meeting_topic: form.value.meeting_topic, meeting_link: form.value.meeting_link, meeting_password: form.value.meeting_password })
       ElMessage.success('已安排')
     }
     showDialog.value = false; loadInterviews()

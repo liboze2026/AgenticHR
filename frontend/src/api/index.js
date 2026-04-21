@@ -156,6 +156,9 @@ export const matchingApi = {
   recomputeJob: (job_id) => api.post('/matching/recompute', { job_id }),
   recomputeResume: (resume_id) => api.post('/matching/recompute', { resume_id }),
   recomputeStatus: (task_id) => api.get(`/matching/recompute/status/${task_id}`),
+  // per-(resume, job) action: 'passed' / 'rejected' / null
+  setAction: (id, action) => api.patch(`/matching/results/${id}/action`, { action }),
+  listPassedForJob: (job_id) => api.get(`/matching/passed-resumes/${job_id}`),
 }
 
 export default api

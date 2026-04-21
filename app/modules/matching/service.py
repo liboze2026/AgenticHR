@@ -200,6 +200,7 @@ class MatchingService:
             missing_must_haves=json.loads(row.missing_must_haves or "[]"),
             evidence={k: [EvidenceItem(**e) for e in v] for k, v in evidence_dict.items()},
             tags=json.loads(row.tags or "[]"),
+            job_action=row.job_action,
             stale=(row.competency_hash != current_competency_hash
                    or row.weights_hash != current_weights_hash),
             scored_at=row.scored_at,

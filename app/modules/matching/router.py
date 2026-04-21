@@ -115,6 +115,7 @@ def list_results(
             missing_must_haves=json.loads(r.missing_must_haves or "[]"),
             evidence={k: [EvidenceItem(**e) for e in v] for k, v in evidence_dict.items()},
             tags=json.loads(r.tags or "[]"),
+            job_action=r.job_action,
             stale=(r.competency_hash != current_c or r.weights_hash != current_w),
             scored_at=r.scored_at,
         ))
@@ -124,10 +125,40 @@ def list_results(
 
 
 from fastapi import BackgroundTasks
+from pydantic import BaseModel as _PydanticBaseModel
 from app.modules.matching.service import (
     _new_task, _get_task, _prune_stale_tasks,
     recompute_job_with_fresh_session, recompute_resume_with_fresh_session,
 )
+
+
+class _ActionBody(_PydanticBaseModel):
+    action: str | None = None  # 'passed' / 'rejected' / null
+
+
+@router.patch("/results/{result_id}/action")
+def set_action(result_id: int, body: _ActionBody, db: Session = Depends(get_db)):
+    _require_matching_enabled()
+    row = db.query(MatchingResult).filter_by(id=result_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="matching result not found")
+    if body.action not in (None, "passed", "rejected"):
+        raise HTTPException(status_code=400, detail="action must be passed/rejected/null")
+    row.job_action = body.action
+    db.commit()
+    return {"id": row.id, "job_action": row.job_action}
+
+
+@router.get("/passed-resumes/{job_id}")
+def list_passed_for_job(job_id: int, db: Session = Depends(get_db)):
+    _require_matching_enabled()
+    rows = db.query(MatchingResult).filter_by(job_id=job_id, job_action="passed").all()
+    resume_ids = [r.resume_id for r in rows]
+    resumes = db.query(Resume).filter(Resume.id.in_(resume_ids)).all() if resume_ids else []
+    return [
+        {"id": r.id, "name": r.name, "phone": r.phone, "email": r.email}
+        for r in resumes
+    ]
 
 
 @router.post("/recompute")
