@@ -131,14 +131,38 @@
             <el-empty v-if="!matching.items.length" description="尚无匹配结果，发布能力模型后会自动打分" />
 
             <div v-for="item in matching.items" :key="item.id" class="matching-row" :class="{ expanded: matching.expandedId === item.id }">
-              <div class="matching-head" @click="toggleMatchingExpand(item.id)">
-                <span class="m-name">{{ item.resume_name }}</span>
-                <span class="m-score">{{ item.total_score.toFixed(1) }}</span>
-                <div class="m-tags">
-                  <el-tag v-for="t in item.tags" :key="t" :type="tagType(t)" size="small">{{ t }}</el-tag>
-                  <el-tag v-if="item.stale" type="warning" effect="plain" size="small">⚠ 过时</el-tag>
-                  <el-tag v-if="item.job_action === 'passed'" type="success" size="small" effect="dark">本岗位通过</el-tag>
-                  <el-tag v-else-if="item.job_action === 'rejected'" type="danger" size="small" effect="dark">本岗位淘汰</el-tag>
+              <div class="matching-head">
+                <div class="m-head-left" @click="toggleMatchingExpand(item.id)">
+                  <el-icon class="m-arrow"><ArrowRight /></el-icon>
+                  <span class="m-name">{{ item.resume_name }}</span>
+                  <span class="m-score">{{ item.total_score.toFixed(1) }}</span>
+                  <div class="m-tags">
+                    <el-tag v-for="t in item.tags" :key="t" :type="tagType(t)" size="small">{{ t }}</el-tag>
+                    <el-tag v-if="item.stale" type="warning" effect="plain" size="small">⚠ 过时</el-tag>
+                    <el-tag v-if="item.job_action === 'passed'" type="success" size="small" effect="dark">本岗位通过</el-tag>
+                    <el-tag v-else-if="item.job_action === 'rejected'" type="danger" size="small" effect="dark">本岗位淘汰</el-tag>
+                  </div>
+                </div>
+                <div class="m-head-actions" @click.stop>
+                  <el-button
+                    :type="item.job_action === 'passed' ? 'success' : 'default'"
+                    size="small"
+                    @click="setJobAction(item, 'passed')"
+                    :loading="item._actionLoading"
+                  >{{ item.job_action === 'passed' ? '✓ 通过' : '通过' }}</el-button>
+                  <el-button
+                    :type="item.job_action === 'rejected' ? 'danger' : 'default'"
+                    size="small"
+                    @click="setJobAction(item, 'rejected')"
+                    :loading="item._actionLoading"
+                  >{{ item.job_action === 'rejected' ? '✕ 淘汰' : '淘汰' }}</el-button>
+                  <el-button
+                    v-if="item.job_action"
+                    size="small"
+                    link
+                    @click="setJobAction(item, null)"
+                    :loading="item._actionLoading"
+                  >清除</el-button>
                 </div>
               </div>
 
@@ -163,30 +187,6 @@
                       </div>
                     </div>
                   </div>
-
-                  <!-- 本岗位决策按钮 -->
-                  <div class="job-action-bar">
-                    <span class="job-action-label">本岗位决策：</span>
-                    <el-button
-                      :type="item.job_action === 'passed' ? 'success' : 'default'"
-                      size="small"
-                      @click.stop="setJobAction(item, 'passed')"
-                      :loading="item._actionLoading"
-                    >{{ item.job_action === 'passed' ? '已通过' : '通过' }}</el-button>
-                    <el-button
-                      :type="item.job_action === 'rejected' ? 'danger' : 'default'"
-                      size="small"
-                      @click.stop="setJobAction(item, 'rejected')"
-                      :loading="item._actionLoading"
-                    >{{ item.job_action === 'rejected' ? '已淘汰' : '淘汰' }}</el-button>
-                    <el-button
-                      v-if="item.job_action"
-                      size="small"
-                      link
-                      @click.stop="setJobAction(item, null)"
-                      :loading="item._actionLoading"
-                    >清除决策</el-button>
-                  </div>
                 </div>
               </transition>
             </div>
@@ -208,34 +208,14 @@
       </template>
     </el-dialog>
 
-    <!-- 筛选结果弹窗 -->
-    <el-dialog v-model="showScreenResult" title="硬性条件筛选结果（仅供参考，不修改简历状态）" width="700px">
-      <div v-if="screenResult">
-        <p style="margin-bottom: 4px">共 {{ screenResult.total }} 份简历，通过 {{ screenResult.passed }}，未通过 {{ screenResult.rejected }}</p>
-        <p style="margin-bottom: 12px; color: #909399; font-size: 12px">
-          此筛选只是按本岗位的硬性条件做基础匹配；候选人的全局"在库 / 已归档"状态不会变。
-          详细评分进岗位详情的"匹配候选人"Tab 看 F2 AI 评分。
-        </p>
-        <el-table :data="screenResult.results" max-height="400">
-          <el-table-column prop="resume_name" label="姓名" width="120" />
-          <el-table-column label="结果" width="80">
-            <template #default="{ row }">
-              <el-tag :type="row.passed ? 'success' : 'warning'" size="small">{{ row.passed ? '通过' : '未通过' }}</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column label="原因">
-            <template #default="{ row }">{{ row.reject_reasons?.join('; ') || '-' }}</template>
-          </el-table-column>
-        </el-table>
-      </div>
-    </el-dialog>
-    <!-- AI 评估弹窗已废弃 — F2 评分进入岗位详情看 "匹配候选人" Tab -->
+    <!-- 旧的硬筛 / AI 评估弹窗已废弃，改为 "筛选简历" 直接打开 "匹配候选人" Tab -->
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
+import { ArrowRight } from '@element-plus/icons-vue'
 import { jobApi, competencyApi, matchingApi } from '../api'
 import CompetencyEditor from '../components/CompetencyEditor.vue'
 import { extractingJobIds } from '../stores/extractingJobs.js'
@@ -244,8 +224,7 @@ const jobs = ref([])
 const loading = ref(false)
 const showCreateDialog = ref(false)
 const editingJob = ref(null)
-const showScreenResult = ref(false)
-const screenResult = ref(null)
+// const showScreenResult / screenResult 已移除 — "筛选简历" 现在直接打开匹配候选人 Tab
 const aiLoading = ref(false)
 
 const activeTab = ref('basic')
@@ -421,15 +400,25 @@ async function deleteJob(id) {
 
 // AI 评估按钮已废弃 — F2 用 matchingApi.recomputeJob 在岗位详情 "匹配候选人" Tab 触发
 
-async function screenResumes(jobId) {
-  try {
-    const result = await jobApi.screen(jobId)
-    screenResult.value = result
-    showScreenResult.value = true
-    ElMessage.success(`筛选完成：通过 ${result.passed}，未通过 ${result.rejected}（简历状态未变更）`)
-  } catch (e) {
-    ElMessage.error('筛选失败')
+// "筛选简历" 现在直接进入岗位详情的 "匹配候选人" Tab，让 HR 立刻能 通过/淘汰
+function screenResumes(jobId) {
+  const job = jobs.value.find(j => j.id === jobId)
+  if (!job) {
+    ElMessage.error('岗位未找到')
+    return
   }
+  if (job.competency_model_status !== 'approved') {
+    ElMessage.warning('请先发布该岗位的能力模型，才能查看 AI 匹配候选人')
+    editJob(job)
+    return
+  }
+  // 走 editJob 流程，但 activeTab 直接定位到 matching
+  editingJob.value = job
+  jobForm.value = { ...job }
+  currentJobId.value = job.id
+  activeTab.value = 'matching'
+  parseStep.value = 'review'
+  showCreateDialog.value = true
 }
 
 // ── 匹配候选人 Tab ──────────────────────────────────────────────────────────
@@ -594,10 +583,21 @@ onMounted(loadJobs)
 .matching-row.expanded { border-color: #409eff; }
 .matching-head {
   display: flex; align-items: center; gap: 12px;
-  padding: 10px 16px; cursor: pointer;
+  padding: 10px 16px;
   transition: background 0.1s;
 }
-.matching-head:hover { background: #f5f7fa; }
+.m-head-left {
+  flex: 1; display: flex; align-items: center; gap: 12px;
+  cursor: pointer; min-width: 0;
+}
+.m-head-left:hover { opacity: 0.85; }
+.m-arrow {
+  font-size: 12px; color: #909399; transition: transform 0.2s; flex-shrink: 0;
+}
+.matching-row.expanded .m-arrow { transform: rotate(90deg); color: #409eff; }
+.m-head-actions {
+  display: flex; gap: 4px; align-items: center; flex-shrink: 0;
+}
 .m-name { font-weight: 600; min-width: 80px; }
 .m-score { font-size: 20px; color: #409eff; font-weight: 700; min-width: 60px; }
 .m-tags { display: flex; gap: 4px; flex-wrap: wrap; }
