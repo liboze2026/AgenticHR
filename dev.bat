@@ -1,31 +1,29 @@
-@echo off
+﻿@echo off
+chcp 65001 >nul
 setlocal EnableExtensions
 title AgenticHR Dev Launcher
 
-set ROOT=%~dp0
-set BACKEND_PORT=8000
-set FRONTEND_PORT=3000
-set PY=%ROOT%.venv\Scripts\python.exe
-set ALEMBIC=%ROOT%.venv\Scripts\alembic.exe
+set "ROOT=%~dp0"
+set "BACKEND_PORT=8000"
+set "FRONTEND_PORT=3000"
+set "PY=%ROOT%.venv/Scripts/python.exe"
+set "ALEMBIC=%ROOT%.venv/Scripts/alembic.exe"
 
 echo ============================================================
 echo   AgenticHR Dev Launcher
 echo ============================================================
 
-REM ---------- 1. 前置检查 ------------------------------------------------
 if not exist "%PY%" (
     echo [ERROR] Python venv not found: %PY%
-    echo         Run: python -m venv .venv ^&^& .venv\Scripts\pip install -r requirements.txt
-    goto :hold
+    goto hold
 )
-if not exist "%ROOT%frontend\node_modules" (
-    echo [WARN] frontend/node_modules missing — running npm install ...
+if not exist "%ROOT%frontend/node_modules" (
+    echo [WARN] frontend/node_modules missing, running npm install ...
     pushd "%ROOT%frontend"
     call npm install
     popd
 )
 
-REM ---------- 2. 杀掉已经占着端口的旧进程 ------------------------------
 echo [1/4] Cleaning ports %BACKEND_PORT% and %FRONTEND_PORT% ...
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BACKEND_PORT% " ^| findstr "LISTENING"') do (
     echo        kill backend PID %%a
@@ -36,37 +34,30 @@ for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%FRONTEND_PORT% " ^| findst
     taskkill /F /PID %%a >nul 2>&1
 )
 
-REM ---------- 3. 跑 Alembic upgrade head ------------------------------
 echo [2/4] Running alembic upgrade head ...
 pushd "%ROOT%"
 "%ALEMBIC%" upgrade head
 if errorlevel 1 (
-    echo [ERROR] Alembic migration failed. Check migrations\versions\
+    echo [ERROR] Alembic migration failed.
     popd
-    goto :hold
+    goto hold
 )
 popd
 
-REM ---------- 4. 启 Backend 窗口 (uvicorn --reload) -------------------
 echo [3/4] Starting Backend on http://localhost:%BACKEND_PORT% ...
-start "AgenticHR Backend :%BACKEND_PORT%" cmd /k "cd /d %ROOT% && set PYTHONUNBUFFERED=1 && "%PY%" -m uvicorn app.main:app --reload --port %BACKEND_PORT% --host 0.0.0.0 || pause"
+start "AgenticHR Backend :%BACKEND_PORT%" cmd /k ""%PY%" -m uvicorn app.main:app --reload --port %BACKEND_PORT% --host 0.0.0.0"
 
-REM ---------- 5. 启 Frontend 窗口 (vite) -----------------------------
 echo [4/4] Starting Frontend on http://localhost:%FRONTEND_PORT% ...
-start "AgenticHR Frontend :%FRONTEND_PORT%" cmd /k "cd /d %ROOT%frontend && npm run dev || pause"
+start "AgenticHR Frontend :%FRONTEND_PORT%" cmd /k "cd /d "%ROOT%frontend" && npm run dev"
 
-REM ---------- 6. 等服务起来再开浏览器 --------------------------------
 echo Waiting for frontend to listen ...
 set /a tries=0
 :wait_loop
 set /a tries+=1
-if %tries% GTR 30 (
-    echo [WARN] Frontend not ready after 30s, opening browser anyway
-    goto :open_browser
-)
+if %tries% GTR 30 goto open_browser
 timeout /t 1 /nobreak >nul
 netstat -ano | findstr ":%FRONTEND_PORT% " | findstr "LISTENING" >nul 2>&1
-if errorlevel 1 goto :wait_loop
+if errorlevel 1 goto wait_loop
 
 :open_browser
 start "" http://localhost:%FRONTEND_PORT%
@@ -77,14 +68,12 @@ echo   Backend  : http://localhost:%BACKEND_PORT%
 echo   Frontend : http://localhost:%FRONTEND_PORT%
 echo   API docs : http://localhost:%BACKEND_PORT%/docs
 echo ============================================================
-echo   Backend / Frontend windows opened separately.
-echo   Close THOSE windows (not this one) to stop services.
-echo   This launcher window will close in 5 seconds ...
+echo   Close the Backend and Frontend windows to stop services.
+echo   This launcher will close in 5 seconds ...
 timeout /t 5 /nobreak >nul
 exit /b 0
 
 :hold
 echo.
-echo Press any key to close ...
-pause >nul
+pause
 exit /b 1
