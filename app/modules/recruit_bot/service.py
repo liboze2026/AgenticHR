@@ -102,3 +102,142 @@ def upsert_resume_by_boss_id(
     db.commit()
     db.refresh(r)
     return r
+
+
+import logging
+from app.core.audit.logger import log_event
+from app.modules.auth.models import User
+from app.modules.recruit_bot.schemas import RecruitDecision, UsageInfo
+from app.modules.screening.models import Job
+from app.modules.matching.service import MatchingService
+
+logger = logging.getLogger(__name__)
+
+
+def _today_start_utc() -> datetime:
+    """当日 UTC 零点 (配额窗口起点)."""
+    now = datetime.now(timezone.utc)
+    return now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def get_daily_usage(db: Session, user_id: int) -> UsageInfo:
+    """返该 user 今日已打招呼次数 + 配额."""
+    user = db.query(User).filter(User.id == user_id).first()
+    cap = user.daily_cap if user else 1000
+    start = _today_start_utc()
+    used = (
+        db.query(Resume)
+        .filter(
+            Resume.user_id == user_id,
+            Resume.greet_status == "greeted",
+            Resume.greeted_at >= start,
+        )
+        .count()
+    )
+    return UsageInfo(used=used, cap=cap, remaining=max(0, cap - used))
+
+
+async def evaluate_and_record(
+    db: Session, user_id: int, job_id: int,
+    candidate: "ScrapedCandidate",
+) -> RecruitDecision:
+    """核心决策: daily_cap → upsert → 已 greeted skip → F2 score → threshold → record."""
+    # 1. daily_cap 先于一切 (省打分钱, 也避免无意义 upsert)
+    usage = get_daily_usage(db, user_id)
+    if usage.remaining <= 0:
+        log_event(
+            f_stage="F3_evaluate", action="blocked_daily_cap",
+            entity_type="job", entity_id=job_id,
+            input_payload={"boss_id": candidate.boss_id, "usage": usage.model_dump()},
+            reviewer_id=user_id,
+        )
+        return RecruitDecision(
+            decision="blocked_daily_cap",
+            reason=f"今日已打 {usage.used}/{usage.cap}",
+        )
+
+    # 2. job 归属 + competency_model
+    job = (
+        db.query(Job)
+        .filter(Job.id == job_id, Job.user_id == user_id)
+        .first()
+    )
+    if not job:
+        raise ValueError(f"job {job_id} not found for user {user_id}")
+    if not job.competency_model:
+        log_event(
+            f_stage="F3_evaluate", action="error_no_competency",
+            entity_type="job", entity_id=job_id,
+            input_payload={"boss_id": candidate.boss_id},
+            reviewer_id=user_id,
+        )
+        return RecruitDecision(
+            decision="error_no_competency",
+            reason=f"job {job_id} 能力模型未生成",
+        )
+
+    # 3. upsert resume
+    resume = upsert_resume_by_boss_id(db, user_id=user_id, candidate=candidate)
+
+    # 4. 已 greeted 跳过 (历史覆盖, 不重复打招呼)
+    if resume.greet_status == "greeted":
+        log_event(
+            f_stage="F3_evaluate", action="skipped_already_greeted",
+            entity_type="resume", entity_id=resume.id,
+            input_payload={"boss_id": candidate.boss_id},
+            reviewer_id=user_id,
+        )
+        return RecruitDecision(
+            decision="skipped_already_greeted",
+            resume_id=resume.id,
+            reason="历史已打过招呼",
+        )
+
+    # 5. F2 匹配打分
+    svc = MatchingService(db)
+    try:
+        result = await svc.score_pair(resume.id, job.id, triggered_by="F3")
+    except Exception as e:
+        logger.exception(f"F3 score_pair failed: {e}")
+        return RecruitDecision(
+            decision="error_no_competency",
+            resume_id=resume.id,
+            reason=f"打分异常: {e}",
+        )
+
+    threshold = job.greet_threshold or 60
+    score = int(result.total_score)
+
+    # 6. 阈值判定 + 更新 resume
+    if score >= threshold:
+        resume.status = "passed"
+        resume.greet_status = "pending_greet"
+        resume.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        log_event(
+            f_stage="F3_evaluate", action="should_greet",
+            entity_type="resume", entity_id=resume.id,
+            input_payload={"boss_id": candidate.boss_id, "score": score, "threshold": threshold},
+            reviewer_id=user_id,
+        )
+        return RecruitDecision(
+            decision="should_greet",
+            resume_id=resume.id, score=score, threshold=threshold,
+            reason=f"分 {score} ≥ 阈值 {threshold}",
+        )
+    else:
+        resume.status = "rejected"
+        resume.reject_reason = f"F3 分{score}低于阈值{threshold}"
+        resume.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        log_event(
+            f_stage="F3_evaluate", action="rejected_low_score",
+            entity_type="resume", entity_id=resume.id,
+            input_payload={"boss_id": candidate.boss_id, "score": score, "threshold": threshold},
+            reviewer_id=user_id,
+        )
+        return RecruitDecision(
+            decision="rejected_low_score",
+            resume_id=resume.id, score=score, threshold=threshold,
+            reason=f"分 {score} < 阈值 {threshold}",
+        )
