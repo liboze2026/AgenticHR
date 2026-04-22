@@ -21,6 +21,10 @@
           <el-icon><Document /></el-icon>
           <span>简历库</span>
         </el-menu-item>
+        <el-menu-item index="/intake">
+          <el-icon><ChatDotRound /></el-icon>
+          <span>候选人收集</span>
+        </el-menu-item>
         <el-menu-item index="/jobs">
           <el-icon><Briefcase /></el-icon>
           <span>岗位管理</span>
