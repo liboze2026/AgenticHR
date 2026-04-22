@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, Index
 from app.database import Base
 
 
@@ -27,4 +27,8 @@ class IntakeCandidate(Base):
         nullable=False,
     )
 
-    __table_args__ = (UniqueConstraint("boss_id", name="uq_intake_candidates_boss_id"),)
+    __table_args__ = (
+        Index("ix_intake_candidates_boss_id", "boss_id", unique=True),
+        Index("ix_intake_candidates_status", "intake_status"),
+        Index("ix_intake_candidates_job_id", "job_id"),
+    )
