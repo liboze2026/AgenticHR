@@ -7,14 +7,19 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.modules.auth.deps import get_current_user_id
+from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.schemas import (
     CandidateDetailOut,
     CandidateOut,
+    CollectChatIn,
+    CollectChatOut,
+    NextActionOut,
     SchedulerStatus,
     SlotOut,
     SlotPatchIn,
 )
+from app.modules.im_intake.service import IntakeService
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
 from app.modules.resume.models import Resume
 from app.modules.screening.models import Job
@@ -26,6 +31,20 @@ def _scheduler():
     """Late import to avoid circular import with app.main."""
     from app import main as _main
     return getattr(_main, "intake_scheduler", None)
+
+
+def _build_service(db: Session) -> IntakeService:
+    """Late import to avoid circular import with app.main."""
+    from app import main as _main
+    return IntakeService(
+        db=db,
+        adapter=getattr(_main, "boss_adapter", None),
+        llm=getattr(_main, "llm_client", None),
+        storage_dir=getattr(_main, "intake_storage_dir", "/tmp/intake"),
+        hard_max_asks=getattr(settings, "f4_hard_max_asks", 3),
+        pdf_timeout_hours=getattr(settings, "f4_pdf_timeout_hours", 72),
+        soft_max_n=getattr(settings, "f4_soft_question_max", 3),
+    )
 
 
 def _candidate_summary(r: Resume, slots: list[IntakeSlot], job_title: str = "") -> CandidateOut:
@@ -171,3 +190,37 @@ async def scheduler_tick(user_id: int = Depends(get_current_user_id)):
     if sched:
         await sched.tick_now()
     return {"ok": True}
+
+
+@router.post("/collect-chat", response_model=CollectChatOut)
+async def collect_chat(
+    body: CollectChatIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    svc = _build_service(db)
+    c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_intention)
+    job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+
+    messages = [m.model_dump() for m in body.messages]
+
+    if body.pdf_present and body.pdf_url and not c.pdf_path:
+        slots = svc.ensure_slot_rows(c.id)
+        slots["pdf"].value = body.pdf_url
+        slots["pdf"].source = "plugin_detected"
+        slots["pdf"].answered_at = datetime.now(timezone.utc)
+        c.pdf_path = body.pdf_url
+        db.commit()
+
+    action = await svc.analyze_chat(c, messages, job)
+    svc.apply_terminal(c, action)
+    db.refresh(c)
+    return CollectChatOut(
+        candidate_id=c.id,
+        intake_status=c.intake_status,
+        next_action=NextActionOut(
+            type=action.type,
+            text=action.text,
+            slot_keys=action.meta.get("slot_keys", []),
+        ),
+    )
