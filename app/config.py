@@ -65,7 +65,7 @@ class Settings(BaseSettings):
     f3_ai_parse_enabled: bool = False
 
     # F4 IM 智能接待
-    f4_enabled: bool = True
+    f4_enabled: bool = False
     f4_scan_interval_min: int = 15
     f4_batch_cap: int = 50
     f4_hard_max_asks: int = 3
