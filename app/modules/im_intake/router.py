@@ -228,6 +228,27 @@ async def collect_chat(
     )
 
 
+@router.post("/candidates/{candidate_id}/ack-sent")
+async def ack_sent(
+    candidate_id: int,
+    body: AckSentIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    if not body.delivered:
+        return {"ok": True, "noop": True}
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "candidate not found")
+    svc = _build_service(db)
+    job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+    action = await svc.analyze_chat(c, messages=[], job=job)
+    if action.type != body.action_type:
+        raise HTTPException(409, f"state mismatch: expected {action.type}, got {body.action_type}")
+    svc.record_asked(c, action)
+    return {"ok": True}
+
+
 @router.post("/candidates/{candidate_id}/start-conversation", response_model=StartConversationOut)
 def start_conversation(
     candidate_id: int,
