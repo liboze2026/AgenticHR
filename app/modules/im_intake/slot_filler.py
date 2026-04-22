@@ -1,5 +1,7 @@
+import json
 import re
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol
 
 ARRIVAL_PATTERNS = [
     re.compile(r"(下周[一二三四五六日天])"),
@@ -49,3 +51,47 @@ def regex_extract(slot_key: str, text: str) -> Any:
     if slot_key == "free_slots":
         return _free(text)
     return None
+
+
+PROMPT_PARSE = (Path(__file__).parent / "prompts" / "parse_v1.txt").read_text(encoding="utf-8")
+
+
+class LLMLike(Protocol):
+    async def complete(self, messages: list[dict], response_format: str = "json", **kw) -> str: ...
+
+
+class SlotFiller:
+    def __init__(self, llm: LLMLike | None = None):
+        self.llm = llm
+
+    async def parse_reply(self, reply_text: str, pending_slot_keys: list[str]) -> dict[str, tuple]:
+        result: dict[str, tuple] = {}
+        unresolved: list[str] = []
+        for key in pending_slot_keys:
+            val = regex_extract(key, reply_text)
+            if val not in (None, []):
+                result[key] = (val, "regex")
+            else:
+                unresolved.append(key)
+
+        if not unresolved or self.llm is None:
+            return result
+
+        prompt = PROMPT_PARSE.format(reply=reply_text, pending_keys=unresolved)
+        try:
+            raw = await self.llm.complete(
+                messages=[{"role": "user", "content": prompt}],
+                response_format="json",
+                temperature=0.1,
+                prompt_version="parse_v1",
+            )
+            data = json.loads(raw)
+        except (json.JSONDecodeError, Exception):
+            return result
+
+        for key in unresolved:
+            v = data.get(key)
+            if v in (None, "", []):
+                continue
+            result[key] = (v, "llm")
+        return result
