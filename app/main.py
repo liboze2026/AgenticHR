@@ -26,6 +26,44 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"AI parse worker failed to auto-start: {e}")
+    # F4 Boss IM intake scheduler (skip under pytest to avoid Playwright init)
+    import os as _os_f4
+    _is_pytest = bool(_os_f4.environ.get("PYTEST_CURRENT_TEST")) or _os_f4.environ.get("AGENTICHR_TEST_BYPASS_AUTH") == "1"
+    if settings.f4_enabled and not _is_pytest:
+        try:
+            from app.modules.im_intake.scheduler import IntakeScheduler
+            from app.modules.im_intake.service import IntakeService
+            from app.adapters.boss.playwright_adapter import PlaywrightBossAdapter
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from app.database import SessionLocal
+
+            adapter = PlaywrightBossAdapter()
+
+            def _intake_service_factory():
+                return IntakeService(
+                    db=SessionLocal(), adapter=adapter,
+                    llm=None,
+                    storage_dir=settings.resume_storage_path,
+                    hard_max_asks=settings.f4_hard_max_asks,
+                    pdf_timeout_hours=settings.f4_pdf_timeout_hours,
+                    soft_max_n=settings.f4_soft_question_max,
+                )
+
+            global intake_scheduler
+            intake_scheduler = IntakeScheduler(
+                adapter=adapter,
+                service_factory=_intake_service_factory,
+                batch_cap=settings.f4_batch_cap,
+            )
+            _sched = AsyncIOScheduler()
+            _sched.add_job(
+                intake_scheduler.tick, "interval",
+                minutes=settings.f4_scan_interval_min, id="f4_intake_tick",
+            )
+            _sched.start()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"F4 intake scheduler failed to start: {e}")
     yield
 
 
@@ -154,6 +192,12 @@ app.include_router(settings_router)
 
 from app.modules.recruit_bot.router import router as recruit_router
 app.include_router(recruit_router)
+
+from app.modules.im_intake.router import router as intake_router
+app.include_router(intake_router)
+
+# F4 intake scheduler, set during lifespan startup when settings.f4_enabled
+intake_scheduler = None
 
 # F1 HITL wiring: F1_competency_review approve → apply competency_model to jobs
 from app.core.hitl.service import register_approve_callback as _register_hitl_cb
