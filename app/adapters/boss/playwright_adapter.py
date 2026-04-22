@@ -369,3 +369,100 @@ class PlaywrightBossAdapter(BossAdapter):
             return login_btn is None
         except Exception:
             return False
+
+    # ── F4-T8: chat index 扫描 / 发消息 / 求简历 / 已获取简历 ──
+
+    async def list_chat_index(self) -> list[BossCandidate]:
+        await self._ensure_browser()
+        assert self._page is not None
+        await self._random_delay()
+        await self._page.goto(self.CHAT_URL, wait_until="networkidle")
+        await self._random_delay()
+        await self._switch_tab("全部")
+
+        out: list[BossCandidate] = []
+        items = await self._page.query_selector_all(".geek-item")
+        for item in items:
+            name_el = await item.query_selector(".geek-name")
+            name = await name_el.inner_text() if name_el else ""
+            job_el = await item.query_selector(".source-job")
+            job = await job_el.inner_text() if job_el else ""
+            data_id = await item.get_attribute("data-id") or ""
+            if name:
+                out.append(BossCandidate(
+                    name=name.strip(), boss_id=data_id, job_intention=job.strip(),
+                ))
+        logger.info(f"list_chat_index: {len(out)} candidates")
+        return out
+
+    async def send_message(self, boss_id: str, text: str) -> bool:
+        self._check_daily_limit()
+        await self._ensure_browser()
+        assert self._page is not None
+        await self._random_delay()
+        try:
+            await self._human_click(f'.geek-item[data-id="{boss_id}"]')
+            await self._random_delay()
+            await self._page.wait_for_selector('.chat-conversation', timeout=5000)
+
+            input_el = await self._page.query_selector('#boss-chat-editor-input')
+            if not input_el:
+                return False
+            await input_el.click()
+            for ch in text:
+                await self._page.keyboard.type(ch, delay=random.randint(50, 150))
+                if random.random() < 0.1:
+                    await asyncio.sleep(random.uniform(0.3, 0.8))
+            await self._random_delay()
+
+            send_btn = await self._page.query_selector('.submit-content .submit')
+            if not send_btn:
+                return False
+            await send_btn.click()
+            self._operations_today += 1
+            logger.info(f"send_message ok [{boss_id}]")
+            return True
+        except Exception as e:
+            logger.error(f"send_message failed [{boss_id}]: {e}")
+            return False
+
+    async def click_request_resume(self, boss_id: str) -> bool:
+        self._check_daily_limit()
+        await self._ensure_browser()
+        assert self._page is not None
+        await self._random_delay()
+        try:
+            await self._human_click(f'.geek-item[data-id="{boss_id}"]')
+            await self._random_delay()
+            await self._page.wait_for_selector('.chat-conversation', timeout=5000)
+            for btn in await self._page.query_selector_all('.operate-btn'):
+                if '求简历' in (await btn.inner_text()):
+                    await btn.click()
+                    await self._random_delay()
+                    confirm = await self._page.query_selector('.exchange-tooltip .boss-btn-primary')
+                    if confirm:
+                        await confirm.click()
+                    self._operations_today += 1
+                    return True
+            return False
+        except Exception as e:
+            logger.error(f"click_request_resume failed [{boss_id}]: {e}")
+            return False
+
+    async def list_received_resumes(self) -> list[tuple[str, str]]:
+        await self._ensure_browser()
+        assert self._page is not None
+        await self._random_delay()
+        await self._page.goto(self.CHAT_URL, wait_until="networkidle")
+        await self._switch_tab("已获取简历")
+        await self._random_delay()
+        out: list[tuple[str, str]] = []
+        for card in await self._page.query_selector_all('.geek-item'):
+            data_id = await card.get_attribute("data-id") or ""
+            btn = await card.query_selector('.card-btn')
+            if not btn:
+                continue
+            url = await btn.get_attribute("href") or ""
+            if data_id and url:
+                out.append((data_id, url))
+        return out

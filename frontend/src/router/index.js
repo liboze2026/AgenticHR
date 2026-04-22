@@ -6,6 +6,7 @@ const routes = [
   { path: '/resumes', name: 'Resumes', component: () => import('../views/Resumes.vue') },
   { path: '/jobs', name: 'Jobs', component: () => import('../views/Jobs.vue') },
   { path: '/hitl', name: 'HitlQueue', component: () => import('../views/HitlQueue.vue') },
+  { path: '/intake', name: 'Intake', component: () => import('../views/Intake.vue') },
   { path: '/skills', name: 'SkillLibrary', component: () => import('../views/SkillLibrary.vue') },
   { path: '/interviewers', name: 'Interviewers', component: () => import('../views/Interviewers.vue') },
   { path: '/interviews', name: 'Interviews', component: () => import('../views/Interviews.vue') },

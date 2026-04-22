@@ -69,3 +69,23 @@ class BossAdapter(ABC):
     async def is_available(self) -> bool:
         """检查适配器是否可用"""
         ...
+
+    @abstractmethod
+    async def list_chat_index(self) -> list[BossCandidate]:
+        """切到 chat/index '全部' tab，扫所有对话条目"""
+        ...
+
+    @abstractmethod
+    async def send_message(self, boss_id: str, text: str) -> bool:
+        """对指定候选人发送普通文字消息"""
+        ...
+
+    @abstractmethod
+    async def click_request_resume(self, boss_id: str) -> bool:
+        """点求简历按钮"""
+        ...
+
+    @abstractmethod
+    async def list_received_resumes(self) -> list[tuple[str, str]]:
+        """扫已获取简历 tab → [(boss_id, pdf_url)]"""
+        ...

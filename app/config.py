@@ -64,6 +64,15 @@ class Settings(BaseSettings):
     f3_default_daily_cap: int = 1000
     f3_ai_parse_enabled: bool = False
 
+    # F4 IM 智能接待
+    f4_enabled: bool = True
+    f4_scan_interval_min: int = 15
+    f4_batch_cap: int = 50
+    f4_hard_max_asks: int = 3
+    f4_pdf_timeout_hours: int = 72
+    f4_soft_question_max: int = 3
+    ai_model_intake: str = ""
+
     # 简历存储路径
     resume_storage_path: str = "./data/resumes"
 
