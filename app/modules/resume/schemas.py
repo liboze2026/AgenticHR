@@ -101,6 +101,7 @@ class ResumeResponse(BaseModel):
     ai_summary: str
     reject_reason: str
     seniority: str = ""
+    intake_status: str | None = None
     created_at: datetime
     updated_at: datetime
 
