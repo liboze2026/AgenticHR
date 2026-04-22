@@ -608,3 +608,21 @@ chrome.storage.onChanged.addListener((changes) => {
 
 editCap.addEventListener('click', (e) => { e.preventDefault(); editDailyCap(); });
 btnRecruitStart.addEventListener('click', startAutoRecruit);
+
+document.getElementById("btnCollectSingleChat").addEventListener("click", async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url?.includes("zhipin.com/web/chat")) {
+    showResult("请先在 Boss 直聘聊天页打开候选人对话", "error");
+    return;
+  }
+  showResult("正在采集...");
+  chrome.tabs.sendMessage(tab.id, { type: "INTAKE_COLLECT_CURRENT_CHAT" }, (resp) => {
+    if (chrome.runtime.lastError) {
+      showResult(`失败: ${chrome.runtime.lastError.message}`, "error");
+    } else if (resp?.ok) {
+      showResult("已触发采集，查看页面右上角提示", "success");
+    } else {
+      showResult(`采集失败: ${resp?.error || "未知错误"}`, "error");
+    }
+  });
+});
