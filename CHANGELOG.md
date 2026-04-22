@@ -2,6 +2,15 @@
 
 ## [Unreleased] — 2026-04-21
 
+### Added — F4: Boss IM 候选人信息收集
+- 后端 Playwright 守护进程 + APScheduler 15min 定时扫描 chat/index
+- `intake_slots` 副表 + `Resume.intake_status` 字段，slot 级 asked/answered 时间戳
+- SlotFiller (regex 优先 + LLM 兜底)、QuestionGenerator (硬性模板 + 软性 LLM)、PdfCollector
+- IntakeService 完整流水线：硬性 3 次问不到 → pending_human；PDF 72h 不到 → abandoned；齐全 → complete
+- REST API `/api/intake/*` + 前端 `Intake.vue` 列表 + slot 详情抽屉
+- 与 F3 共享 `BossAdapter` 单例 + asyncio.Lock，F3 优先
+- 新增 env: `F4_ENABLED`, `F4_SCAN_INTERVAL_MIN`, `F4_BATCH_CAP`, `F4_HARD_MAX_ASKS`, `F4_PDF_TIMEOUT_HOURS`, `F4_SOFT_QUESTION_MAX`, `AI_MODEL_INTAKE`
+
 ### Added (F3 — Boss 推荐牛人自动打招呼)
 - 新增 `app/modules/recruit_bot/` 模块（schemas/service/router）
 - 4 个端点：`POST /api/recruit/evaluate_and_record`、`POST /api/recruit/record-greet`、`GET /api/recruit/daily-usage`、`PUT /api/recruit/daily-cap`
