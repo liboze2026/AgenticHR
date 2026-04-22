@@ -1,5 +1,13 @@
 <template>
   <div>
+    <el-alert
+      type="info"
+      :closable="false"
+      show-icon
+      title="简历库语义"
+      description="本列表仅显示已完成信息采集（intake_status = complete）的候选人。正在采集中的候选人请到 /intake 查看。"
+      style="margin-bottom: 12px;"
+    />
     <!-- 顶部工具栏 -->
     <div class="toolbar">
       <h2 style="margin: 0">简历库</h2>
@@ -28,11 +36,11 @@
 
     <!-- 列表（紧凑模式）+ 展开为卡片 -->
     <div v-loading="loading" style="min-height: 200px">
-      <el-empty v-if="!resumes.length && !loading" description="暂无简历" />
+      <el-empty v-if="!visibleResumes.length && !loading" description="暂无简历" />
 
       <div v-else class="resume-list">
         <div
-          v-for="row in resumes"
+          v-for="row in visibleResumes"
           :key="row.id"
           class="resume-list-item"
           :class="[`status-${row.status}`, { expanded: expandedId === row.id }]"
@@ -222,7 +230,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading, WarningFilled, Refresh, ArrowRight } from '@element-plus/icons-vue'
 import { resumeApi, matchingApi } from '../api'
@@ -240,6 +248,14 @@ const aiParseRunning = ref(false)
 const aiParseProgress = ref({ total: 0, completed: 0, failed: 0, current: '' })
 const expandedId = ref(null)  // 当前展开的简历 id（只允许一个）
 const currentMatching = ref([])
+
+// F5-T19: 简历库仅显示 intake_status = 'complete' 的候选人
+// 若后端未返回 intake_status 字段（向后兼容旧数据），保留显示
+const visibleResumes = computed(() =>
+  resumes.value.filter(
+    (r) => r.intake_status === undefined || r.intake_status === null || r.intake_status === 'complete'
+  )
+)
 
 function toggleExpand(id) {
   expandedId.value = (expandedId.value === id) ? null : id
