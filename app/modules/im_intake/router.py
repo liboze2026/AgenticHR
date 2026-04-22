@@ -214,7 +214,7 @@ async def collect_chat(
         db.commit()
 
     action = await svc.analyze_chat(c, messages, job)
-    svc.apply_terminal(c, action)
+    svc.apply_terminal(c, action, user_id=user_id)
     db.refresh(c)
     return CollectChatOut(
         candidate_id=c.id,

@@ -1,4 +1,5 @@
 """Alembic env — 接入 AgenticHR app metadata."""
+import os
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
@@ -13,6 +14,10 @@ from app.modules.notification.models import NotificationLog  # noqa: F401
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+_override_url = os.environ.get("ALEMBIC_DB_URL") or os.environ.get("DATABASE_URL")
+if _override_url:
+    config.set_main_option("sqlalchemy.url", _override_url)
 
 target_metadata = Base.metadata
 

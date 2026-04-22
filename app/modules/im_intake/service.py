@@ -133,7 +133,7 @@ class IntakeService:
                 self.db.add(s)
         self.db.commit()
 
-    def apply_terminal(self, candidate: IntakeCandidate, action: NextAction):
+    def apply_terminal(self, candidate: IntakeCandidate, action: NextAction, user_id: int = 0):
         if action.type == "abandon":
             candidate.intake_status = "abandoned"
             candidate.intake_completed_at = datetime.now(timezone.utc)
@@ -145,7 +145,7 @@ class IntakeService:
             self.db.commit()
             return None
         if action.type == "complete":
-            resume = promote_to_resume(self.db, candidate)
+            resume = promote_to_resume(self.db, candidate, user_id=user_id)
             self.db.commit()
             return resume
         return None
