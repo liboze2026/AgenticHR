@@ -64,12 +64,30 @@ def test_0012_creates_intake_candidates_and_moves_non_complete_rows(tmp_path):
     command.stamp(cfg, "0009")
     command.upgrade(cfg, "0011")
 
+    # Simulate a pre-F4 legacy row (intake_status was added in 0011 with a
+    # NOT NULL default). Bypass the NOT NULL via writable_schema so the
+    # filter `intake_status IS NOT NULL AND != 'complete'` is exercised.
+    raw = sqlite3.connect(str(db))
+    raw.execute("PRAGMA writable_schema = 1")
+    raw.execute(
+        "UPDATE sqlite_master SET sql = replace(sql, "
+        "'intake_status VARCHAR(20) DEFAULT ''collecting'' NOT NULL', "
+        "'intake_status VARCHAR(20) DEFAULT ''collecting''') "
+        "WHERE type='table' AND name='resumes'"
+    )
+    raw.execute("PRAGMA writable_schema = 0")
+    raw.commit()
+    raw.close()
+
     eng = sa.create_engine(f"sqlite:///{db}", connect_args={"check_same_thread": False})
     with eng.begin() as c:
+        # Seed: A collecting (moved), B complete (stays), C NULL intake_status
+        # (pre-F4 legacy row, must also stay — filter is IS NOT NULL AND != 'complete').
         c.execute(sa.text(
             "INSERT INTO resumes (name, boss_id, intake_status) "
             "VALUES ('A','bx1','collecting'), "
-            "('B','bx2','complete')"
+            "('B','bx2','complete'), "
+            "('C','bx3',NULL)"
         ))
         c.execute(sa.text(
             "INSERT INTO intake_slots (resume_id, slot_key, slot_category, ask_count) "
@@ -85,14 +103,66 @@ def test_0012_creates_intake_candidates_and_moves_non_complete_rows(tmp_path):
             "SELECT name, boss_id, intake_status FROM intake_candidates"
         )).all()
         r_rows = c.execute(sa.text(
-            "SELECT name, boss_id, intake_status FROM resumes"
+            "SELECT name, boss_id, intake_status FROM resumes ORDER BY id"
         )).all()
-        slot_rows = c.execute(sa.text(
+        a_cid = c.execute(sa.text(
+            "SELECT id FROM intake_candidates WHERE boss_id='bx1'"
+        )).scalar()
+        slot_cid = c.execute(sa.text(
             "SELECT candidate_id FROM intake_slots"
-        )).all()
+        )).scalar()
     assert [r[0] for r in ic_rows] == ["A"]
-    assert [r[0] for r in r_rows] == ["B"]
-    assert slot_rows and slot_rows[0][0] is not None
+    # Both 'complete' (B) and NULL intake_status (C) must remain in resumes.
+    assert [r[0] for r in r_rows] == ["B", "C"]
+    assert slot_cid == a_cid
+
+
+def test_0012_dedupes_duplicate_boss_ids(tmp_path):
+    """Two non-complete resumes sharing the same boss_id should collapse to
+    a single intake_candidates row; both original resumes rows get deleted,
+    and any intake_slots row originally tied to either resume ends up pointing
+    at the single surviving candidate."""
+    db = tmp_path / "t.db"
+    _seed_m2_schema(str(db))
+    cfg = _cfg(str(db))
+    command.stamp(cfg, "0009")
+    command.upgrade(cfg, "0011")
+
+    eng = sa.create_engine(f"sqlite:///{db}", connect_args={"check_same_thread": False})
+    with eng.begin() as c:
+        # Two non-complete resumes sharing the same boss_id. They must live
+        # under different user_ids to sidestep the UNIQUE(user_id, boss_id)
+        # constraint introduced in 0010 — the duplicate scenario this test
+        # covers arises from multi-tenant data making the same boss_id appear
+        # more than once in intake_candidates (which has UNIQUE(boss_id) only).
+        c.execute(sa.text(
+            "INSERT INTO resumes (user_id, name, boss_id, intake_status) "
+            "VALUES (1,'Dup1','bxDup','collecting'), "
+            "(2,'Dup2','bxDup','pending_human')"
+        ))
+        # A slot tied to the second (duplicate) resume — should get re-pointed
+        # at the first-inserted candidate.
+        c.execute(sa.text(
+            "INSERT INTO intake_slots (resume_id, slot_key, slot_category, ask_count) "
+            "VALUES (2,'arrival_date','hard',0)"
+        ))
+
+    command.upgrade(cfg, "0012")
+
+    with eng.begin() as c:
+        ic_rows = c.execute(sa.text(
+            "SELECT id, boss_id FROM intake_candidates"
+        )).all()
+        r_count = c.execute(sa.text(
+            "SELECT COUNT(*) FROM resumes WHERE boss_id='bxDup'"
+        )).scalar()
+        slot_cid = c.execute(sa.text(
+            "SELECT candidate_id FROM intake_slots"
+        )).scalar()
+    assert len(ic_rows) == 1
+    assert ic_rows[0][1] == "bxDup"
+    assert r_count == 0
+    assert slot_cid == ic_rows[0][0]
 
 
 def test_0012_is_reversible(tmp_path):

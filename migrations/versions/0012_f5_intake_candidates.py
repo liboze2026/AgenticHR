@@ -3,6 +3,12 @@
 Revision ID: 0012
 Revises: 0011
 Create Date: 2026-04-22
+
+NOTE: downgrade() is LOSSY — the original ``resumes.status`` and ``resumes.source``
+values are NOT preserved across upgrade(). The downgrade path re-inserts rows
+with hardcoded defaults (``status='passed'``, ``source='boss_zhipin'``) that are
+intended for dev/test reversibility only. Do NOT rely on downgrade in production
+to recover original resume metadata.
 """
 from alembic import op
 import sqlalchemy as sa
@@ -52,8 +58,16 @@ def upgrade() -> None:
         "intake_completed_at, created_at, updated_at FROM resumes "
         "WHERE intake_status IS NOT NULL AND intake_status != 'complete'"
     )).fetchall()
-    id_map = {}
+    id_map: dict = {}   # resumes.id -> intake_candidates.id
+    seen: dict = {}     # resolved boss_id -> intake_candidates.id
     for r in rows:
+        resume_id = r[0]
+        boss_id = r[1] or f"legacy_{resume_id}"
+        if boss_id in seen:
+            # Duplicate boss_id across multiple non-complete resumes: collapse
+            # to the first-inserted candidate to respect UNIQUE(boss_id).
+            id_map[resume_id] = seen[boss_id]
+            continue
         res = conn.execute(sa.text(
             "INSERT INTO intake_candidates "
             "(boss_id, name, job_id, intake_status, source, "
@@ -61,11 +75,11 @@ def upgrade() -> None:
             "VALUES (:boss_id, :name, :job_id, :st, 'migration', "
             ":s_at, :c_at, COALESCE(:cr, CURRENT_TIMESTAMP), "
             "COALESCE(:up, CURRENT_TIMESTAMP))"
-        ), dict(boss_id=r[1] or f"legacy_{r[0]}", name=r[2] or "", job_id=r[3],
+        ), dict(boss_id=boss_id, name=r[2] or "", job_id=r[3],
                 st=r[4], s_at=r[5], c_at=r[6], cr=r[7], up=r[8]))
-        id_map[r[0]] = res.lastrowid if res.lastrowid else conn.execute(
-            sa.text("SELECT last_insert_rowid()")
-        ).scalar()
+        new_id = res.lastrowid
+        seen[boss_id] = new_id
+        id_map[resume_id] = new_id
 
     for old_id, new_id in id_map.items():
         conn.execute(sa.text(
@@ -88,6 +102,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # NOTE: downgrade is LOSSY — original resumes.status/source are not
+    # preserved across upgrade(); defaults applied here ('passed', 'boss_zhipin')
+    # are for dev/test only.
     with op.batch_alter_table("intake_slots") as batch:
         batch.add_column(sa.Column("resume_id", sa.Integer, nullable=True))
 
@@ -106,9 +123,7 @@ def downgrade() -> None:
             ":s_at, :c_at, :cr, :up)"
         ), dict(boss_id=c[1], name=c[2], job_id=c[3], st=c[4],
                 s_at=c[5], c_at=c[6], cr=c[7], up=c[8]))
-        id_map[c[0]] = res.lastrowid or conn.execute(
-            sa.text("SELECT last_insert_rowid()")
-        ).scalar()
+        id_map[c[0]] = res.lastrowid
     for old, new in id_map.items():
         conn.execute(sa.text(
             "UPDATE intake_slots SET resume_id = :new WHERE candidate_id = :old"
