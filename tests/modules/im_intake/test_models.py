@@ -4,7 +4,7 @@ from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.resume.models import Resume
 
 def test_intake_slot_create_and_query(db_session):
-    c = IntakeCandidate(name="张三", boss_id="abc", intake_status="collecting", source="plugin")
+    c = IntakeCandidate(user_id=1, name="张三", boss_id="abc", intake_status="collecting", source="plugin")
     db_session.add(c); db_session.commit()
     s = IntakeSlot(
         candidate_id=c.id, slot_key="arrival_date", slot_category="hard",

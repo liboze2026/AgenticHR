@@ -5,7 +5,7 @@ def test_ack_sent_records_asked(client, db_session):
     from app.modules.im_intake.candidate_model import IntakeCandidate
     from app.modules.im_intake.models import IntakeSlot
 
-    c = IntakeCandidate(boss_id="bxAck", name="ack测试", intake_status="collecting", source="plugin")
+    c = IntakeCandidate(user_id=1, boss_id="bxAck", name="ack测试", intake_status="collecting", source="plugin")
     db_session.add(c); db_session.commit()
 
     # Prime slots via collect-chat (creates rows, decides send_hard)
@@ -25,7 +25,7 @@ def test_ack_sent_records_asked(client, db_session):
 
 def test_ack_state_mismatch_returns_409(client, db_session):
     from app.modules.im_intake.candidate_model import IntakeCandidate
-    c = IntakeCandidate(boss_id="bxMis", name="mismatch", intake_status="collecting", source="plugin")
+    c = IntakeCandidate(user_id=1, boss_id="bxMis", name="mismatch", intake_status="collecting", source="plugin")
     db_session.add(c); db_session.commit()
     client.post("/api/intake/collect-chat", json={"boss_id": "bxMis", "messages": []})
     # decision is send_hard, not request_pdf -> mismatch
@@ -38,7 +38,7 @@ def test_ack_state_mismatch_returns_409(client, db_session):
 
 def test_ack_not_delivered_noop(client, db_session):
     from app.modules.im_intake.candidate_model import IntakeCandidate
-    c = IntakeCandidate(boss_id="bxND", name="notd", intake_status="collecting", source="plugin")
+    c = IntakeCandidate(user_id=1, boss_id="bxND", name="notd", intake_status="collecting", source="plugin")
     db_session.add(c); db_session.commit()
     r = client.post(
         f"/api/intake/candidates/{c.id}/ack-sent",

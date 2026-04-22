@@ -7,6 +7,7 @@ class IntakeCandidate(Base):
     __tablename__ = "intake_candidates"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, default=0)
     boss_id = Column(String(64), nullable=False)
     name = Column(String(128), nullable=False, default="")
     job_intention = Column(String(256), nullable=True)
@@ -28,7 +29,9 @@ class IntakeCandidate(Base):
     )
 
     __table_args__ = (
-        Index("ix_intake_candidates_boss_id", "boss_id", unique=True),
+        Index("ix_intake_candidates_user_boss", "user_id", "boss_id", unique=True),
+        Index("ix_intake_candidates_boss_id", "boss_id"),
+        Index("ix_intake_candidates_user_id", "user_id"),
         Index("ix_intake_candidates_status", "intake_status"),
         Index("ix_intake_candidates_job_id", "job_id"),
     )

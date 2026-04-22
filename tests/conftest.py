@@ -14,6 +14,7 @@ import app.modules.matching.models  # noqa: F401
 import app.core.audit.models  # noqa: F401
 import app.modules.im_intake.models  # noqa: F401
 import app.modules.im_intake.candidate_model  # noqa: F401
+import app.modules.auth.models  # noqa: F401 — IntakeCandidate.user_id FK -> users.id
 
 # Allow test client requests to pass through the JWT auth HTTP middleware.
 # The middleware checks both this env var AND PYTEST_CURRENT_TEST (set by pytest
@@ -37,6 +38,17 @@ def db_engine():
         cursor.close()
 
     Base.metadata.create_all(bind=engine)
+    # Seed baseline users referenced by FKs (e.g. IntakeCandidate.user_id).
+    # The client fixture overrides get_current_user_id to return 1, so user 1
+    # must exist. User 2 is also seeded for multi-tenancy scoping tests.
+    with engine.begin() as conn:
+        from sqlalchemy import text
+        conn.execute(text(
+            "INSERT OR IGNORE INTO users (id, username, password_hash, display_name, is_active, daily_cap) "
+            "VALUES (0,'legacy','x','Legacy',1,1000), "
+            "(1,'tester1','x','Tester1',1,1000), "
+            "(2,'tester2','x','Tester2',1,1000)"
+        ))
     yield engine
     Base.metadata.drop_all(bind=engine)
     engine.dispose()

@@ -3,7 +3,7 @@
 
 def test_start_conversation_returns_deep_link(client, db_session):
     from app.modules.im_intake.candidate_model import IntakeCandidate
-    c = IntakeCandidate(boss_id="bxSC1", name="启动测试", intake_status="collecting", source="plugin")
+    c = IntakeCandidate(user_id=1, boss_id="bxSC1", name="启动测试", intake_status="collecting", source="plugin")
     db_session.add(c); db_session.commit()
 
     r = client.post(f"/api/intake/candidates/{c.id}/start-conversation")

@@ -34,7 +34,7 @@ def _scheduler():
     return getattr(_main, "intake_scheduler", None)
 
 
-def _build_service(db: Session) -> IntakeService:
+def _build_service(db: Session, user_id: int = 0) -> IntakeService:
     """Late import to avoid circular import with app.main."""
     from app import main as _main
     return IntakeService(
@@ -45,6 +45,7 @@ def _build_service(db: Session) -> IntakeService:
         hard_max_asks=getattr(settings, "f4_hard_max_asks", 3),
         pdf_timeout_hours=getattr(settings, "f4_pdf_timeout_hours", 72),
         soft_max_n=getattr(settings, "f4_soft_question_max", 3),
+        user_id=user_id,
     )
 
 
@@ -76,7 +77,7 @@ def list_candidates(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    q = db.query(IntakeCandidate)
+    q = db.query(IntakeCandidate).filter(IntakeCandidate.user_id == user_id)
     if status:
         q = q.filter(IntakeCandidate.intake_status == status)
     if job_id:
@@ -97,7 +98,7 @@ def get_candidate(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "not found")
     slots = db.query(IntakeSlot).filter_by(candidate_id=c.id).all()
@@ -119,6 +120,10 @@ def patch_slot(
     s = db.query(IntakeSlot).filter_by(id=slot_id).first()
     if not s:
         raise HTTPException(404, "slot not found")
+    # Verify the parent candidate belongs to the calling user
+    parent = db.query(IntakeCandidate).filter_by(id=s.candidate_id, user_id=user_id).first()
+    if not parent:
+        raise HTTPException(404, "slot not found")
     s.value = body.value
     s.source = "manual"
     s.answered_at = datetime.now(timezone.utc)
@@ -133,7 +138,7 @@ def abandon(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "not found")
     c.intake_status = "abandoned"
@@ -147,7 +152,7 @@ def force_complete(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "not found")
     c.intake_status = "complete"
@@ -199,7 +204,7 @@ async def collect_chat(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    svc = _build_service(db)
+    svc = _build_service(db, user_id=user_id)
     c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_intention)
     job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
 
@@ -236,10 +241,10 @@ async def ack_sent(
 ):
     if not body.delivered:
         return {"ok": True, "noop": True}
-    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "candidate not found")
-    svc = _build_service(db)
+    svc = _build_service(db, user_id=user_id)
     job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
     action = await svc.analyze_chat(c, messages=[], job=job)
     if action.type != body.action_type:
@@ -254,7 +259,7 @@ def start_conversation(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "candidate not found")
     base = settings.boss_chat_url_template.format(boss_id=c.boss_id)

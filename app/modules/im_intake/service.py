@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class IntakeService:
     def __init__(self, db: Session, adapter: BossAdapter, llm,
                  storage_dir: str, hard_max_asks: int = 3, pdf_timeout_hours: int = 72,
-                 soft_max_n: int = 3):
+                 soft_max_n: int = 3, user_id: int = 0):
         self.db = db
         self.adapter = adapter
         self.llm = llm
@@ -29,10 +29,13 @@ class IntakeService:
         self.hard_max_asks = hard_max_asks
         self.pdf_timeout_hours = pdf_timeout_hours
         self.soft_max_n = soft_max_n
+        self.user_id = user_id
 
     def ensure_candidate(self, boss_id: str, name: str = "",
                          job_intention: str | None = None) -> IntakeCandidate:
-        c = self.db.query(IntakeCandidate).filter_by(boss_id=boss_id).first()
+        c = (self.db.query(IntakeCandidate)
+             .filter_by(user_id=self.user_id, boss_id=boss_id)
+             .first())
         if c is None:
             job_id = None
             if job_intention:
@@ -41,6 +44,7 @@ class IntakeService:
                     job_intention, [{"id": j.id, "title": j.title} for j in jobs], threshold=0.7,
                 )
             c = IntakeCandidate(
+                user_id=self.user_id,
                 boss_id=boss_id, name=name or "", job_intention=job_intention, job_id=job_id,
                 intake_status="collecting", source="plugin",
                 intake_started_at=datetime.now(timezone.utc),

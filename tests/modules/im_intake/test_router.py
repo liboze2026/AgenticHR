@@ -8,8 +8,8 @@ from app.modules.im_intake.candidate_model import IntakeCandidate
 
 
 def test_list_candidates_filters_by_status(client, db_session):
-    db_session.add(IntakeCandidate(name="a", boss_id="ba", intake_status="collecting", source="plugin"))
-    db_session.add(IntakeCandidate(name="b", boss_id="bb", intake_status="complete", source="plugin"))
+    db_session.add(IntakeCandidate(user_id=1, name="a", boss_id="ba", intake_status="collecting", source="plugin"))
+    db_session.add(IntakeCandidate(user_id=1, name="b", boss_id="bb", intake_status="complete", source="plugin"))
     db_session.commit()
     r = client.get("/api/intake/candidates?status=collecting")
     assert r.status_code == 200
@@ -19,7 +19,7 @@ def test_list_candidates_filters_by_status(client, db_session):
 
 
 def test_get_candidate_detail_returns_slots(client, db_session):
-    c = IntakeCandidate(name="c", boss_id="bc", intake_status="collecting", source="plugin")
+    c = IntakeCandidate(user_id=1, name="c", boss_id="bc", intake_status="collecting", source="plugin")
     db_session.add(c)
     db_session.commit()
     db_session.add(IntakeSlot(
@@ -36,7 +36,7 @@ def test_get_candidate_detail_returns_slots(client, db_session):
 
 
 def test_patch_slot_value(client, db_session):
-    c = IntakeCandidate(name="d", boss_id="bd", intake_status="pending_human", source="plugin")
+    c = IntakeCandidate(user_id=1, name="d", boss_id="bd", intake_status="pending_human", source="plugin")
     db_session.add(c)
     db_session.commit()
     s = IntakeSlot(candidate_id=c.id, slot_key="intern_duration", slot_category="hard")

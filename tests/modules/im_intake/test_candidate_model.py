@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.database import Base
+import app.modules.auth.models  # noqa: F401 — register users table for FK
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 
@@ -25,10 +26,16 @@ def test_candidate_insert_and_slot_fk():
     assert slot.candidate_id == c.id
 
 
-def test_candidate_boss_id_unique():
+def test_candidate_boss_id_unique_per_user():
+    """UNIQUE(user_id, boss_id): same boss_id allowed across different users,
+    but NOT twice within the same user."""
     s = _session()
-    s.add(IntakeCandidate(boss_id="bx1", name="A", intake_status="collecting", source="plugin"))
+    s.add(IntakeCandidate(user_id=1, boss_id="bx1", name="A", intake_status="collecting", source="plugin"))
     s.commit()
-    s.add(IntakeCandidate(boss_id="bx1", name="B", intake_status="collecting", source="plugin"))
+    # Same boss_id under a different user — should succeed
+    s.add(IntakeCandidate(user_id=2, boss_id="bx1", name="B", intake_status="collecting", source="plugin"))
+    s.commit()
+    # Same (user_id, boss_id) — should fail
+    s.add(IntakeCandidate(user_id=1, boss_id="bx1", name="C", intake_status="collecting", source="plugin"))
     with pytest.raises(Exception):
         s.commit()
