@@ -912,3 +912,63 @@ function findGreetButtonInCard(card) {
   }
   return null;
 }
+
+// ---- F5: chat page automation helpers ----
+// Selectors are PLACEHOLDERS; verify on live page.
+
+async function f5_typeAndSendChatMessage(text) {
+  const input = document.querySelector(".chat-input textarea, .chat-input [contenteditable=true]");
+  if (!input) return { ok: false, reason: "输入框未找到" };
+  input.focus();
+  if (input.tagName === "TEXTAREA") {
+    input.value = "";
+    for (const ch of text) {
+      input.value += ch;
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: ch }));
+      await new Promise((r) => setTimeout(r, 20 + Math.random() * 60));
+    }
+  } else {
+    input.textContent = text;
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  }
+  await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
+  const sendBtn = document.querySelector(
+    ".chat-input .send-btn, button[data-action=send], .chat-action-send"
+  );
+  if (!sendBtn) return { ok: false, reason: "发送按钮未找到" };
+  if (typeof simulateHumanClick === "function") {
+    await simulateHumanClick(sendBtn);
+  } else {
+    sendBtn.click();
+  }
+  return { ok: true };
+}
+
+async function f5_clickRequestResumeButton() {
+  const btn = Array.from(document.querySelectorAll("button, a")).find(
+    (el) => /求简历|索要简历/.test(el.textContent || "")
+  );
+  if (!btn) return { ok: false, reason: "求简历按钮未找到" };
+  if (typeof simulateHumanClick === "function") {
+    await simulateHumanClick(btn);
+  } else {
+    btn.click();
+  }
+  return { ok: true };
+}
+
+async function f5_checkPdfReceived(bossId) {
+  const attachRows = document.querySelectorAll(".msg-row.attachment, .attachment-card");
+  for (const el of attachRows) {
+    const fromId = el.getAttribute("data-sender");
+    if (fromId === bossId) {
+      const link = el.querySelector("a[href*='.pdf'], a[download]");
+      if (link) return { present: true, url: link.href };
+    }
+  }
+  return { present: false };
+}
+
+window.f5_typeAndSendChatMessage = f5_typeAndSendChatMessage;
+window.f5_clickRequestResumeButton = f5_clickRequestResumeButton;
+window.f5_checkPdfReceived = f5_checkPdfReceived;
