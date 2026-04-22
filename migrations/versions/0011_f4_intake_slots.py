@@ -31,24 +31,28 @@ def upgrade() -> None:
         sa.Column('updated_at', sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
         sa.ForeignKeyConstraint(['resume_id'], ['resumes.id'], ondelete='CASCADE'),
     )
-    op.create_index('uq_intake_resume_slot', 'intake_slots', ['resume_id', 'slot_key'], unique=True)
-    op.create_index('idx_intake_resume', 'intake_slots', ['resume_id'])
-    op.create_index('idx_intake_answered', 'intake_slots', ['answered_at'])
+    op.create_index('ix_intake_slots_resume_slot', 'intake_slots', ['resume_id', 'slot_key'], unique=True)
+    op.create_index('ix_intake_slots_resume_id', 'intake_slots', ['resume_id'])
+    op.create_index('ix_intake_slots_answered_at', 'intake_slots', ['answered_at'])
 
     with op.batch_alter_table('resumes') as batch_op:
         batch_op.add_column(sa.Column('intake_status', sa.String(20), nullable=False, server_default='collecting'))
         batch_op.add_column(sa.Column('intake_started_at', sa.DateTime, nullable=True))
         batch_op.add_column(sa.Column('intake_completed_at', sa.DateTime, nullable=True))
         batch_op.add_column(sa.Column('job_id', sa.Integer, nullable=True))
+        batch_op.create_foreign_key('fk_resumes_job_id', 'jobs', ['job_id'], ['id'], ondelete='SET NULL')
+        batch_op.create_index('ix_resumes_job_id', ['job_id'])
 
 
 def downgrade() -> None:
     with op.batch_alter_table('resumes') as batch_op:
+        batch_op.drop_index('ix_resumes_job_id')
+        batch_op.drop_constraint('fk_resumes_job_id', type_='foreignkey')
         batch_op.drop_column('job_id')
         batch_op.drop_column('intake_completed_at')
         batch_op.drop_column('intake_started_at')
         batch_op.drop_column('intake_status')
-    op.drop_index('idx_intake_answered', table_name='intake_slots')
-    op.drop_index('idx_intake_resume', table_name='intake_slots')
-    op.drop_index('uq_intake_resume_slot', table_name='intake_slots')
+    op.drop_index('ix_intake_slots_answered_at', table_name='intake_slots')
+    op.drop_index('ix_intake_slots_resume_id', table_name='intake_slots')
+    op.drop_index('ix_intake_slots_resume_slot', table_name='intake_slots')
     op.drop_table('intake_slots')

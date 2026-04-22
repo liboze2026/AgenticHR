@@ -89,14 +89,28 @@ def test_intake_slots_unique_resume_key(migrated_db):
 def test_intake_slots_helper_indexes(migrated_db):
     insp = sa.inspect(migrated_db)
     idx_names = {i["name"] for i in insp.get_indexes("intake_slots")}
-    assert "idx_intake_resume" in idx_names
-    assert "idx_intake_answered" in idx_names
+    assert "ix_intake_slots_resume_id" in idx_names
+    assert "ix_intake_slots_answered_at" in idx_names
+    # unique index also follows ix_<table>_<cols> convention
+    uq_names = {i["name"] for i in insp.get_indexes("intake_slots") if i.get("unique")}
+    assert "ix_intake_slots_resume_slot" in uq_names
 
 
 def test_resumes_intake_columns(migrated_db):
     insp = sa.inspect(migrated_db)
     cols = {c["name"] for c in insp.get_columns("resumes")}
     assert {"intake_status", "intake_started_at", "intake_completed_at", "job_id"}.issubset(cols)
+
+
+def test_resumes_job_id_index_and_fk(migrated_db):
+    insp = sa.inspect(migrated_db)
+    idx_names = {i["name"] for i in insp.get_indexes("resumes")}
+    assert "ix_resumes_job_id" in idx_names
+    fks = insp.get_foreign_keys("resumes")
+    job_fks = [fk for fk in fks if fk.get("constrained_columns") == ["job_id"]]
+    assert len(job_fks) == 1, f"expected FK on resumes.job_id -> jobs.id, got {fks}"
+    assert job_fks[0]["referred_table"] == "jobs"
+    assert job_fks[0]["referred_columns"] == ["id"]
 
 
 def test_resumes_intake_status_default(migrated_db):
