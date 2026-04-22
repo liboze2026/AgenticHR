@@ -55,6 +55,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true, onMessagePage })
     return true
   }
+  if (message.action === 'getPageInfo') {
+    sendResponse({ bossJobTitle: getBossTopJobTitle() })
+    return true
+  }
+  if (message && message.type === 'INTAKE_COLLECT_CURRENT_CHAT') {
+    f5_runIntakeOrchestrator()
+      .then(() => sendResponse({ ok: true }))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
   if (message.action === 'pause') { _setPaused(true); sendResponse({ success: true }); }
   else if (message.action === 'resume') { _setPaused(false); sendResponse({ success: true }); }
   else if (message.action === 'stop') { _stopped = true; _setPaused(false); _setRunning(false); sendResponse({ success: true }); }
@@ -565,15 +575,38 @@ function detectRiskControl() {
 function scrapeRecommendCard(cardEl) {
   if (!cardEl) return null;
 
-  // boss_id 在 .card-inner 上 (2026-04-21 live 校准)
+  // boss_id: 优先 .card-inner[data-id]，再找任意 [data-id]，再试 data-geek-id
   const innerEl = cardEl.querySelector(F3_SELECTORS.CARD_INNER) || cardEl;
-  const bossId = innerEl.getAttribute('data-id')
+  let bossId = innerEl.getAttribute('data-id')
     || cardEl.getAttribute('data-id')
+    || cardEl.querySelector('[data-id]')?.getAttribute('data-id')
+    || innerEl.getAttribute('data-geekid')
+    || innerEl.getAttribute('data-geek')
+    || cardEl.getAttribute('data-geekid')
+    || cardEl.getAttribute('data-geek')
+    || cardEl.querySelector('[data-geekid]')?.getAttribute('data-geekid')
+    || cardEl.querySelector('[data-geek]')?.getAttribute('data-geek')
+    || innerEl.getAttribute('data-geek-id')
+    || cardEl.getAttribute('data-geek-id')
+    || cardEl.querySelector('[data-geek-id]')?.getAttribute('data-geek-id')
     || '';
-  if (!bossId) return null;
 
-  const name = cardEl.querySelector(F3_SELECTORS.CARD_NAME)?.textContent?.trim() || '';
-  if (!name) return null;
+  // name: 先 span.name，再 .name，再任意含中文的 .name-wrap 子元素
+  const name = cardEl.querySelector(F3_SELECTORS.CARD_NAME)?.textContent?.trim()
+    || cardEl.querySelector('.name')?.textContent?.trim()
+    || cardEl.querySelector('.geek-name')?.textContent?.trim()
+    || '';
+
+  if (!name) {
+    log(`scrape失败: 找不到name. HTML前300: ${cardEl.outerHTML?.slice(0,300)}`);
+    return null;
+  }
+
+  // 无 ID 时用 name 作 fallback（避免全部跳过；重复由 Set 过滤）
+  if (!bossId) {
+    log(`scrape警告: 找不到data-id, 用name作fallback: ${name}`);
+    bossId = `name_${name}`;
+  }
 
   // base-info: "22岁 27年应届生 硕士 刚刚活跃"
   const baseText = (cardEl.querySelector(F3_SELECTORS.CARD_BASE_INFO)?.textContent || '')
@@ -680,23 +713,6 @@ async function autoGreetRecommend({ jobId, serverUrl, authToken }) {
       return { success: false, message: '请先打开 Boss 推荐牛人页', log: LOG };
     }
 
-    // 岗位对齐检查 (Q8 B)
-    const jobResp = await fetch(`${serverUrl}/api/screening/jobs/${jobId}`, {
-      headers: { 'Authorization': `Bearer ${authToken}` },
-    });
-    if (!jobResp.ok) {
-      return { success: false, message: `加载岗位失败: HTTP ${jobResp.status}`, log: LOG };
-    }
-    const sysJob = await jobResp.json();
-    const bossJobName = getBossTopJobTitle();
-    const sim = stringSimilarity(sysJob.title || '', bossJobName || '');
-    if (sim < 0.7 && bossJobName) {
-      const ok = confirm(
-        `岗位可能不匹配:\n  Boss 页: ${bossJobName}\n  系统选的: ${sysJob.title}\n继续?`
-      );
-      if (!ok) { _setRunning(false); return { success: false, message: '用户取消', log: LOG }; }
-    }
-
     let idx = 0;
     const processedBossIds = new Set();
     let silentMissCount = 0;
@@ -724,15 +740,24 @@ async function autoGreetRecommend({ jobId, serverUrl, authToken }) {
       }
       const cards = Array.from(recDoc.querySelectorAll(F3_SELECTORS.CARD_ITEM));
       if (idx >= cards.length) {
-        // 滚动在 iframe 的 scroll 容器里, 不是 top window
+        // 触底：滚动加载更多
         const scrollable = recDoc.querySelector('.list-body') || recDoc.scrollingElement || recDoc.body;
         scrollable.scrollTop = scrollable.scrollHeight;
-        await sleep(2000);
-        const newCards = Array.from(recDoc.querySelectorAll(F3_SELECTORS.CARD_ITEM));
-        if (newCards.length === cards.length) {
-          log(`列表到底. 处理完 ${idx} 人`);
+        log(`idx=${idx} 触底，滚动等待新卡片...`);
+        // 轮询最多 8 秒等待新卡片出现
+        let waited = 0;
+        let newCount = cards.length;
+        while (waited < 8000) {
+          await sleep(500);
+          waited += 500;
+          newCount = recDoc.querySelectorAll(F3_SELECTORS.CARD_ITEM).length;
+          if (newCount > cards.length) break;
+        }
+        if (newCount === cards.length) {
+          log(`列表到底，无新卡片. 共处理 ${idx} 人`);
           break;
         }
+        log(`新增 ${newCount - cards.length} 张卡片`);
         continue;
       }
 
@@ -740,7 +765,7 @@ async function autoGreetRecommend({ jobId, serverUrl, authToken }) {
       idx++;
 
       const scraped = scrapeRecommendCard(card);
-      if (!scraped) { stats.skipped++; _setStats(stats); continue; }
+      if (!scraped) { log(`[${idx}] scrape失败,跳过`); stats.skipped++; _setStats(stats); continue; }
       if (processedBossIds.has(scraped.boss_id)) { stats.skipped++; _setStats(stats); continue; }
       processedBossIds.add(scraped.boss_id);
 
@@ -755,7 +780,7 @@ async function autoGreetRecommend({ jobId, serverUrl, authToken }) {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${authToken}`,
           },
-          body: JSON.stringify({ job_id: jobId, candidate: scraped }),
+          body: JSON.stringify({ job_id: jobId, candidate: scraped, strategy: 'school_only' }),
         });
         if (evalResp.status === 401) {
           _setRunning(false);
@@ -807,11 +832,16 @@ async function autoGreetRecommend({ jobId, serverUrl, authToken }) {
         }
         try {
           await simulateHumanClick(greetBtn);
-          await sleep(1000 + Math.random() * 500);
+          await sleep(1200 + Math.random() * 500);
+          // 成功判定: 打招呼后原按钮消失 + 出现"继续沟通"按钮，或原按钮变为disabled/"已打招呼"
+          const greetBtnGone = !greetBtn.isConnected || !card.querySelector('button.btn.btn-greet');
+          const continueBtn = card.querySelector('button.btn-continue, button.btn.btn-continue');
           const btnText = greetBtn.textContent.trim();
-          const done = greetBtn.classList.contains('done')
+          const done = greetBtnGone
+                    || !!continueBtn
+                    || greetBtn.classList.contains('done')
                     || btnText.includes('已打招呼')
-                    || card.querySelector(F3_SELECTORS.CARD_GREET_BTN_DONE);
+                    || !!card.querySelector(F3_SELECTORS.CARD_GREET_BTN_DONE);
           if (done) {
             await reportGreetResult(serverUrl, authToken, decision.resume_id, true, '');
             stats.greeted++; log('打招呼成功');
@@ -972,3 +1002,175 @@ async function f5_checkPdfReceived(bossId) {
 window.f5_typeAndSendChatMessage = f5_typeAndSendChatMessage;
 window.f5_clickRequestResumeButton = f5_clickRequestResumeButton;
 window.f5_checkPdfReceived = f5_checkPdfReceived;
+
+// ---- F5: orchestrator ----
+
+function f5_getQueryParam(key) {
+  try {
+    return new URL(location.href).searchParams.get(key);
+  } catch {
+    return null;
+  }
+}
+
+async function f5_getServerUrl() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["serverUrl"], (r) => {
+      resolve(r.serverUrl || "http://127.0.0.1:8000");
+    });
+  });
+}
+
+async function f5_getAuthToken() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["authToken"], (r) => resolve(r.authToken || ""));
+  });
+}
+
+async function f5_postJSON(path, body) {
+  const base = await f5_getServerUrl();
+  const token = await f5_getAuthToken();
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const r = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    throw new Error(`${path} → ${r.status} ${txt.slice(0, 200)}`);
+  }
+  return r.json();
+}
+
+function f5_showIntakeToast(msg, kind) {
+  let el = document.getElementById("f5-intake-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "f5-intake-toast";
+    el.style.cssText =
+      "position:fixed;top:20px;right:20px;z-index:99999;background:#fff;" +
+      "border:2px solid #00b38a;padding:12px 16px;border-radius:8px;" +
+      "box-shadow:0 4px 12px rgba(0,0,0,0.15);font-size:13px;max-width:320px;" +
+      "color:#333;font-family:-apple-system,sans-serif;";
+    document.body.appendChild(el);
+  }
+  el.textContent = `【采集】${msg}`;
+  const color =
+    kind === "error" ? "#ff4d4f" : kind === "done" ? "#52c41a" : "#00b38a";
+  el.style.borderColor = color;
+}
+
+function f5_waitFor(predicate, timeoutMs) {
+  timeoutMs = timeoutMs || 10000;
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const tick = () => {
+      try {
+        if (predicate()) return resolve(true);
+      } catch {}
+      if (Date.now() - start > timeoutMs) return reject(new Error("timeout"));
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+async function f5_runIntakeOrchestrator() {
+  f5_showIntakeToast("正在分析聊天记录...");
+  try {
+    await f5_waitFor(
+      () => document.querySelector(window.CHAT_SELECTORS.root),
+      10000
+    );
+  } catch {
+    f5_showIntakeToast("未找到聊天窗口，请检查页面", "error");
+    return;
+  }
+
+  const root = document.querySelector(window.CHAT_SELECTORS.root);
+  const parsed = window.parseChatFromDOM(root);
+  if (!parsed || !parsed.boss_id) {
+    f5_showIntakeToast("抓取聊天信息失败（boss_id 未识别）", "error");
+    return;
+  }
+
+  const pdf = await window.f5_checkPdfReceived(parsed.boss_id);
+
+  let resp;
+  try {
+    resp = await f5_postJSON("/api/intake/collect-chat", {
+      boss_id: parsed.boss_id,
+      name: parsed.name,
+      job_intention: parsed.job_intention,
+      messages: parsed.messages,
+      pdf_present: pdf.present,
+      pdf_url: pdf.url || null,
+    });
+  } catch (e) {
+    f5_showIntakeToast(`后端返回错误: ${e.message}`, "error");
+    return;
+  }
+
+  const action = resp.next_action;
+  f5_showIntakeToast(`下一步: ${action.type}`);
+
+  try {
+    if (action.type === "send_hard" || action.type === "send_soft") {
+      const r = await window.f5_typeAndSendChatMessage(action.text);
+      if (r.ok) {
+        await f5_postJSON(
+          `/api/intake/candidates/${resp.candidate_id}/ack-sent`,
+          { action_type: action.type, delivered: true }
+        );
+        f5_showIntakeToast("问题已发送", "done");
+      } else {
+        f5_showIntakeToast(`发送失败: ${r.reason}`, "error");
+      }
+    } else if (action.type === "request_pdf") {
+      const r = await window.f5_clickRequestResumeButton();
+      if (r.ok) {
+        await f5_postJSON(
+          `/api/intake/candidates/${resp.candidate_id}/ack-sent`,
+          { action_type: "request_pdf", delivered: true }
+        );
+        f5_showIntakeToast("已点击求简历", "done");
+      } else {
+        f5_showIntakeToast(`按钮未找到: ${r.reason}`, "error");
+      }
+    } else if (action.type === "wait_pdf") {
+      f5_showIntakeToast("等待候选人发送简历", "info");
+    } else if (action.type === "complete") {
+      f5_showIntakeToast("采集完成 → 已进入简历库", "done");
+    } else if (action.type === "mark_pending_human") {
+      f5_showIntakeToast("已标记为人工兜底", "done");
+    } else if (action.type === "abandon") {
+      f5_showIntakeToast("候选人超时，已放弃", "error");
+    }
+  } catch (e) {
+    f5_showIntakeToast(`执行动作失败: ${e.message}`, "error");
+  }
+}
+
+// Auto-trigger on URL with intake_candidate_id query param (arrived via /intake deep link)
+if (
+  location.host.includes("zhipin.com") &&
+  location.pathname.includes("/web/chat")
+) {
+  const fromDeepLink = !!f5_getQueryParam("intake_candidate_id");
+  if (fromDeepLink) {
+    setTimeout(() => f5_runIntakeOrchestrator(), 1500);
+  }
+
+  // Also respond to SPA URL changes
+  let lastHref = location.href;
+  setInterval(() => {
+    if (location.href !== lastHref) {
+      lastHref = location.href;
+      if (f5_getQueryParam("intake_candidate_id")) {
+        setTimeout(() => f5_runIntakeOrchestrator(), 1500);
+      }
+    }
+  }, 1000);
+}
