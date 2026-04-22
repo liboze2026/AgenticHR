@@ -38,6 +38,10 @@ class Resume(Base):
     boss_id = Column(String(100), default="", nullable=False, index=True)
     greet_status = Column(String(20), default="none", nullable=False)
     greeted_at = Column(DateTime, nullable=True)
+    intake_status = Column(String(20), default="collecting", nullable=False)
+    intake_started_at = Column(DateTime, nullable=True)
+    intake_completed_at = Column(DateTime, nullable=True)
+    job_id = Column(Integer, nullable=True)
     created_at = Column(
         DateTime, default=lambda: datetime.now(timezone.utc), nullable=False
     )
