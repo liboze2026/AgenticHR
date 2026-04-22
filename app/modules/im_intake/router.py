@@ -10,6 +10,7 @@ from app.modules.auth.deps import get_current_user_id
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.schemas import (
+    AckSentIn,
     CandidateDetailOut,
     CandidateOut,
     CollectChatIn,
@@ -18,6 +19,7 @@ from app.modules.im_intake.schemas import (
     SchedulerStatus,
     SlotOut,
     SlotPatchIn,
+    StartConversationOut,
 )
 from app.modules.im_intake.service import IntakeService
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
@@ -224,3 +226,18 @@ async def collect_chat(
             slot_keys=action.meta.get("slot_keys", []),
         ),
     )
+
+
+@router.post("/candidates/{candidate_id}/start-conversation", response_model=StartConversationOut)
+def start_conversation(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "candidate not found")
+    base = settings.boss_chat_url_template.format(boss_id=c.boss_id)
+    sep = "&" if "?" in base else "?"
+    deep_link = f"{base}{sep}intake_candidate_id={c.id}"
+    return StartConversationOut(candidate_id=c.id, boss_id=c.boss_id, deep_link=deep_link)

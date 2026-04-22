@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     f4_soft_question_max: int = 3
     ai_model_intake: str = ""
 
+    # F5 Boss chat deep link
+    boss_chat_url_template: str = "https://www.zhipin.com/web/chat/index?id={boss_id}"
+
     # 简历存储路径
     resume_storage_path: str = "./data/resumes"
 
