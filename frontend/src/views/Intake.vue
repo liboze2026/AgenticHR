@@ -111,8 +111,13 @@
             {{ row.last_activity_at ? formatTime(row.last_activity_at) : '-' }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="280" fixed="right">
           <template #default="{ row }">
+            <el-button
+              size="small"
+              type="primary"
+              @click="handleStartConversation(row)"
+            >开始沟通</el-button>
             <el-button
               v-if="row.intake_status !== 'complete' && row.intake_status !== 'abandoned'"
               size="small"
@@ -157,6 +162,7 @@ import {
   pauseScheduler,
   resumeScheduler,
   tickNow,
+  startConversation,
 } from '../api/intake'
 
 const status = ref(null)
@@ -295,6 +301,16 @@ async function doAbandon(row) {
     loadCandidates()
   } catch (e) {
     ElMessage.error('操作失败')
+  }
+}
+
+async function handleStartConversation(row) {
+  try {
+    const resp = await startConversation(row.resume_id)
+    window.open(resp.deep_link, '_blank')
+    ElMessage.info('已跳转 Boss 直聘，插件将自动接管')
+  } catch (e) {
+    ElMessage.error(`启动沟通失败: ${e.message || e}`)
   }
 }
 
