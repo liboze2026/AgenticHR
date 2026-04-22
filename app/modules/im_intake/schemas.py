@@ -47,3 +47,44 @@ class SchedulerStatus(BaseModel):
     daily_cap_used: int
     daily_cap_max: int
     last_batch_size: int
+
+
+# ---- F5 additions ----
+
+class ChatMessageIn(BaseModel):
+    sender_id: str
+    content: str
+    sent_at: str | None = None
+
+
+class CollectChatIn(BaseModel):
+    boss_id: str = Field(min_length=1)
+    name: str = ""
+    job_intention: str | None = None
+    messages: list[ChatMessageIn] = Field(default_factory=list)
+    pdf_present: bool = False
+    pdf_url: str | None = None
+
+
+class NextActionOut(BaseModel):
+    type: Literal["send_hard", "request_pdf", "wait_pdf",
+                  "send_soft", "complete", "mark_pending_human", "abandon"]
+    text: str = ""
+    slot_keys: list[str] = Field(default_factory=list)
+
+
+class CollectChatOut(BaseModel):
+    candidate_id: int
+    intake_status: str
+    next_action: NextActionOut
+
+
+class AckSentIn(BaseModel):
+    action_type: Literal["send_hard", "request_pdf", "send_soft"]
+    delivered: bool = True
+
+
+class StartConversationOut(BaseModel):
+    candidate_id: int
+    boss_id: str
+    deep_link: str
