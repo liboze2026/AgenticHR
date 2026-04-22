@@ -23,7 +23,6 @@ from app.modules.im_intake.schemas import (
 )
 from app.modules.im_intake.service import IntakeService
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
-from app.modules.resume.models import Resume
 from app.modules.screening.models import Job
 
 router = APIRouter(prefix="/api/intake", tags=["intake"])
@@ -49,19 +48,19 @@ def _build_service(db: Session) -> IntakeService:
     )
 
 
-def _candidate_summary(r: Resume, slots: list[IntakeSlot], job_title: str = "") -> CandidateOut:
+def _candidate_summary(c: IntakeCandidate, slots: list[IntakeSlot], job_title: str = "") -> CandidateOut:
     expected = list(HARD_SLOT_KEYS) + ["pdf"]
     soft_keys = [s.slot_key for s in slots if s.slot_category == "soft"]
     expected += soft_keys
     done = sum(1 for s in slots if s.value)
-    last = max((s.updated_at for s in slots if getattr(s, "updated_at", None)), default=r.intake_started_at)
+    last = max((s.updated_at for s in slots if getattr(s, "updated_at", None)), default=c.intake_started_at)
     return CandidateOut(
-        resume_id=r.id,
-        boss_id=r.boss_id,
-        name=r.name,
-        job_id=getattr(r, "job_id", None),
+        resume_id=c.id,  # NOTE: field kept as resume_id for frontend compat; semantically = candidate_id
+        boss_id=c.boss_id,
+        name=c.name,
+        job_id=getattr(c, "job_id", None),
         job_title=job_title,
-        intake_status=r.intake_status,
+        intake_status=c.intake_status,
         progress_done=done,
         progress_total=len(expected),
         last_activity_at=last,
@@ -77,33 +76,33 @@ def list_candidates(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    q = db.query(Resume).filter(Resume.boss_id != "")
+    q = db.query(IntakeCandidate)
     if status:
-        q = q.filter(Resume.intake_status == status)
+        q = q.filter(IntakeCandidate.intake_status == status)
     if job_id:
-        q = q.filter(Resume.job_id == job_id)
+        q = q.filter(IntakeCandidate.job_id == job_id)
     total = q.count()
-    rows = q.order_by(Resume.updated_at.desc()).offset((page - 1) * size).limit(size).all()
+    rows = q.order_by(IntakeCandidate.updated_at.desc()).offset((page - 1) * size).limit(size).all()
     items = []
-    for r in rows:
-        slots = db.query(IntakeSlot).filter_by(resume_id=r.id).all()
-        job = db.query(Job).filter_by(id=r.job_id).first() if getattr(r, "job_id", None) else None
-        items.append(_candidate_summary(r, slots, job.title if job else ""))
+    for c in rows:
+        slots = db.query(IntakeSlot).filter_by(candidate_id=c.id).all()
+        job = db.query(Job).filter_by(id=c.job_id).first() if getattr(c, "job_id", None) else None
+        items.append(_candidate_summary(c, slots, job.title if job else ""))
     return {"items": items, "total": total, "page": page, "size": size}
 
 
-@router.get("/candidates/{resume_id}", response_model=CandidateDetailOut)
+@router.get("/candidates/{candidate_id}", response_model=CandidateDetailOut)
 def get_candidate(
-    resume_id: int,
+    candidate_id: int,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    r = db.query(Resume).filter_by(id=resume_id).first()
-    if not r:
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
         raise HTTPException(404, "not found")
-    slots = db.query(IntakeSlot).filter_by(resume_id=r.id).all()
-    job = db.query(Job).filter_by(id=r.job_id).first() if getattr(r, "job_id", None) else None
-    summary = _candidate_summary(r, slots, job.title if job else "")
+    slots = db.query(IntakeSlot).filter_by(candidate_id=c.id).all()
+    job = db.query(Job).filter_by(id=c.job_id).first() if getattr(c, "job_id", None) else None
+    summary = _candidate_summary(c, slots, job.title if job else "")
     return CandidateDetailOut(
         **summary.model_dump(),
         slots=[SlotOut.model_validate(s, from_attributes=True) for s in slots],
@@ -128,31 +127,31 @@ def patch_slot(
     return SlotOut.model_validate(s, from_attributes=True)
 
 
-@router.post("/candidates/{resume_id}/abandon")
+@router.post("/candidates/{candidate_id}/abandon")
 def abandon(
-    resume_id: int,
+    candidate_id: int,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    r = db.query(Resume).filter_by(id=resume_id).first()
-    if not r:
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
         raise HTTPException(404, "not found")
-    r.intake_status = "abandoned"
+    c.intake_status = "abandoned"
     db.commit()
     return {"ok": True}
 
 
-@router.post("/candidates/{resume_id}/force-complete")
+@router.post("/candidates/{candidate_id}/force-complete")
 def force_complete(
-    resume_id: int,
+    candidate_id: int,
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    r = db.query(Resume).filter_by(id=resume_id).first()
-    if not r:
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
         raise HTTPException(404, "not found")
-    r.intake_status = "complete"
-    r.intake_completed_at = datetime.now(timezone.utc)
+    c.intake_status = "complete"
+    c.intake_completed_at = datetime.now(timezone.utc)
     db.commit()
     return {"ok": True}
 

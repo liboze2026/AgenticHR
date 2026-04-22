@@ -10,9 +10,9 @@ from app.modules.screening.models import Job
 
 
 @pytest.mark.skip(
-    reason="pending F5 T11+ router switch and PDF-collection reintegration: "
-           "T5 refactor removed pdf try_collect from process_one, and the API "
-           "endpoint /api/intake/candidates?status=complete still queries Resume."
+    reason="pending plugin implementation (T14-T16): PDF collection is no longer inline in "
+           "analyze_chat; plugin submits via /collect-chat. Scheduler-driven end-to-end no "
+           "longer matches the current architecture."
 )
 @pytest.mark.asyncio
 async def test_full_intake_to_complete_visible_via_api(db_session, client, tmp_path):
