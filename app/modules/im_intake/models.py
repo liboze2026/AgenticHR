@@ -7,7 +7,7 @@ class IntakeSlot(Base):
     __tablename__ = "intake_slots"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    resume_id = Column(Integer, ForeignKey("resumes.id", ondelete="CASCADE"), nullable=False)
+    candidate_id = Column(Integer, ForeignKey("intake_candidates.id", ondelete="CASCADE"), nullable=False)
     slot_key = Column(String(64), nullable=False)
     slot_category = Column(String(16), nullable=False)
     value = Column(Text, nullable=True)
