@@ -54,6 +54,21 @@ class MockBossAdapter(BossAdapter):
     async def is_available(self) -> bool:
         return self._available
 
+    async def list_chat_index(self) -> list[BossCandidate]:
+        return list(self._candidates)
+
+    async def send_message(self, boss_id: str, text: str) -> bool:
+        self._sent_messages.append((boss_id, text))
+        self._operations_today += 1
+        return True
+
+    async def click_request_resume(self, boss_id: str) -> bool:
+        self._operations_today += 1
+        return True
+
+    async def list_received_resumes(self) -> list[tuple[str, str]]:
+        return []
+
 
 @pytest.fixture
 def mock_adapter():
