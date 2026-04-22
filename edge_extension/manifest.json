@@ -10,8 +10,11 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://www.zhipin.com/*"],
-      "js": ["f3_selectors.js", "content.js"],
+      "matches": [
+        "https://www.zhipin.com/*",
+        "https://www.zhipin.com/web/chat/*"
+      ],
+      "js": ["chat_scrape.js", "f3_selectors.js", "content.js"],
       "css": ["styles.css"]
     }
   ],
