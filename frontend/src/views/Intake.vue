@@ -1,48 +1,7 @@
 <template>
   <div class="intake-page">
-    <!-- 顶部控制栏 -->
-    <el-card class="control-bar" shadow="never">
-      <div class="control-row">
-        <div class="status-block">
-          <el-tag :type="status?.running ? 'success' : 'info'" effect="dark">
-            调度器: {{ status?.running ? '运行中' : '已暂停' }}
-          </el-tag>
-          <span class="stat">
-            今日操作: {{ status?.daily_cap_used ?? 0 }} / {{ status?.daily_cap_max ?? 0 }}
-          </span>
-          <span class="stat">
-            上轮处理: {{ status?.last_batch_size ?? 0 }}
-          </span>
-          <span class="stat" v-if="status?.next_run_at">
-            下次: {{ formatTime(status.next_run_at) }}
-          </span>
-        </div>
-        <div class="actions">
-          <el-button
-            v-if="status?.running"
-            type="warning"
-            size="small"
-            @click="doPause"
-          >暂停调度</el-button>
-          <el-button
-            v-else
-            type="success"
-            size="small"
-            @click="doResume"
-          >恢复调度</el-button>
-          <el-button
-            type="primary"
-            size="small"
-            :loading="ticking"
-            @click="doTickNow"
-          >立即扫一次</el-button>
-          <el-button size="small" @click="loadStatus">刷新状态</el-button>
-        </div>
-      </div>
-    </el-card>
-
     <!-- 候选人列表 -->
-    <el-card style="margin-top: 16px;" shadow="never">
+    <el-card shadow="never">
       <div class="filter-bar">
         <el-select
           v-model="statusFilter"
@@ -157,7 +116,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import SlotsPanel from './SlotsPanel.vue'
 import {
@@ -165,16 +124,9 @@ import {
   abandonCandidate,
   forceComplete,
   deleteCandidate,
-  getSchedulerStatus,
-  pauseScheduler,
-  resumeScheduler,
-  tickNow,
   startConversation,
 } from '../api/intake'
 import { resumeApi } from '../api'
-
-const status = ref(null)
-const ticking = ref(false)
 
 const loading = ref(false)
 const items = ref([])
@@ -183,8 +135,6 @@ const page = ref(1)
 const size = ref(20)
 const statusFilter = ref('')
 const search = ref('')
-
-let statusTimer = null
 
 const filteredItems = computed(() => {
   const kw = (search.value || '').trim().toLowerCase()
@@ -231,14 +181,6 @@ function formatTime(t) {
   }
 }
 
-async function loadStatus() {
-  try {
-    status.value = await getSchedulerStatus()
-  } catch (e) {
-    // silent — status panel will just stay stale
-  }
-}
-
 async function loadCandidates() {
   loading.value = true
   try {
@@ -261,40 +203,6 @@ function reload() {
 
 function handleExpandChange() {
   // SlotsPanel mounts on expand and self-loads; nothing to do here.
-}
-
-async function doPause() {
-  try {
-    await pauseScheduler()
-    ElMessage.success('已暂停')
-    loadStatus()
-  } catch (e) {
-    ElMessage.error('暂停失败')
-  }
-}
-
-async function doResume() {
-  try {
-    await resumeScheduler()
-    ElMessage.success('已恢复')
-    loadStatus()
-  } catch (e) {
-    ElMessage.error('恢复失败')
-  }
-}
-
-async function doTickNow() {
-  ticking.value = true
-  try {
-    await tickNow()
-    ElMessage.success('已触发一次扫描')
-    loadStatus()
-    loadCandidates()
-  } catch (e) {
-    ElMessage.error('触发失败')
-  } finally {
-    ticking.value = false
-  }
 }
 
 async function doAbandon(row) {
@@ -361,43 +269,13 @@ async function doForceComplete(row) {
 }
 
 onMounted(() => {
-  loadStatus()
   loadCandidates()
-  statusTimer = setInterval(loadStatus, 30000)
-})
-
-onUnmounted(() => {
-  if (statusTimer) clearInterval(statusTimer)
 })
 </script>
 
 <style scoped>
 .intake-page {
   padding: 0;
-}
-.control-bar :deep(.el-card__body) {
-  padding: 14px 20px;
-}
-.control-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-.status-block {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-.stat {
-  font-size: 13px;
-  color: #606266;
-}
-.actions {
-  display: flex;
-  gap: 8px;
 }
 .filter-bar {
   display: flex;
