@@ -2,13 +2,13 @@
 
 ## [Unreleased] — 2026-04-22
 
-### Added — F5: 单人手动采集模式
+### Added — F3.1 (原 F5): 单人手动采集模式
 - 新表 `intake_candidates` 专装采集中候选人；`resumes` 表通过前端过滤 `intake_status='complete'` 展示简历库（T12 F3 迁移因与 F2 评分器耦合而取消，改为前端过滤策略）
 - `POST /api/intake/collect-chat` — 插件提交聊天快照，后端解析 slot、跑 decide_next_action 返回 NextAction
 - `POST /api/intake/candidates/{id}/start-conversation` — 返回 Boss 聊天 deep link（带 `intake_candidate_id` query）
 - `POST /api/intake/candidates/{id}/ack-sent` — 插件回报已发送
 - `promote_to_resume()` 把信息齐全候选人搬到 resumes 表
-- 插件 `chat_scrape.js` 纯 DOM 解析器 + `content.js` 自动化助手 (`f5_typeAndSendChatMessage` / `f5_clickRequestResumeButton` / `f5_checkPdfReceived`)
+- 插件 `chat_scrape.js` 纯 DOM 解析器 + `content.js` 自动化助手 (`intake_typeAndSendChatMessage` / `intake_clickRequestResumeButton` / `intake_checkPdfReceived`)
 - 插件 orchestrator：检测 URL 参数 `intake_candidate_id` 自动接管聊天页 → collect-chat → 按 NextAction 发消息/点按钮 → ack-sent
 - 插件 popup 按钮 "采集当前聊天候选人"（测试入口）
 - `/intake` 行加 "开始沟通" 按钮 → `window.open(deep_link)` → 插件接管
@@ -28,8 +28,8 @@
 - T12（F3 写 IntakeCandidate）：F3 的 `evaluate_and_record` 与 F2 `MatchingService.score_pair(resume_id, job_id)` 深度耦合，迁移要求跨模块改造。改为保留 F3 现状 + 前端 `intake_status='complete'` 过滤的策略，以更低成本达成"简历库只显示采集完成候选人"语义。
 
 ### Test baseline
-- Before F5: 414 passed / 7 failed (F4 main baseline)
-- After F5: 105 passed in im_intake (0 fail, 1 skipped for plugin e2e); resume/recruit_bot suites unchanged
+- Before F3.1: 414 passed / 7 failed (F4 main baseline)
+- After F3.1: 105 passed in im_intake (0 fail, 1 skipped for plugin e2e); resume/recruit_bot suites unchanged
 
 ## [Unreleased] — 2026-04-21
 
