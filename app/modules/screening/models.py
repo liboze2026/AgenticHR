@@ -33,3 +33,4 @@ class Job(Base):
     competency_model_status = Column(String(20), default="none", nullable=False)
     scoring_weights = Column(JSON, nullable=True)
     greet_threshold = Column(Integer, default=60, nullable=False)
+    batch_collect_criteria = Column(JSON, nullable=True)

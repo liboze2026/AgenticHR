@@ -66,3 +66,30 @@ def test_screen_resumes_api(client):
     r2_after = client.get(f"/api/resumes/{resume2_id}").json()
     assert r1_after["status"] == "passed", f"合格候选人 status 被意外修改为 {r1_after['status']}"
     assert r2_after["status"] == "passed", f"不合格候选人 status 被意外修改为 {r2_after['status']}"
+
+
+def test_job_batch_collect_criteria_create(client):
+    resp = client.post("/api/screening/jobs", json={
+        "title": "批采测试岗",
+        "batch_collect_criteria": {"school_tiers": ["985", "211"], "education_min": "本科"},
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["batch_collect_criteria"]["school_tiers"] == ["985", "211"]
+    assert data["batch_collect_criteria"]["education_min"] == "本科"
+
+
+def test_job_batch_collect_criteria_update(client):
+    resp = client.post("/api/screening/jobs", json={"title": "批采更新岗"})
+    job_id = resp.json()["id"]
+    resp2 = client.patch(f"/api/screening/jobs/{job_id}", json={
+        "batch_collect_criteria": {"school_tiers": [], "education_min": None}
+    })
+    assert resp2.status_code == 200
+    assert resp2.json()["batch_collect_criteria"]["school_tiers"] == []
+
+
+def test_job_batch_collect_criteria_null_by_default(client):
+    resp = client.post("/api/screening/jobs", json={"title": "默认岗"})
+    assert resp.status_code == 201
+    assert resp.json()["batch_collect_criteria"] is None
