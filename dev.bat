@@ -25,13 +25,18 @@ if not exist "%ROOT%frontend/node_modules" (
 )
 
 echo [1/4] Cleaning ports %BACKEND_PORT% and %FRONTEND_PORT% ...
+rem Kill ALL pids using the port (including orphaned uvicorn worker children)
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BACKEND_PORT% " ^| findstr "LISTENING"') do (
-    echo        kill backend PID %%a
-    taskkill /F /PID %%a >nul 2>&1
+    echo        kill backend PID %%a + children
+    taskkill /F /T /PID %%a >nul 2>&1
+)
+rem Second pass: kill any remaining python processes still holding the port
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%BACKEND_PORT% "') do (
+    taskkill /F /T /PID %%a >nul 2>&1
 )
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%FRONTEND_PORT% " ^| findstr "LISTENING"') do (
-    echo        kill frontend PID %%a
-    taskkill /F /PID %%a >nul 2>&1
+    echo        kill frontend PID %%a + children
+    taskkill /F /T /PID %%a >nul 2>&1
 )
 
 echo [2/4] Running alembic upgrade head ...

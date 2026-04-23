@@ -221,11 +221,12 @@ def delete_resume(
         raise HTTPException(status_code=404, detail="简历不存在")
     if resume.user_id != user_id:
         raise HTTPException(status_code=403, detail="无权删除该简历")
-    service.delete(resume_id)
-    # cascade: delete linked IntakeCandidate
+    # Query linked IntakeCandidate BEFORE deleting resume, because ondelete="SET NULL"
+    # will null out promoted_resume_id after commit, making the candidate unfindable.
     from app.modules.im_intake.candidate_model import IntakeCandidate
     from app.modules.im_intake.models import IntakeSlot
     candidate = db.query(IntakeCandidate).filter_by(promoted_resume_id=resume_id, user_id=user_id).first()
+    service.delete(resume_id)
     if candidate:
         db.query(IntakeSlot).filter_by(candidate_id=candidate.id).delete(synchronize_session=False)
         db.delete(candidate)
