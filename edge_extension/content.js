@@ -1,3 +1,44 @@
+// ────────────────────────────────────────────────
+// 学校层次常量（教育部名单，含官方简称）
+// ────────────────────────────────────────────────
+const SCHOOL_985 = new Set([
+  '北京大学','清华大学','中国人民大学','北京航空航天大学','北京理工大学',
+  '中国农业大学','北京师范大学','中央民族大学','南开大学','天津大学',
+  '大连理工大学','吉林大学','哈尔滨工业大学','复旦大学','同济大学',
+  '上海交通大学','华东师范大学','南京大学','东南大学','浙江大学',
+  '中国科学技术大学','厦门大学','山东大学','中国海洋大学','武汉大学',
+  '华中科技大学','中南大学','中山大学','华南理工大学','四川大学',
+  '重庆大学','电子科技大学','西安交通大学','西北工业大学','兰州大学',
+  '国防科技大学','中国科学院大学','东北大学','湖南大学',
+]);
+
+// 211 包含 985
+const SCHOOL_211 = new Set([
+  ...SCHOOL_985,
+  '北京交通大学','北京工业大学','北京科技大学','北京化工大学',
+  '北京邮电大学','北京林业大学','北京中医药大学','中央音乐学院',
+  '对外经济贸易大学','中国政法大学','华北电力大学','中国矿业大学',
+  '河海大学','江南大学','南京农业大学','中国药科大学','南京航空航天大学',
+  '南京理工大学','苏州大学','东北财经大学','大连海事大学','延边大学',
+  '东北林业大学','东北农业大学','华东理工大学','东华大学','上海大学',
+  '上海外国语大学','上海财经大学','合肥工业大学','中国地质大学',
+  '武汉理工大学','华中农业大学','华中师范大学','中南财经政法大学',
+  '湖南师范大学','暨南大学','华南师范大学','广西大学','海南大学',
+  '西南大学','西南交通大学','西南财经大学','四川农业大学','贵州大学',
+  '云南大学','西藏大学','西北农林科技大学','陕西师范大学','长安大学',
+  '新疆大学','石河子大学','宁夏大学','青海大学','内蒙古大学',
+  '太原理工大学','河北工业大学','燕山大学','山西大学',
+  '郑州大学','安徽大学','南昌大学','福州大学',
+]);
+
+// 双一流学科高校（部分非211）
+const SCHOOL_FIRST_CLASS = new Set([
+  ...SCHOOL_211,
+  '北京协和医学院','外交学院','中央财经大学','北京外国语大学',
+  '华南农业大学','广州医科大学','南方科技大学','上海科技大学',
+  '深圳大学','西湖大学',
+]);
+
 /**
  * 招聘助手 - Content Script
  * Boss 直聘 (zhipin.com/web/chat/index)
@@ -39,6 +80,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const h = {
     collectCurrentResume: () => collectSingle(message.serverUrl, message.authToken || ''),
     batchCollect: () => batchCollect(message.serverUrl, message.authToken || ''),
+    batchCollectNew: (msg) => batchCollectNew(
+      message.limit, message.criteria, message.serverUrl, message.authToken || ''
+    ),
     autoGreet: () => autoGreet(),
     autoGreetRecommend: () => autoGreetRecommend({
       jobId: message.jobId,
@@ -164,6 +208,76 @@ async function batchCollect(serverUrl, authToken = '') {
 
   _setRunning(false);
   return { success: true, data: results, summary: { total: results.length, created, updated, failed }, log: LOG };
+}
+
+async function batchCollectNew(limit, criteria, serverUrl, authToken = '') {
+  LOG.length = 0; _setRunning(true);
+  const items = document.querySelectorAll('.geek-item');
+  if (!items.length) { _setRunning(false); return { success: false, message: '未找到候选人列表' }; }
+
+  log(`消息列表共 ${items.length} 人，目标采集 ${limit} 人`);
+
+  // ① collect all boss_ids
+  const allIds = [...items].map(el => el.getAttribute('data-id')).filter(Boolean);
+
+  // ② check which are already in DB
+  const existingSet = await checkBossIds(allIds, serverUrl, authToken);
+  log(`已在库: ${existingSet.size} 人，将跳过`);
+
+  // ③ filter out existing
+  const candidates = [...items].filter(el => !existingSet.has(el.getAttribute('data-id')));
+  const skippedDup = allIds.length - candidates.length;
+
+  let collected = 0, skippedCriteria = 0, failed = 0;
+  let prevPdfTitle = '';
+
+  for (let i = 0; i < candidates.length && collected < limit; i++) {
+    const item = candidates[i];
+    const listName = item.querySelector('.geek-name')?.textContent?.trim() || '';
+    if (!listName) continue;
+    log(`\n── [${i+1}/${candidates.length}] ${listName} ──`);
+
+    item.click();
+    if (!await waitForNameBox(listName, 6000)) {
+      log('面板未切换，跳过'); failed++; continue;
+    }
+    await waitForChatUpdate(prevPdfTitle, 4000);
+    await sleep(500);
+
+    const detail = extractDetail();
+    detail.boss_id = item.getAttribute('data-id') || '';
+    supplementFromPushText(detail, item);
+    const schoolTier = extractSchoolTier();
+
+    log(`学历=${detail.education} 学校层次=${schoolTier}`);
+
+    if (!matchesCriteria(detail, schoolTier, criteria)) {
+      log(`跳过: 不符标准`); skippedCriteria++; continue;
+    }
+
+    const pdfInfo = findPdfCard();
+    const pdfTitle = pdfInfo?.card.querySelector('.message-card-top-title')?.textContent?.trim() || '';
+    let ok = false;
+
+    if (pdfInfo && pdfTitle && serverUrl) {
+      const r = await downloadPdfWithSource(detail, listName, serverUrl, authToken, 'batch_chat');
+      ok = r.ok;
+      if (ok) prevPdfTitle = pdfTitle;
+    }
+    if (!ok) {
+      const resp = await submitPageData(detail, serverUrl, authToken, 'batch_chat');
+      ok = resp.ok;
+    }
+    if (ok) { collected++; log(`采集成功 (${collected}/${limit})`); }
+    else { failed++; log('采集失败'); }
+    await sleep(1000);
+  }
+
+  _setRunning(false);
+  return {
+    success: true, collected, skippedDup, skippedCriteria, failed,
+    message: `采集 ${collected}/${limit} 人完成`,
+  };
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -321,6 +435,7 @@ async function downloadPdf(candidateInfo, expectedName, serverUrl, authToken = '
     form.append('candidate_work_years', String(candidateInfo.work_years || 0));
     form.append('candidate_job', candidateInfo.job_intention || '');
     if (candidateInfo.boss_id) form.append('candidate_boss_id', candidateInfo.boss_id);
+    if (candidateInfo.source) form.append('candidate_source', candidateInfo.source);
 
     const uploadHeaders = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
     const uploadResp = await fetch(`${serverUrl}/api/resumes/upload`, { method: 'POST', headers: uploadHeaders, body: form });
@@ -332,6 +447,10 @@ async function downloadPdf(candidateInfo, expectedName, serverUrl, authToken = '
     await closeDialog();
     return { ok: false };
   }
+}
+
+async function downloadPdfWithSource(candidateInfo, expectedName, serverUrl, authToken, source) {
+  return downloadPdf({ ...candidateInfo, source }, expectedName, serverUrl, authToken);
 }
 
 function extractPdfUrl(iframeSrc) {
@@ -414,13 +533,78 @@ function supplementFromPushText(d, item) {
   if (!d.email) { const m = msg.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/); if (m) d.email = m[0]; }
 }
 
-async function submitPageData(d, url, authToken = '') {
+function extractSchoolTier() {
+  // Step 1: check tier tags in right panel
+  const TIER_RE = /^985$|^211$|^双一流$|^\d+院校$/;
+  const panel = document.querySelector('.geek-detail') || document.querySelector('.geek-sidebar') || document.body;
+  const tagEls = panel.querySelectorAll('.tag-item, .tag, .edu-tag');
+  for (const el of tagEls) {
+    const txt = el.textContent.trim();
+    if (TIER_RE.test(txt)) {
+      if (/985/.test(txt)) return '985';
+      if (/211/.test(txt)) return '211';
+      if (/双一流/.test(txt)) return '双一流';
+    }
+  }
+  // Step 2: text search for school names
+  const panelText = (
+    document.querySelector('.base-info-single-detial')?.textContent || ''
+  ) + ' ' + (document.querySelector('.geek-header')?.textContent || '');
+  for (const school of SCHOOL_985) {
+    if (panelText.includes(school)) return '985';
+  }
+  for (const school of SCHOOL_211) {
+    if (panelText.includes(school)) return '211';
+  }
+  for (const school of SCHOOL_FIRST_CLASS) {
+    if (panelText.includes(school)) return '双一流';
+  }
+  return 'unknown';
+}
+
+function matchesCriteria(detail, schoolTier, criteria) {
+  if (!criteria) return true;
+  const EDU_ORDER = ['大专', '本科', '硕士', '博士'];
+  if (criteria.education_min) {
+    const minIdx = EDU_ORDER.indexOf(criteria.education_min);
+    const detailIdx = EDU_ORDER.indexOf(detail.education);
+    if (minIdx >= 0 && detailIdx >= 0 && detailIdx < minIdx) return false;
+  }
+  if (criteria.school_tiers && criteria.school_tiers.length > 0) {
+    if (schoolTier === 'unknown') return true; // conservative pass
+    const match = criteria.school_tiers.some(tier => {
+      if (tier === '985') return schoolTier === '985';
+      if (tier === '211') return schoolTier === '985' || schoolTier === '211';
+      if (tier === '双一流') return schoolTier === '985' || schoolTier === '211' || schoolTier === '双一流';
+      return false;
+    });
+    if (!match) return false;
+  }
+  return true;
+}
+
+async function checkBossIds(bossIds, serverUrl, authToken) {
+  if (!bossIds.length || !serverUrl) return new Set();
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+    const r = await fetch(`${serverUrl}/api/resumes/check-boss-ids`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ boss_ids: bossIds }),
+    });
+    if (!r.ok) return new Set();
+    const data = await r.json();
+    return new Set(data.existing || []);
+  } catch { return new Set(); }
+}
+
+async function submitPageData(d, url, authToken = '', source = 'boss_zhipin') {
   const headers = { 'Content-Type': 'application/json' };
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
   return fetch(`${url}/api/resumes/`, { method: 'POST', headers,
     body: JSON.stringify({ name: d.name, phone: d.phone||'', email: d.email||'', education: d.education||'',
       work_years: d.work_years||0, job_intention: d.job_intention||'', skills: '', work_experience: d.work_experience||'',
-      source: 'boss_zhipin', raw_text: d.raw_text||'' }) });
+      source: source, raw_text: d.raw_text||'' }) });
 }
 
 // ════════════════════════════════════════════════════════════════════
