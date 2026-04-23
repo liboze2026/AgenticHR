@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 import pytest
@@ -61,7 +62,14 @@ async def test_second_round_parses_reply_and_fills_slots(db_session, tmp_path):
     adapter.send_message = AsyncMock(return_value=True)
     adapter.list_received_resumes = AsyncMock(return_value=[])
 
-    svc = IntakeService(db=db_session, adapter=adapter, llm=None,
+    llm = AsyncMock()
+    llm.complete = AsyncMock(return_value=json.dumps({
+        "arrival_date": "下周一可以到岗",
+        "intern_duration": "实习6个月",
+        "free_slots": "周三下午有空",
+    }))
+
+    svc = IntakeService(db=db_session, adapter=adapter, llm=llm,
                         storage_dir=str(tmp_path), hard_max_asks=3, pdf_timeout_hours=72)
     bc = BossCandidate(name="张三", boss_id="bx1", job_intention="前端开发")
 
@@ -70,5 +78,5 @@ async def test_second_round_parses_reply_and_fills_slots(db_session, tmp_path):
     db_session.refresh(c)
     arrival = db_session.query(IntakeSlot).filter_by(candidate_id=c.id, slot_key="arrival_date").first()
     intern = db_session.query(IntakeSlot).filter_by(candidate_id=c.id, slot_key="intern_duration").first()
-    assert arrival.value == "下周一" and arrival.source == "regex"
-    assert intern.value == "6个月"
+    assert arrival.value == "下周一可以到岗" and arrival.source == "llm"
+    assert intern.value == "实习6个月"

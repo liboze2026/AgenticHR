@@ -71,14 +71,11 @@ class IntakeService:
                            messages: list[dict], job: Job | None) -> NextAction:
         slots_by_key = self.ensure_slot_rows(candidate.id)
 
-        candidate_text = "\n".join(
-            m["content"] for m in messages
-            if m.get("sender_id") == candidate.boss_id and m.get("content")
-        )
-
         pending_hard = [k for k in HARD_SLOT_KEYS if not slots_by_key[k].value]
-        if candidate_text and pending_hard:
-            parsed = await self.filler.parse_reply(candidate_text, pending_hard)
+        if messages and pending_hard:
+            parsed = await self.filler.parse_conversation(
+                messages, candidate.boss_id, pending_hard,
+            )
             for key, (val, source) in parsed.items():
                 s = slots_by_key[key]
                 s.value = val if isinstance(val, str) else str(val)

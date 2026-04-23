@@ -1,57 +1,9 @@
 import json
-import re
+import logging
 from pathlib import Path
 from typing import Any, Protocol
 
-ARRIVAL_PATTERNS = [
-    re.compile(r"(下周[一二三四五六日天])"),
-    re.compile(r"(明天|后天|立刻|马上|随时)"),
-    re.compile(r"(\d+月\d+[号日])"),
-    re.compile(r"^(周[一二三四五六日天])$"),
-]
-
-INTERN_PATTERN = re.compile(r"(\d+\s*个?\s*月|半年|一年|长期)")
-INTERN_NORMALIZE = re.compile(r"(\d+)\s*个?\s*月")
-
-FREE_PATTERN = re.compile(r"(周[一二三四五六日天])\s*(上午|下午|晚上)?")
-
-
-def _arrival(text: str) -> str | None:
-    for pat in ARRIVAL_PATTERNS:
-        m = pat.search(text)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _intern(text: str) -> str | None:
-    m = INTERN_PATTERN.search(text)
-    if not m:
-        return None
-    raw = m.group(1)
-    nm = INTERN_NORMALIZE.match(raw)
-    if nm:
-        return f"{nm.group(1)}个月"
-    return raw
-
-
-def _free(text: str) -> list[str]:
-    out: list[str] = []
-    for m in FREE_PATTERN.finditer(text):
-        day, period = m.group(1), m.group(2) or ""
-        out.append(f"{day}{period}")
-    return out
-
-
-def regex_extract(slot_key: str, text: str) -> Any:
-    if slot_key == "arrival_date":
-        return _arrival(text)
-    if slot_key == "intern_duration":
-        return _intern(text)
-    if slot_key == "free_slots":
-        return _free(text)
-    return None
-
+logger = logging.getLogger(__name__)
 
 PROMPT_PARSE = (Path(__file__).parent / "prompts" / "parse_v1.txt").read_text(encoding="utf-8")
 
@@ -61,37 +13,63 @@ class LLMLike(Protocol):
 
 
 class SlotFiller:
+    """LLM-driven slot extractor.
+
+    value = 候选人原话片段合集（直接复制原文，多条 " | " 拼接），不做归一化。
+    regex 方案已彻底移除 —— 原因：'明天晚上没空' 里的'明天'会被当作到岗时间，
+    '4月25'里的'4月'会被当作'4个月'实习时长，语义完全错乱。
+    """
+
     def __init__(self, llm: LLMLike | None = None):
         self.llm = llm
 
-    async def parse_reply(self, reply_text: str, pending_slot_keys: list[str]) -> dict[str, tuple]:
-        result: dict[str, tuple] = {}
-        unresolved: list[str] = []
-        for key in pending_slot_keys:
-            val = regex_extract(key, reply_text)
-            if val not in (None, []):
-                result[key] = (val, "regex")
-            else:
-                unresolved.append(key)
+    async def parse_conversation(
+        self,
+        messages: list[dict],
+        candidate_boss_id: str,
+        pending_slot_keys: list[str],
+    ) -> dict[str, tuple[Any, str]]:
+        """Return {slot_key: (value, source)} for slots that LLM filled (None ones omitted).
 
-        if not unresolved or self.llm is None:
-            return result
+        `messages` is the full conversation [{sender_id, content}, ...].
+        Messages from `candidate_boss_id` are marked as 候选人; others marked as HR.
+        """
+        if not messages or not pending_slot_keys or self.llm is None:
+            return {}
 
-        prompt = PROMPT_PARSE.format(reply=reply_text, pending_keys=unresolved)
+        lines = []
+        for m in messages:
+            sender = m.get("sender_id")
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            role = "候选人" if sender == candidate_boss_id else "HR"
+            lines.append(f"{role}: {content}")
+        conversation = "\n".join(lines)
+
+        prompt = PROMPT_PARSE.format(conversation=conversation, pending_keys=pending_slot_keys)
         try:
             raw = await self.llm.complete(
                 messages=[{"role": "user", "content": prompt}],
                 response_format="json",
-                temperature=0.1,
-                prompt_version="parse_v1",
+                temperature=0.0,
+                prompt_version="parse_v2",
+                f_stage="f5_intake",
+                entity_type="intake_slot",
             )
             data = json.loads(raw)
-        except (json.JSONDecodeError, Exception):
-            return result
+        except (json.JSONDecodeError, Exception) as e:
+            logger.warning(f"SlotFiller LLM parse failed: {e}")
+            return {}
 
-        for key in unresolved:
+        result: dict[str, tuple[Any, str]] = {}
+        for key in pending_slot_keys:
             v = data.get(key)
             if v in (None, "", []):
                 continue
+            if isinstance(v, list):
+                v = " | ".join(str(x) for x in v if x)
+                if not v:
+                    continue
             result[key] = (v, "llm")
         return result

@@ -5,7 +5,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.core.llm.provider import LLMProvider
 from app.database import create_tables
+
+# Global LLM client; used by im_intake router + any module that imports app.main.llm_client.
+# Value is None if AI_API_KEY / AI_BASE_URL / AI_MODEL is not configured.
+_llm = LLMProvider()
+llm_client: LLMProvider | None = _llm if _llm.is_configured() else None
 
 
 @asynccontextmanager
@@ -42,7 +48,7 @@ async def lifespan(app: FastAPI):
             def _intake_service_factory():
                 return IntakeService(
                     db=SessionLocal(), adapter=adapter,
-                    llm=None,
+                    llm=llm_client,
                     storage_dir=settings.resume_storage_path,
                     hard_max_asks=settings.f4_hard_max_asks,
                     pdf_timeout_hours=settings.f4_pdf_timeout_hours,
