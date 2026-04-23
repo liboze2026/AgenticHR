@@ -57,20 +57,32 @@ async function detectPageContext() {
   }
 }
 
+let _userExpandedId = null;
+
 function highlightCard(ctx) {
   const map = { recommend: "cardF3", chat: "cardF4", list: "cardList", detail: "cardDetail" };
-  const primaryId = map[ctx];
+  const primaryId = _userExpandedId || map[ctx] || null;
+  const chipRow = document.getElementById("chipRow");
+  const stack = chipRow ? chipRow.parentNode : null;
   CARD_IDS.forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
+    el.classList.remove("dimmed");
     if (id === primaryId) {
       el.classList.add("primary-card");
-      el.classList.remove("dimmed");
-      el.style.order = "0";
+      el.classList.remove("compressed");
+      // primary card returns to main stack flow (after chipRow)
+      if (stack && el.parentNode !== stack) stack.appendChild(el);
+      el.onclick = null;
     } else {
       el.classList.remove("primary-card");
-      el.classList.add("dimmed");
-      el.style.order = "1";
+      el.classList.add("compressed");
+      if (chipRow && el.parentNode !== chipRow) chipRow.appendChild(el);
+      el.onclick = (ev) => {
+        if (ev.target.closest("button, input, select, a")) return;
+        _userExpandedId = (_userExpandedId === id) ? null : id;
+        highlightCard(ctx);
+      };
     }
   });
 }
@@ -83,6 +95,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   await detectPageContext();
   await checkConnection();
   updateAuthUI();
+  restoreLastResult();
   // F3: load after token is available
   await loadJobs();
   await loadBatchJobs();
@@ -100,6 +113,22 @@ document.addEventListener("DOMContentLoaded", async () => {
   if (logCard) {
     const head = logCard.querySelector(".head");
     if (head) head.addEventListener("click", () => logCard.classList.toggle("open"));
+  }
+
+  // F4 autoscan toggle
+  const autoscanToggle = document.getElementById("intakeAutoscanToggle");
+  const autoscanLabel = document.getElementById("intakeAutoscanLabel");
+  if (autoscanToggle) {
+    chrome.storage.local.get(["intake_autoscan_enabled"], (r) => {
+      const on = !!r.intake_autoscan_enabled;
+      autoscanToggle.checked = on;
+      if (autoscanLabel) autoscanLabel.textContent = on ? "开" : "关";
+    });
+    autoscanToggle.addEventListener("change", () => {
+      const on = autoscanToggle.checked;
+      chrome.storage.local.set({ intake_autoscan_enabled: on });
+      if (autoscanLabel) autoscanLabel.textContent = on ? "开" : "关";
+    });
   }
 });
 
@@ -484,6 +513,17 @@ function setStatus(state) {
   if (statusTextFull) statusTextFull.textContent = txt;
 }
 
+// Messages about connection/health checks are ephemeral; don't persist them
+// over the user's real operation result.
+const _EPHEMERAL_MSG_PATTERNS = [
+  /^正在检测连接/, /^已连接到/, /^连接失败/, /^无法连接/, /^已退出登录/,
+];
+
+function _isEphemeralMsg(message) {
+  if (!message) return true;
+  return _EPHEMERAL_MSG_PATTERNS.some((re) => re.test(message));
+}
+
 function showResult(message, type) {
   resultArea.textContent = message;
   resultArea.className = "result-area";
@@ -499,6 +539,34 @@ function showResult(message, type) {
       logHint.textContent = firstLine ? `· ${firstLine}` : "";
     }
   }
+
+  // Persist real operation results so popup close/reopen restores them
+  if (!_isEphemeralMsg(message)) {
+    try {
+      chrome.storage.local.set({
+        popupLastResult: { message: message || "", type: type || "", ts: Date.now() },
+      });
+    } catch {}
+  }
+}
+
+function restoreLastResult() {
+  chrome.storage.local.get(["popupLastResult"], (r) => {
+    const d = r.popupLastResult;
+    if (!d || !d.message) return;
+    // Keep live errors visible (e.g. connection failed); otherwise restore last op result
+    if (resultArea.classList.contains("error")) return;
+    resultArea.textContent = d.message;
+    resultArea.className = "result-area";
+    if (d.type) resultArea.classList.add(d.type);
+    if (logCard && (d.type === "error" || d.type === "success")) {
+      logCard.classList.add("open");
+    }
+    if (logHint) {
+      const firstLine = (d.message || "").split("\n")[0].slice(0, 40);
+      logHint.textContent = firstLine ? `· ${firstLine}` : "";
+    }
+  });
 }
 
 const btnPause = document.getElementById("btnPause");

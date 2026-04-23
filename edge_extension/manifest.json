@@ -3,7 +3,7 @@
   "name": "招聘助手 - Boss直聘",
   "version": "1.0.0",
   "description": "Boss直聘简历采集助手",
-  "permissions": ["activeTab", "storage", "downloads"],
+  "permissions": ["activeTab", "storage", "downloads", "alarms", "tabs"],
   "host_permissions": [
     "https://*.zhipin.com/*",
     "http://127.0.0.1:*/*",

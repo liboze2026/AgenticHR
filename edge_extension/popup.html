@@ -94,6 +94,41 @@
       box-shadow: 0 2px 8px rgba(0,179,138,0.12);
     }
     .card.dimmed { opacity: 0.6; }
+
+    /* ── Compressed card (Option B: non-context cards as icon chips) ── */
+    .chip-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 0;
+      background: transparent;
+      border: 0;
+    }
+    .chip-row:empty { display: none; }
+    .card.compressed {
+      padding: 6px 10px;
+      display: inline-flex;
+      align-items: center;
+      min-height: 28px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      opacity: 0.8;
+      cursor: pointer;
+      font-size: 11px;
+      box-shadow: none;
+      margin: 0;
+    }
+    .card.compressed:hover { opacity: 1; border-color: var(--primary); }
+    .card.compressed > *:not(.card-title) { display: none; }
+    .card.compressed .card-title {
+      margin: 0;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: normal;
+      gap: 4px;
+    }
+    .card.compressed .card-title .tag { display: none; }
     .card-title {
       font-size: 12px;
       font-weight: 600;
@@ -272,6 +307,9 @@
   <!-- ═════ Main stack ═════ -->
   <div class="stack">
 
+    <!-- 非当前页功能的小图标带（由 JS 填充） -->
+    <div class="chip-row" id="chipRow"></div>
+
     <!-- F3 推荐牛人 -->
     <div class="card" id="cardF3" data-ctx="recommend">
       <div class="card-title">
@@ -301,6 +339,16 @@
       </div>
       <button class="btn btn-primary full" id="btnCollectSingleChat">采集当前聊天候选人</button>
       <div class="card-hint">在 boss.zhipin.com 聊天页打开候选人对话后使用。LLM 抽取姓名/联系方式/意向等。</div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <div style="font-size:12px;font-weight:600;">🔁 自动扫描 (F4 auto-collect)</div>
+          <div class="card-hint" style="margin-top:2px;">开启后每 5 分钟自动抓取 collecting 候选人聊天</div>
+        </div>
+        <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="intakeAutoscanToggle" />
+          <span id="intakeAutoscanLabel" style="font-size:12px;color:var(--text-muted);">关</span>
+        </label>
+      </div>
     </div>
 
     <!-- 消息列表批量组（求简历 + 批量采集） -->

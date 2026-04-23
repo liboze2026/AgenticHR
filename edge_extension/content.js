@@ -105,7 +105,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
   if (message && message.type === 'INTAKE_COLLECT_CURRENT_CHAT') {
     // Manual single-chat trigger: if PDF not yet received, actively click 求简历.
-    f5_runIntakeOrchestrator({ forceRequestPdfIfMissing: true })
+    intake_runOrchestrator({ forceRequestPdfIfMissing: true })
       .then(() => sendResponse({ ok: true }))
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true;
@@ -1116,10 +1116,10 @@ function findGreetButtonInCard(card) {
   return null;
 }
 
-// ---- F5: chat page automation helpers ----
+// ---- intake: chat page automation helpers ----
 // Selectors verified live on zhipin.com/web/chat/index 2026-04-23.
 
-async function f5_typeAndSendChatMessage(text) {
+async function intake_typeAndSendChatMessage(text) {
   const input = document.getElementById("boss-chat-editor-input");
   if (!input) return { ok: false, reason: "输入框未找到 (#boss-chat-editor-input)" };
   const editor = document.querySelector(".conversation-editor");
@@ -1164,7 +1164,7 @@ async function f5_typeAndSendChatMessage(text) {
   return { ok: false, reason: "5s 内未见新的 .item-myself 消息，发送可能失败" };
 }
 
-async function f5_clickRequestResumeButton() {
+async function intake_clickRequestResumeButton() {
   const btn = Array.from(document.querySelectorAll(".operate-btn")).find(
     (el) => /求简历|索要简历/.test((el.textContent || "").trim())
   );
@@ -1186,7 +1186,7 @@ async function f5_clickRequestResumeButton() {
   return { ok: true };
 }
 
-async function f5_checkPdfReceived(bossId) {
+async function intake_checkPdfReceived(bossId) {
   // Reuse proven findPdfCard() logic: last .message-card-wrap.boss-green
   // with non-disabled .card-btn is the real resume PDF card.
   const cards = document.querySelectorAll(".message-card-wrap.boss-green");
@@ -1200,13 +1200,13 @@ async function f5_checkPdfReceived(bossId) {
   return { present: false };
 }
 
-window.f5_typeAndSendChatMessage = f5_typeAndSendChatMessage;
-window.f5_clickRequestResumeButton = f5_clickRequestResumeButton;
-window.f5_checkPdfReceived = f5_checkPdfReceived;
+window.intake_typeAndSendChatMessage = intake_typeAndSendChatMessage;
+window.intake_clickRequestResumeButton = intake_clickRequestResumeButton;
+window.intake_checkPdfReceived = intake_checkPdfReceived;
 
-// ---- F5: orchestrator ----
+// ---- intake: orchestrator ----
 
-function f5_getQueryParam(key) {
+function intake_getQueryParam(key) {
   try {
     return new URL(location.href).searchParams.get(key);
   } catch {
@@ -1214,7 +1214,7 @@ function f5_getQueryParam(key) {
   }
 }
 
-async function f5_getServerUrl() {
+async function intake_getServerUrl() {
   return new Promise((resolve) => {
     chrome.storage.local.get(["serverUrl"], (r) => {
       resolve(r.serverUrl || "http://127.0.0.1:8000");
@@ -1222,15 +1222,15 @@ async function f5_getServerUrl() {
   });
 }
 
-async function f5_getAuthToken() {
+async function intake_getAuthToken() {
   return new Promise((resolve) => {
     chrome.storage.local.get(["authToken"], (r) => resolve(r.authToken || ""));
   });
 }
 
-async function f5_postJSON(path, body) {
-  const base = await f5_getServerUrl();
-  const token = await f5_getAuthToken();
+async function intake_postJSON(path, body) {
+  const base = await intake_getServerUrl();
+  const token = await intake_getAuthToken();
   const headers = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
   const r = await fetch(`${base}${path}`, {
@@ -1245,11 +1245,11 @@ async function f5_postJSON(path, body) {
   return r.json();
 }
 
-function f5_showIntakeToast(msg, kind) {
-  let el = document.getElementById("f5-intake-toast");
+function intake_showToast(msg, kind) {
+  let el = document.getElementById("intake-toast");
   if (!el) {
     el = document.createElement("div");
-    el.id = "f5-intake-toast";
+    el.id = "intake-toast";
     el.style.cssText =
       "position:fixed;top:20px;right:20px;z-index:99999;background:#fff;" +
       "border:2px solid #00b38a;padding:12px 16px;border-radius:8px;" +
@@ -1263,7 +1263,7 @@ function f5_showIntakeToast(msg, kind) {
   el.style.borderColor = color;
 }
 
-function f5_waitFor(predicate, timeoutMs) {
+function intake_waitFor(predicate, timeoutMs) {
   timeoutMs = timeoutMs || 10000;
   return new Promise((resolve, reject) => {
     const start = Date.now();
@@ -1278,22 +1278,22 @@ function f5_waitFor(predicate, timeoutMs) {
   });
 }
 
-async function f5_runIntakeOrchestrator(opts = {}) {
+async function intake_runOrchestrator(opts = {}) {
   const forceRequestPdf = !!opts.forceRequestPdfIfMissing;
-  f5_showIntakeToast("正在分析聊天记录...");
+  intake_showToast("正在分析聊天记录...");
 
   // If URL has id param but candidate isn't selected yet, click their row.
   // Boss SPA won't auto-select on fresh navigation — the user would normally
   // click a geek-item manually; deep-link orchestrator must do it programmatically.
-  const urlBossId = f5_getQueryParam("id");
+  const urlBossId = intake_getQueryParam("id");
   if (urlBossId) {
     try {
-      await f5_waitFor(
+      await intake_waitFor(
         () => !!document.querySelector(`.geek-item[data-id="${urlBossId}"]`),
         12000
       );
     } catch {
-      f5_showIntakeToast("候选人未出现在列表（URL id 无匹配）", "error");
+      intake_showToast("候选人未出现在列表（URL id 无匹配）", "error");
       return;
     }
     const item = document.querySelector(`.geek-item[data-id="${urlBossId}"]`);
@@ -1303,7 +1303,7 @@ async function f5_runIntakeOrchestrator(opts = {}) {
   // Wait for right panel to sync: selected candidate matches URL id,
   // .name-box populated, message list rendered.
   try {
-    await f5_waitFor(() => {
+    await intake_waitFor(() => {
       const sel = document.querySelector(".geek-item.selected");
       const nb = (document.querySelector(".name-box")?.textContent || "").trim();
       const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
@@ -1313,18 +1313,18 @@ async function f5_runIntakeOrchestrator(opts = {}) {
       return !!sel && !!nb && msgs > 0;
     }, 15000);
   } catch {
-    f5_showIntakeToast("未找到聊天窗口，请检查页面", "error");
+    intake_showToast("未找到聊天窗口，请检查页面", "error");
     return;
   }
 
   const root = document.querySelector(window.CHAT_SELECTORS.root);
   const parsed = window.parseChatFromDOM(root);
   if (!parsed || !parsed.boss_id) {
-    f5_showIntakeToast("抓取聊天信息失败（boss_id 未识别）", "error");
+    intake_showToast("抓取聊天信息失败（boss_id 未识别）", "error");
     return;
   }
 
-  const pdf = await window.f5_checkPdfReceived(parsed.boss_id);
+  const pdf = await window.intake_checkPdfReceived(parsed.boss_id);
 
   // 若 PDF 可见，复用已有 downloadPdf() 真实下载 + 上传后端（与批量采集路径一致）。
   // 后端 /api/resumes/upload 存 PDF 到 settings.resume_storage_path 并写 Resume.pdf_path
@@ -1332,39 +1332,39 @@ async function f5_runIntakeOrchestrator(opts = {}) {
   // intake slot 存真实 path、promote_to_resume 再 merge 到同一 Resume 行。
   let realPdfPath = null;
   if (pdf.present) {
-    f5_showIntakeToast("检测到简历，下载中...");
-    const serverUrl = await f5_getServerUrl();
-    const authToken = await f5_getAuthToken();
+    intake_showToast("检测到简历，下载中...");
+    const serverUrl = await intake_getServerUrl();
+    const authToken = await intake_getAuthToken();
     const detail = extractDetail();
     detail.boss_id = parsed.boss_id;
     supplementFromPushText(detail, document.querySelector(".geek-item.selected"));
     const dl = await downloadPdf(detail, parsed.name, serverUrl, authToken);
     if (dl && dl.ok && dl.data) {
       realPdfPath = dl.data.pdf_path || null;
-      f5_showIntakeToast("简历已上传");
+      intake_showToast("简历已上传");
     } else {
-      f5_showIntakeToast("简历下载失败，仍按文件名记录", "error");
+      intake_showToast("简历下载失败，仍按文件名记录", "error");
     }
   } else if (forceRequestPdf) {
     // Manual single-chat path: proactively click 求简历 so HR doesn't wait for
     // backend NextAction. Idempotent at button level — if already requested,
     // clickRequestResumeButton returns ok=false with a benign reason.
-    f5_showIntakeToast("未检测到简历，尝试求简历...");
+    intake_showToast("未检测到简历，尝试求简历...");
     try {
-      const r = await window.f5_clickRequestResumeButton();
+      const r = await window.intake_clickRequestResumeButton();
       if (r && r.ok) {
-        f5_showIntakeToast("已点击求简历，等候方发来后再次点击采集即可下载", "done");
+        intake_showToast("已点击求简历，等候方发来后再次点击采集即可下载", "done");
       } else {
-        f5_showIntakeToast(`求简历按钮状态: ${(r && r.reason) || "未触发"}`, "info");
+        intake_showToast(`求简历按钮状态: ${(r && r.reason) || "未触发"}`, "info");
       }
     } catch (e) {
-      f5_showIntakeToast(`求简历失败: ${e.message}`, "error");
+      intake_showToast(`求简历失败: ${e.message}`, "error");
     }
   }
 
   let resp;
   try {
-    resp = await f5_postJSON("/api/intake/collect-chat", {
+    resp = await intake_postJSON("/api/intake/collect-chat", {
       boss_id: parsed.boss_id,
       name: parsed.name,
       job_intention: parsed.job_intention,
@@ -1373,58 +1373,142 @@ async function f5_runIntakeOrchestrator(opts = {}) {
       pdf_url: realPdfPath || pdf.url || null,
     });
   } catch (e) {
-    f5_showIntakeToast(`后端返回错误: ${e.message}`, "error");
+    intake_showToast(`后端返回错误: ${e.message}`, "error");
     return;
   }
 
   const action = resp.next_action;
-  f5_showIntakeToast(`下一步: ${action.type}`);
+  intake_showToast(`下一步: ${action.type}`);
 
   try {
     if (action.type === "send_hard" || action.type === "send_soft") {
-      const r = await window.f5_typeAndSendChatMessage(action.text);
+      const r = await window.intake_typeAndSendChatMessage(action.text);
       if (r.ok) {
-        await f5_postJSON(
+        await intake_postJSON(
           `/api/intake/candidates/${resp.candidate_id}/ack-sent`,
           { action_type: action.type, delivered: true }
         );
-        f5_showIntakeToast("问题已发送", "done");
+        intake_showToast("问题已发送", "done");
       } else {
-        f5_showIntakeToast(`发送失败: ${r.reason}`, "error");
+        intake_showToast(`发送失败: ${r.reason}`, "error");
       }
     } else if (action.type === "request_pdf") {
-      const r = await window.f5_clickRequestResumeButton();
+      const r = await window.intake_clickRequestResumeButton();
       if (r.ok) {
-        await f5_postJSON(
+        await intake_postJSON(
           `/api/intake/candidates/${resp.candidate_id}/ack-sent`,
           { action_type: "request_pdf", delivered: true }
         );
-        f5_showIntakeToast("已点击求简历", "done");
+        intake_showToast("已点击求简历", "done");
       } else {
-        f5_showIntakeToast(`按钮未找到: ${r.reason}`, "error");
+        intake_showToast(`按钮未找到: ${r.reason}`, "error");
       }
     } else if (action.type === "wait_pdf") {
-      f5_showIntakeToast("等待候选人发送简历", "info");
+      intake_showToast("等待候选人发送简历", "info");
     } else if (action.type === "complete") {
-      f5_showIntakeToast("采集完成 → 已进入简历库", "done");
+      intake_showToast("采集完成 → 已进入简历库", "done");
     } else if (action.type === "mark_pending_human") {
-      f5_showIntakeToast("已标记为人工兜底", "done");
+      intake_showToast("已标记为人工兜底", "done");
     } else if (action.type === "abandon") {
-      f5_showIntakeToast("候选人超时，已放弃", "error");
+      intake_showToast("候选人超时，已放弃", "error");
     }
   } catch (e) {
-    f5_showIntakeToast(`执行动作失败: ${e.message}`, "error");
+    intake_showToast(`执行动作失败: ${e.message}`, "error");
   }
 }
+
+// ────────────────────────────────────────────────────────
+// F4 自动扫描 (chrome.alarms 驱动的周期 tick)
+// 每个 tick：拉取后端 collecting 候选人 → 在消息列表里按 boss_id 匹配
+// 找到的 geek-item，点击后复用 intake_runOrchestrator 抓取 + 推进状态。
+// 一次 tick 最多处理 MAX_PER_TICK 个，防止一次性把会话洗一遍。
+// ────────────────────────────────────────────────────────
+const INTAKE_AUTOSCAN_MAX_PER_TICK = 3;
+const INTAKE_AUTOSCAN_INTER_DELAY_MS = 800;
+
+async function intake_autoScanTick() {
+  if (!location.host.includes("zhipin.com")) return { ok: false, reason: "not_on_zhipin" };
+  if (!/\/web\/chat/.test(location.pathname) || /\/web\/chat\/recommend/.test(location.pathname)) {
+    return { ok: false, reason: "not_on_chat_list" };
+  }
+  intake_showToast("F4 自动扫描中...", "info");
+  const serverUrl = await intake_getServerUrl();
+  const authToken = await intake_getAuthToken();
+  const authHeaders = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+  let resp;
+  try {
+    const r = await fetch(
+      `${serverUrl}/api/intake/autoscan/rank?limit=${INTAKE_AUTOSCAN_MAX_PER_TICK * 3}`,
+      { headers: authHeaders }
+    );
+    if (!r.ok) {
+      intake_showToast(`自动扫描 rank 失败 ${r.status}`, "error");
+      return { ok: false, reason: `http_${r.status}` };
+    }
+    resp = await r.json();
+  } catch (e) {
+    intake_showToast(`自动扫描失败: ${e.message}`, "error");
+    return { ok: false, reason: e.message };
+  }
+  const items = resp.items || [];
+  const total = items.length;
+  let processed = 0, skipped = 0;
+  for (const c of items) {
+    if (processed >= INTAKE_AUTOSCAN_MAX_PER_TICK) break;
+    const bossId = c.boss_id;
+    if (!bossId) { skipped++; continue; }
+    const geek = document.querySelector(`.geek-item[data-id="${bossId}"]`);
+    if (!geek) { skipped++; continue; }
+    try {
+      geek.click();
+      await sleep(1200);
+      await intake_runOrchestrator({});
+      processed++;
+    } catch (e) {
+      log(`[autoscan] ${bossId} 失败: ${e.message || e}`);
+    }
+    await sleep(INTAKE_AUTOSCAN_INTER_DELAY_MS);
+  }
+  // Report tick stats (writes F4_autoscan_tick audit event on backend)
+  try {
+    await fetch(`${serverUrl}/api/intake/autoscan/tick`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      body: JSON.stringify({
+        processed, skipped, total, ts: new Date().toISOString(),
+      }),
+    });
+  } catch (e) {
+    log(`[autoscan] tick stats POST failed: ${e.message || e}`);
+  }
+  if (total === 0) {
+    intake_showToast("暂无待处理候选人", "info");
+  } else {
+    intake_showToast(`自动扫描完成 ${processed}/${total} (跳过 ${skipped})`, "done");
+  }
+  return { ok: true, processed, skipped, total };
+}
+
+window.intake_autoScanTick = intake_autoScanTick;
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message && message.type === "intake_autoscan_tick") {
+    intake_autoScanTick()
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  return false;
+});
 
 // Auto-trigger on URL with intake_candidate_id query param (arrived via /intake deep link)
 if (
   location.host.includes("zhipin.com") &&
   location.pathname.includes("/web/chat")
 ) {
-  const fromDeepLink = !!f5_getQueryParam("intake_candidate_id");
+  const fromDeepLink = !!intake_getQueryParam("intake_candidate_id");
   if (fromDeepLink) {
-    setTimeout(() => f5_runIntakeOrchestrator(), 1500);
+    setTimeout(() => intake_runOrchestrator(), 1500);
   }
 
   // Also respond to SPA URL changes
@@ -1432,8 +1516,8 @@ if (
   setInterval(() => {
     if (location.href !== lastHref) {
       lastHref = location.href;
-      if (f5_getQueryParam("intake_candidate_id")) {
-        setTimeout(() => f5_runIntakeOrchestrator(), 1500);
+      if (intake_getQueryParam("intake_candidate_id")) {
+        setTimeout(() => intake_runOrchestrator(), 1500);
       }
     }
   }, 1000);
