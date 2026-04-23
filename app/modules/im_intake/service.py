@@ -73,14 +73,45 @@ class IntakeService:
 
         pending_hard = [k for k in HARD_SLOT_KEYS if not slots_by_key[k].value]
         if messages and pending_hard:
+            latest_candidate_msg_at = None
+            for m in messages:
+                if m.get("sender_id") == candidate.boss_id and m.get("sent_at"):
+                    try:
+                        ts = datetime.fromisoformat(str(m["sent_at"]).replace("Z", "+00:00"))
+                        if latest_candidate_msg_at is None or ts > latest_candidate_msg_at:
+                            latest_candidate_msg_at = ts
+                    except (ValueError, TypeError):
+                        pass
+
+            candidate_msgs = [
+                (m.get("sent_at"), (m.get("content") or "").strip())
+                for m in messages
+                if m.get("sender_id") == candidate.boss_id
+            ]
+
             parsed = await self.filler.parse_conversation(
                 messages, candidate.boss_id, pending_hard,
             )
+            now = datetime.now(timezone.utc)
             for key, (val, source) in parsed.items():
                 s = slots_by_key[key]
-                s.value = val if isinstance(val, str) else str(val)
+                val_str = val if isinstance(val, str) else str(val)
+                s.value = val_str
                 s.source = source
-                s.answered_at = datetime.now(timezone.utc)
+                s.answered_at = now
+                if latest_candidate_msg_at and not s.msg_sent_at:
+                    s.msg_sent_at = latest_candidate_msg_at
+
+                phrases = [p.strip() for p in val_str.split(" | ") if p.strip()]
+                phrase_ts = []
+                for phrase in phrases:
+                    matched_at = None
+                    for sent_at, content in candidate_msgs:
+                        if phrase in content or content in phrase:
+                            matched_at = sent_at
+                            break
+                    phrase_ts.append({"text": phrase, "sent_at": matched_at})
+                s.phrase_timestamps = phrase_ts
             self.db.commit()
 
         candidate.chat_snapshot = {"messages": messages,

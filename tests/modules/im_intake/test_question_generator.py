@@ -14,7 +14,7 @@ def test_pack_hard_first_round():
     assert "到岗" in text or "入职" in text
     assert "面试" in text
     assert "实习" in text
-    assert text.endswith("[AI 助手]")
+    assert "AI" not in text and "助手" not in text
 
 
 def test_pack_hard_repeat_uses_variant():
@@ -47,4 +47,4 @@ def test_pack_soft_appends_label():
         {"dimension_id": "d1", "dimension_name": "系统设计", "question": "讲讲秒杀？"},
     ])
     assert "讲讲秒杀？" in text
-    assert text.endswith("[AI 助手]")
+    assert "AI" not in text and "助手" not in text

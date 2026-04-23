@@ -6,14 +6,14 @@
     </div>
 
     <el-table :data="jobs" stripe v-loading="loading">
-      <el-table-column prop="title" label="岗位名称" />
-      <el-table-column prop="department" label="部门" width="120" />
-      <el-table-column prop="education_min" label="最低学历" width="100" />
-      <el-table-column label="工作年限" width="120">
+      <el-table-column prop="title" label="岗位名称" min-width="140" />
+      <el-table-column prop="department" label="部门" width="90" />
+      <el-table-column prop="education_min" label="最低学历" width="80" />
+      <el-table-column label="工作年限" width="95">
         <template #default="{ row }">{{ row.work_years_min }}-{{ row.work_years_max }}年</template>
       </el-table-column>
-      <el-table-column prop="required_skills" label="必备技能" show-overflow-tooltip />
-      <el-table-column label="能力模型" width="110">
+      <el-table-column prop="required_skills" label="必备技能" min-width="140" show-overflow-tooltip />
+      <el-table-column label="能力模型" width="95">
         <template #default="{ row }">
           <el-tag v-if="extractingJobIds.has(row.id)" type="info" size="small">
             <el-icon style="vertical-align: middle; animation: rotating 1.5s linear infinite">
@@ -26,16 +26,18 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80">
+      <el-table-column label="状态" width="70">
         <template #default="{ row }">
           <el-tag :type="row.is_active ? 'success' : 'info'" size="small">{{ row.is_active ? '启用' : '停用' }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="240" fixed="right">
+      <el-table-column label="操作" width="230">
         <template #default="{ row }">
-          <el-button size="small" @click="editJob(row)">编辑</el-button>
-          <el-button size="small" type="primary" @click="screenResumes(row.id)">筛选简历</el-button>
-          <el-button size="small" type="danger" link @click="deleteJob(row.id)">删除</el-button>
+          <div style="display: flex; gap: 4px; flex-wrap: nowrap;">
+            <el-button size="small" @click="editJob(row)">编辑</el-button>
+            <el-button size="small" type="primary" @click="screenResumes(row.id)">筛选</el-button>
+            <el-button size="small" type="danger" link @click="deleteJob(row.id)">删除</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -106,6 +108,10 @@
               </el-form-item>
               <el-form-item label="打招呼话术">
                 <el-input v-model="jobForm.greeting_templates" type="textarea" :rows="2" placeholder="竖线分隔多条" />
+              </el-form-item>
+              <el-form-item label="JD 原文">
+                <el-input v-model="jobForm.jd_text" type="textarea" :rows="5"
+                          placeholder="岗位描述原文（可编辑，保存后自动重新抽取能力模型）" />
               </el-form-item>
             </el-form>
           </div>
@@ -355,7 +361,10 @@ async function parseJd() {
   parsing.value = true
   try {
     const result = await jobApi.parseJd(jdInput.value)
-    // 预填表单
+    if (result.parse_success === false) {
+      ElMessage.error('大模型解析失败，请手动填写岗位信息或检查 AI 配置')
+    }
+    // 预填表单（parse_success=false 时 jd_text 仍保留，其余字段为空需手填）
     jobForm.value = {
       title: result.title || '',
       department: result.department || '',

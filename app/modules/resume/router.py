@@ -136,11 +136,11 @@ def upload_pdf_resume(
         },
         original_filename=file.filename or "",
         user_id=user_id,
+        boss_id=candidate_boss_id,
     )
     if not resume:
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="PDF 解析失败，无法提取内容")
-    # 让 intake promote_to_resume 的 boss_id merge 能找到此行，避免重复 Resume。
     if candidate_boss_id and not resume.boss_id:
         resume.boss_id = candidate_boss_id
         service.db.commit()
@@ -162,11 +162,13 @@ def list_resumes(
     status: str | None = None,
     keyword: str | None = None,
     source: str | None = None,
+    intake_status: str | None = None,
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
     return service.list(
-        page=page, page_size=page_size, status=status, keyword=keyword, source=source, user_id=user_id
+        page=page, page_size=page_size, status=status, keyword=keyword,
+        source=source, intake_status=intake_status, user_id=user_id
     )
 
 
@@ -210,6 +212,7 @@ def update_resume(
 @router.delete("/{resume_id}", status_code=204)
 def delete_resume(
     resume_id: int,
+    db: Session = Depends(get_db),
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
@@ -219,6 +222,14 @@ def delete_resume(
     if resume.user_id != user_id:
         raise HTTPException(status_code=403, detail="无权删除该简历")
     service.delete(resume_id)
+    # cascade: delete linked IntakeCandidate
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.im_intake.models import IntakeSlot
+    candidate = db.query(IntakeCandidate).filter_by(promoted_resume_id=resume_id, user_id=user_id).first()
+    if candidate:
+        db.query(IntakeSlot).filter_by(candidate_id=candidate.id).delete(synchronize_session=False)
+        db.delete(candidate)
+        db.commit()
 
 
 @router.post("/ai-parse-all")

@@ -1,9 +1,12 @@
 """岗位管理与筛选 API 路由"""
 from datetime import datetime, timezone
+import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, validator
 from sqlalchemy.orm import Session
+
+_log = logging.getLogger(__name__)
 
 from app.database import get_db
 from app.modules.auth.deps import get_current_user_id
@@ -78,7 +81,7 @@ async def parse_jd_fields(body: _ParseJdBody):
         )
         parsed = extract_json(raw)
         # 合并 fallback（防止 LLM 少输出字段）
-        result = {**fallback, **parsed, "jd_text": body.jd_text}
+        result = {**fallback, **parsed, "jd_text": body.jd_text, "parse_success": True}
         # 确保数值类型正确
         for k in ("work_years_min", "work_years_max", "salary_min", "salary_max"):
             try:
@@ -86,8 +89,9 @@ async def parse_jd_fields(body: _ParseJdBody):
             except (TypeError, ValueError):
                 result[k] = fallback[k]
         return result
-    except Exception:
-        return fallback
+    except Exception as e:
+        _log.warning("parse_jd_fields failed: %s", e, exc_info=True)
+        return {**fallback, "parse_success": False}
 
 
 def get_screening_service(db: Session = Depends(get_db)) -> ScreeningService:

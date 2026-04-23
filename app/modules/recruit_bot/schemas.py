@@ -39,6 +39,7 @@ class RecruitEvaluateRequest(BaseModel):
     ScrapedCandidate。后端据此跑 upsert+F2 打分+阈值判定，返回 RecruitDecision。"""
     job_id: int
     candidate: ScrapedCandidate
+    strategy: str | None = None  # 'school_only': 跳过 LLM 打分，仅按 985/211/双一流 决策
 
 
 class RecruitDecision(BaseModel):

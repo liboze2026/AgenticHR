@@ -88,6 +88,7 @@ class ResumeService:
         status: str | None = None,
         keyword: str | None = None,
         source: str | None = None,
+        intake_status: str | None = None,
         user_id: int = 0,
     ) -> dict:
         query = self.db.query(Resume)
@@ -96,6 +97,8 @@ class ResumeService:
 
         if status:
             query = query.filter(Resume.status == status)
+        if intake_status:
+            query = query.filter(Resume.intake_status == intake_status)
         if source:
             query = query.filter(Resume.source == source)
         if keyword:
@@ -154,13 +157,14 @@ class ResumeService:
         self.db.commit()
         return True
 
-    def create_from_pdf(self, file_path: str, page_info: dict | None = None, original_filename: str = "", user_id: int = 0) -> Resume | None:
+    def create_from_pdf(self, file_path: str, page_info: dict | None = None, original_filename: str = "", user_id: int = 0, boss_id: str = "") -> Resume | None:
         """从 PDF 文件创建简历，合并三个信息源：页面抓取 > 文件名解析 > PDF文本正则
 
         Args:
             file_path: PDF 文件路径
             page_info: 从 Boss 直聘页面抓取的候选人信息
             original_filename: Boss 直聘原始 PDF 文件名（含手机号邮箱等）
+            boss_id: Boss 直聘候选人 ID（最高优先级去重键）
         """
         from app.modules.resume.pdf_parser import parse_pdf, extract_resume_fields, parse_boss_filename, extract_boss_qr
         from pathlib import Path as _Path
@@ -182,6 +186,30 @@ class ResumeService:
         job_intention = page.get("job_intention") or ""
         skills = pdf_fields.get("skills") or ""
         work_experience = pdf_fields.get("work_experience") or ""
+
+        merge_fields = {
+            "name": name, "phone": phone, "email": email,
+            "education": education, "work_years": work_years,
+            "job_intention": job_intention, "skills": skills,
+            "work_experience": work_experience,
+        }
+
+        # boss_id 去重：优先级最高（精确身份匹配，避免 PDF 上传重复创建）
+        if boss_id:
+            existing_by_boss = self.db.query(Resume).filter(
+                Resume.boss_id == boss_id, Resume.user_id == user_id
+            ).first()
+            if existing_by_boss:
+                self._update_fields(existing_by_boss, merge_fields)
+                existing_by_boss.raw_text = raw_text
+                existing_by_boss.pdf_path = file_path
+                qr_out = _Path("data/qrcodes") / f"{existing_by_boss.id}.png"
+                qr_path = extract_boss_qr(file_path, str(qr_out))
+                if qr_path:
+                    existing_by_boss.qr_code_path = qr_path
+                self.db.commit()
+                self.db.refresh(existing_by_boss)
+                return existing_by_boss
 
         # 组合特征去重
         existing = self._find_duplicate(name, phone, email, user_id=user_id)

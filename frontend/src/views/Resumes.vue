@@ -249,13 +249,7 @@ const aiParseProgress = ref({ total: 0, completed: 0, failed: 0, current: '' })
 const expandedId = ref(null)  // 当前展开的简历 id（只允许一个）
 const currentMatching = ref([])
 
-// F5-T19: 简历库仅显示 intake_status = 'complete' 的候选人
-// 若后端未返回 intake_status 字段（向后兼容旧数据），保留显示
-const visibleResumes = computed(() =>
-  resumes.value.filter(
-    (r) => r.intake_status === undefined || r.intake_status === null || r.intake_status === 'complete'
-  )
-)
+const visibleResumes = computed(() => resumes.value)
 
 function toggleExpand(id) {
   expandedId.value = (expandedId.value === id) ? null : id
@@ -279,6 +273,7 @@ async function loadResumes() {
       page_size: pageSize,
       keyword: keyword.value || undefined,
       status: statusFilter.value || undefined,
+      intake_status: 'complete',
     })
     resumes.value = data.items
     total.value = data.total
@@ -438,6 +433,7 @@ function pollAiParseStatus() {
       const data = await resumeApi.list({
         page: page.value, page_size: pageSize,
         keyword: keyword.value || undefined, status: statusFilter.value || undefined,
+        intake_status: 'complete',
       })
       resumes.value = data.items
       total.value = data.total
@@ -545,13 +541,21 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.toolbar h2 {
+  flex-shrink: 0;
+  white-space: nowrap;
+  margin: 0;
 }
 
 .toolbar-actions {
   display: flex;
   gap: 8px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 /* ── 列表容器 ── */

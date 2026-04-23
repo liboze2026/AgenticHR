@@ -4,6 +4,7 @@ const DEFAULT_SERVER_URL = "http://127.0.0.1:8000";
 
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
+const statusTextFull = document.getElementById("statusTextFull");
 const serverUrlInput = document.getElementById("serverUrl");
 const btnTestConnection = document.getElementById("btnTestConnection");
 const btnCollect = document.getElementById("btnCollect");
@@ -11,13 +12,72 @@ const btnBatchCollect = document.getElementById("btnBatchCollect");
 const resultArea = document.getElementById("resultArea");
 const loginSection = document.getElementById("loginSection");
 const userSection = document.getElementById("userSection");
+const userSettingsSection = document.getElementById("userSettingsSection");
 const displayUser = document.getElementById("displayUser");
+const displayUser2 = document.getElementById("displayUser2");
+const contextLabel = document.getElementById("contextLabel");
+const logCard = document.getElementById("logCard");
+const logHint = document.getElementById("logHint");
+const settingsPanel = document.getElementById("settingsPanel");
+const btnOpenSettings = document.getElementById("btnOpenSettings");
+const btnCloseSettings = document.getElementById("btnCloseSettings");
+const btnLogoutFromSettings = document.getElementById("btnLogoutFromSettings");
+
+const CARD_IDS = ["cardF3", "cardF4", "cardList", "cardDetail"];
+
+function classifyPage(url) {
+  if (!url) return "other";
+  if (!/zhipin\.com/.test(url)) return "other";
+  if (/\/web\/chat\/recommend/.test(url)) return "recommend";
+  if (/\/web\/geek\/resume/.test(url) || /resumeDetail/.test(url)) return "detail";
+  if (/\/web\/chat(?!\/recommend)/.test(url)) return "chat";
+  return "list";
+}
+
+const CTX_TEXT = {
+  recommend: "当前页：Boss 推荐牛人",
+  chat: "当前页：Boss 聊天",
+  list: "当前页：Boss 消息列表",
+  detail: "当前页：Boss 简历详情",
+  other: "请在 Boss 直聘页面使用",
+};
+
+async function detectPageContext() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const ctx = classifyPage(tab?.url || "");
+    contextLabel.textContent = CTX_TEXT[ctx];
+    highlightCard(ctx);
+  } catch {
+    contextLabel.textContent = CTX_TEXT.other;
+    highlightCard("other");
+  }
+}
+
+function highlightCard(ctx) {
+  const map = { recommend: "cardF3", chat: "cardF4", list: "cardList", detail: "cardDetail" };
+  const primaryId = map[ctx];
+  CARD_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (id === primaryId) {
+      el.classList.add("primary-card");
+      el.classList.remove("dimmed");
+      el.style.order = "0";
+    } else {
+      el.classList.remove("primary-card");
+      el.classList.add("dimmed");
+      el.style.order = "1";
+    }
+  });
+}
 
 // ── Initialization ──────────────────────────────────────────────────
 
 document.addEventListener("DOMContentLoaded", async () => {
   await loadServerUrl();
   await loadAuthToken();
+  await detectPageContext();
   await checkConnection();
   updateAuthUI();
   // F3: load after token is available
@@ -26,6 +86,17 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("btnLogin").addEventListener("click", doLogin);
   document.getElementById("btnLogout").addEventListener("click", doLogout);
+  if (btnLogoutFromSettings) btnLogoutFromSettings.addEventListener("click", doLogout);
+
+  // Settings slide-over
+  if (btnOpenSettings) btnOpenSettings.addEventListener("click", () => settingsPanel.classList.add("open"));
+  if (btnCloseSettings) btnCloseSettings.addEventListener("click", () => settingsPanel.classList.remove("open"));
+
+  // Collapsible log card
+  if (logCard) {
+    const head = logCard.querySelector(".head");
+    if (head) head.addEventListener("click", () => logCard.classList.toggle("open"));
+  }
 });
 
 // ── Server URL persistence ──────────────────────────────────────────
@@ -69,13 +140,17 @@ function getAuthToken() {
 }
 
 function updateAuthUI() {
+  const name = _authUser || '用户';
   if (_authToken) {
-    loginSection.style.display = 'none';
-    userSection.style.display = 'block';
-    displayUser.textContent = _authUser || '用户';
+    if (loginSection) loginSection.style.display = 'none';
+    if (userSection) userSection.classList.remove('hidden');
+    if (userSettingsSection) userSettingsSection.style.display = 'block';
+    if (displayUser) displayUser.textContent = name;
+    if (displayUser2) displayUser2.textContent = name;
   } else {
-    loginSection.style.display = 'block';
-    userSection.style.display = 'none';
+    if (loginSection) loginSection.style.display = 'block';
+    if (userSection) userSection.classList.add('hidden');
+    if (userSettingsSection) userSettingsSection.style.display = 'none';
   }
 }
 
@@ -172,6 +247,15 @@ async function collectCurrentResume() {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.url?.includes("zhipin.com")) {
       showResult("请在Boss直聘页面上使用此功能", "error");
+      setButtonsDisabled(false);
+      return;
+    }
+
+    // Pre-flight: verify content script is injected
+    try {
+      await chrome.tabs.sendMessage(tab.id, { action: "ping" });
+    } catch (e) {
+      showResult("请先刷新Boss直聘页面（插件需要页面刷新后才能工作）", "error");
       setButtonsDisabled(false);
       return;
     }
@@ -329,18 +413,31 @@ async function batchCollectFromList() {
 
 function setStatus(state) {
   statusDot.className = "status-dot";
+  let txt = "未连接";
   switch (state) {
-    case "connected": statusDot.classList.add("connected"); statusText.textContent = "已连接"; break;
-    case "error": statusDot.classList.add("error"); statusText.textContent = "连接失败"; break;
-    case "checking": statusText.textContent = "检测中..."; break;
-    default: statusText.textContent = "未连接";
+    case "connected": statusDot.classList.add("connected"); txt = "已连接"; break;
+    case "error": statusDot.classList.add("error"); txt = "连接失败"; break;
+    case "checking": txt = "检测中..."; break;
   }
+  if (statusText) statusText.textContent = txt;
+  if (statusTextFull) statusTextFull.textContent = txt;
 }
 
 function showResult(message, type) {
   resultArea.textContent = message;
   resultArea.className = "result-area";
   if (type) resultArea.classList.add(type);
+
+  // Auto-expand log card on error or any non-empty result; show tail hint
+  if (logCard) {
+    if (type === "error" || (type === "success" && message)) {
+      logCard.classList.add("open");
+    }
+    if (logHint) {
+      const firstLine = (message || "").split("\n")[0].slice(0, 40);
+      logHint.textContent = firstLine ? `· ${firstLine}` : "";
+    }
+  }
 }
 
 const btnPause = document.getElementById("btnPause");
@@ -348,10 +445,20 @@ let isPaused = false;
 let isRunning = false;
 
 // 恢复上次状态（popup 关闭再打开时）
-chrome.storage.local.get(["recruitRunning", "recruitPaused"], (data) => {
+chrome.storage.local.get(["recruitRunning", "recruitPaused", "recruitStats", "recruitLog"], (data) => {
   isRunning = !!data.recruitRunning;
   isPaused = !!data.recruitPaused;
   updatePauseButton();
+  // 恢复进度显示
+  if (data.recruitStats) {
+    const s = data.recruitStats;
+    if (s.total !== undefined) {
+      recruitStats.textContent = `进度: 总 ${s.total}, 打招呼 ${s.greeted||0}, 淘汰 ${s.rejected||0}, 跳过 ${s.skipped||0}, 失败 ${s.failed||0}`;
+    }
+  }
+  if (isRunning) {
+    showResult('F3 自动打招呼运行中，请勿操作 Boss 推荐牛人页...', '');
+  }
 });
 
 // 监听 storage 变化（content.js 修改状态时实时更新）
@@ -484,6 +591,27 @@ const editCap = document.getElementById('editCap');
 const btnRecruitStart = document.getElementById('btnRecruitStart');
 const recruitStats = document.getElementById('recruitStats');
 
+const jobTitlesMap = new Map(); // jobId(string) -> title
+
+function stringSimilarity(a, b) {
+  if (!a || !b) return 0;
+  const tokens = s => {
+    const set = new Set();
+    const t = s.trim().toLowerCase();
+    if (t.length === 0) return set;
+    if (t.length === 1) { set.add(t); return set; }
+    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
+    for (const ch of t) set.add(ch);
+    return set;
+  };
+  const A = tokens(a), B = tokens(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
 async function loadJobs() {
   const url = getServerUrl();
   const token = getAuthToken();
@@ -498,6 +626,7 @@ async function loadJobs() {
     const jobs = Array.isArray(data) ? data : (data.items || []);
     jobs.forEach(j => {
       if (j.competency_model_status !== 'approved') return;
+      jobTitlesMap.set(String(j.id), j.title || '');
       const opt = document.createElement('option');
       opt.value = j.id;
       opt.textContent = `${j.title} (阈值 ${j.greet_threshold || 60})`;
@@ -563,6 +692,27 @@ async function startAutoRecruit() {
     if (!tab?.url?.includes('zhipin.com/web/chat/recommend')) {
       showResult('请先打开 Boss 推荐牛人页', 'error');
       setButtonsDisabled(false); return;
+    }
+
+    // Pre-flight: verify content script is injected
+    try {
+      await chrome.tabs.sendMessage(tab.id, { action: 'ping' });
+    } catch (e) {
+      showResult('请先刷新 Boss 推荐牛人页（插件需要页面刷新后才能工作）', 'error');
+      setButtonsDisabled(false); return;
+    }
+
+    // 岗位匹配确认 — 在 popup 侧做，避免 content script confirm() 关闭 popup
+    try {
+      const pageInfo = await chrome.tabs.sendMessage(tab.id, { action: 'getPageInfo' });
+      const bossTitle = pageInfo?.bossJobTitle || '';
+      const sysTitle = jobTitlesMap.get(String(jobId)) || '';
+      if (bossTitle && sysTitle && stringSimilarity(sysTitle, bossTitle) < 0.7) {
+        const ok = confirm(`岗位可能不匹配:\n  Boss 页: ${bossTitle}\n  系统选的: ${sysTitle}\n继续?`);
+        if (!ok) { showResult('已取消', ''); setButtonsDisabled(false); return; }
+      }
+    } catch (e) {
+      // getPageInfo 失败不阻断流程，content.js 会记 log
     }
 
     const resp = await chrome.tabs.sendMessage(tab.id, {

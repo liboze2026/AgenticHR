@@ -12,6 +12,7 @@ export const intakeApi = {
   resumeScheduler: () => api.post('/intake/scheduler/resume'),
   tickNow: () => api.post('/intake/scheduler/tick-now'),
   startConversation: (id) => api.post(`/intake/candidates/${id}/start-conversation`),
+  deleteCandidate: (id) => api.delete(`/intake/candidates/${id}`),
 }
 
 // Named exports for direct import
@@ -25,5 +26,6 @@ export const pauseScheduler = intakeApi.pauseScheduler
 export const resumeScheduler = intakeApi.resumeScheduler
 export const tickNow = intakeApi.tickNow
 export const startConversation = intakeApi.startConversation
+export const deleteCandidate = intakeApi.deleteCandidate
 
 export default intakeApi

@@ -2,17 +2,21 @@
   <div class="hitl-queue">
     <el-card>
       <div class="filters">
+        <span class="filter-label">类型</span>
         <el-radio-group v-model="stageFilter" @change="refresh">
-          <el-radio-button label="">全部</el-radio-button>
+          <el-radio-button label="">不限</el-radio-button>
           <el-radio-button label="F1_competency_review">能力模型</el-radio-button>
           <el-radio-button label="F1_skill_classification">新技能</el-radio-button>
         </el-radio-group>
+        <span class="filter-sep"></span>
+        <span class="filter-label">状态</span>
         <el-radio-group v-model="statusFilter" @change="refresh">
           <el-radio-button label="pending">待审</el-radio-button>
           <el-radio-button label="approved">已通过</el-radio-button>
           <el-radio-button label="rejected">已驳回</el-radio-button>
-          <el-radio-button label="">全部</el-radio-button>
+          <el-radio-button label="">不限</el-radio-button>
         </el-radio-group>
+        <span class="filter-sep"></span>
         <el-button @click="refresh">刷新</el-button>
         <el-button type="warning" :loading="autoClassifying" @click="doAutoClassify"
                    v-if="hasPendingSkills">
@@ -78,9 +82,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { hitlApi, skillsApi } from '../api'
-import { refreshHitlCount } from '../stores/hitlState'
-
-const autoClassifying = ref(false)
+import { refreshHitlCount, autoClassifying } from '../stores/hitlState'
 const hasPendingSkills = computed(() =>
   items.value.some(r => r.f_stage === 'F1_skill_classification' && r.status === 'pending')
 )
@@ -195,7 +197,9 @@ onMounted(() => { refresh(); loadCategories() })
 
 <style scoped>
 .hitl-queue { padding: 20px; }
-.filters { margin-bottom: 16px; display: flex; gap: 12px; flex-wrap: wrap; }
+.filters { margin-bottom: 16px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.filters .filter-label { font-size: 12px; color: #909399; margin-right: 2px; }
+.filters .filter-sep { display: inline-block; width: 1px; height: 22px; background: #e4e7ed; margin: 0 4px; }
 .classify-skill-name { font-size: 15px; padding: 4px 0; }
 .classify-skill-name .label { color: #909399; }
 </style>

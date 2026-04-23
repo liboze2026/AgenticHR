@@ -155,6 +155,7 @@ def get_daily_usage(db: Session, user_id: int) -> UsageInfo:
 async def evaluate_and_record(
     db: Session, user_id: int, job_id: int,
     candidate: "ScrapedCandidate",
+    strategy: str | None = None,
 ) -> RecruitDecision:
     """核心决策: daily_cap → upsert → 已 greeted skip → F2 score → threshold → record."""
     # 1. daily_cap 先于一切 (省打分钱, 也避免无意义 upsert)
@@ -179,18 +180,6 @@ async def evaluate_and_record(
     )
     if not job:
         raise ValueError(f"job {job_id} not found for user {user_id}")
-    if not job.competency_model:
-        log_event(
-            f_stage="F3_evaluate", action="error_no_competency",
-            entity_type="job", entity_id=job_id,
-            input_payload={"boss_id": candidate.boss_id},
-            reviewer_id=user_id,
-        )
-        return RecruitDecision(
-            decision="error_no_competency",
-            reason=f"job {job_id} 能力模型未生成",
-        )
-
     # 3. upsert resume
     resume = upsert_resume_by_boss_id(db, user_id=user_id, candidate=candidate)
 
@@ -208,7 +197,56 @@ async def evaluate_and_record(
             reason="历史已打过招呼",
         )
 
-    # 5. F2 匹配打分
+    # 5. school_only 策略: 跳过 LLM，仅看院校层次标签
+    # 匹配含 985/211/双一流 的任意 tag 格式 (如 "211院校", "985院校", "双一流院校" 等)
+    import re as _re
+    _TIER_RE = _re.compile(r'985|211|双一流')
+    if strategy == 'school_only':
+        tier_tags = candidate.school_tier_tags or []
+        has_tier = any(_TIER_RE.search(t) for t in tier_tags)
+        if has_tier:
+            resume.status = "passed"
+            resume.greet_status = "pending_greet"
+            db.commit()
+            log_event(
+                f_stage="F3_evaluate", action="should_greet",
+                entity_type="resume", entity_id=resume.id,
+                input_payload={"boss_id": candidate.boss_id, "tier_tags": tier_tags, "strategy": "school_only"},
+                reviewer_id=user_id,
+            )
+            return RecruitDecision(
+                decision="should_greet",
+                resume_id=resume.id,
+                reason=f"985/211/双一流院校: {', '.join(tier_tags)}",
+            )
+        else:
+            resume.status = "rejected"
+            resume.reject_reason = "school_only: 非985/211/双一流院校"
+            db.commit()
+            log_event(
+                f_stage="F3_evaluate", action="rejected_low_score",
+                entity_type="resume", entity_id=resume.id,
+                input_payload={"boss_id": candidate.boss_id, "tier_tags": tier_tags, "strategy": "school_only"},
+                reviewer_id=user_id,
+            )
+            return RecruitDecision(
+                decision="rejected_low_score",
+                resume_id=resume.id,
+                reason=f"非985/211/双一流院校 (tags={tier_tags})",
+            )
+
+    # 6. F2 匹配打分 (school_only已在上面返回，到这里必须有competency_model)
+    if not job.competency_model:
+        log_event(
+            f_stage="F3_evaluate", action="error_no_competency",
+            entity_type="job", entity_id=job_id,
+            input_payload={"boss_id": candidate.boss_id},
+            reviewer_id=user_id,
+        )
+        return RecruitDecision(
+            decision="error_no_competency",
+            reason=f"job {job_id} 能力模型未生成",
+        )
     svc = MatchingService(db)
     try:
         result = await svc.score_pair(resume.id, job.id, triggered_by="F3")

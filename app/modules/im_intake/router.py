@@ -65,6 +65,7 @@ def _candidate_summary(c: IntakeCandidate, slots: list[IntakeSlot], job_title: s
         progress_done=done,
         progress_total=len(expected),
         last_activity_at=last,
+        promoted_resume_id=getattr(c, "promoted_resume_id", None),
     )
 
 
@@ -144,6 +145,20 @@ def abandon(
     c.intake_status = "abandoned"
     db.commit()
     return {"ok": True}
+
+
+@router.delete("/candidates/{candidate_id}", status_code=204)
+def delete_candidate(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
+    if not c:
+        raise HTTPException(404, "not found")
+    db.query(IntakeSlot).filter_by(candidate_id=c.id).delete(synchronize_session=False)
+    db.delete(c)
+    db.commit()
 
 
 @router.post("/candidates/{candidate_id}/force-complete")

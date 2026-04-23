@@ -132,6 +132,12 @@
               link
               @click="doAbandon(row)"
             >放弃</el-button>
+            <el-button
+              size="small"
+              type="danger"
+              link
+              @click="doDelete(row)"
+            >删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -158,12 +164,14 @@ import {
   listIntakeCandidates,
   abandonCandidate,
   forceComplete,
+  deleteCandidate,
   getSchedulerStatus,
   pauseScheduler,
   resumeScheduler,
   tickNow,
   startConversation,
 } from '../api/intake'
+import { resumeApi } from '../api'
 
 const status = ref(null)
 const ticking = ref(false)
@@ -311,6 +319,29 @@ async function handleStartConversation(row) {
     ElMessage.info('已跳转 Boss 直聘，插件将自动接管')
   } catch (e) {
     ElMessage.error(`启动沟通失败: ${e.message || e}`)
+  }
+}
+
+async function doDelete(row) {
+  try {
+    await ElMessageBox.confirm(`确定删除候选人 ${row.name}？此操作不可恢复。`, '确认删除', {
+      type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    if (row.promoted_resume_id) {
+      // 已完成采集 → 通过简历库删除（同时级联删除候选人记录）
+      await resumeApi.delete(row.promoted_resume_id)
+    } else {
+      await deleteCandidate(row.resume_id)
+    }
+    ElMessage.success('已删除')
+    loadCandidates()
+  } catch (e) {
+    const detail = e.response?.data?.detail || e.message || String(e)
+    ElMessage.error(`删除失败: ${detail}`)
   }
 }
 

@@ -1,0 +1,2445 @@
+# F5 Manual One-by-One Intake Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 把 F4 从"15 分钟批量扫描自动处理"改为"HR 手动逐个触发采集"。插件加"采集当前聊天候选人"按钮；`/intake` 加"开始沟通"按钮，跳转 Boss 直聘聊天页，插件自动接管（抓聊天 → 分析 → 追问/求简历/完成）。信息齐全的候选人才进入 `resumes` 简历库。
+
+**Architecture:**
+- 新建 `intake_candidates` 表，专门装"正在采集中的候选人"。`resumes` 表语义收紧：**只装信息采集齐全、可安排面试的候选人**。F3 打招呼成功建的行也从 `resumes` 挪到 `intake_candidates`。
+- 后端新增三组 REST：(1) `POST /api/intake/collect-chat` 接收插件抓取的聊天快照 → 解析 slot → 返回 `NextAction`；(2) `POST /api/intake/candidates/{id}/start-conversation` 返回 Boss 聊天 deep link；(3) `POST /api/intake/candidates/{id}/ack-sent` 插件回报"已发送"。
+- 原 `IntakeService.process_one` 拆分：`analyze_chat`（纯解析，无副作用）+ `decide_next_action`（纯决策函数）+ `promote_to_resume`（齐全时搬家到 resumes）。
+- 插件在 Boss 聊天页（URL 含 `intake_candidate_id` query）自动接管：抓聊天 → POST collect-chat → 按返回的 NextAction 在页面内自动打字/点按钮 → POST ack-sent。
+- F4 APScheduler 代码保留，默认 `F4_ENABLED=false` 关闭；人工 tick-now 入口保留便于开发调试。
+
+**Tech Stack:** Python 3.11, FastAPI, SQLAlchemy + Alembic, Pydantic v2, pytest + pytest-asyncio; Vue 3 + Element Plus; Edge/Chrome Extension (Manifest V3).
+
+---
+
+## File Structure
+
+**Create:**
+- `migrations/versions/0012_f5_intake_candidates.py` — 新表 + FK 改造 + 数据搬家
+- `app/modules/im_intake/candidate_model.py` — `IntakeCandidate` SQLAlchemy 模型
+- `app/modules/im_intake/decision.py` — `decide_next_action(candidate, slots, job) → NextAction` 纯函数
+- `app/modules/im_intake/promote.py` — `promote_to_resume(db, candidate)` 把完整候选人搬到 resumes
+- `tests/modules/im_intake/test_migration_0012.py`
+- `tests/modules/im_intake/test_candidate_model.py`
+- `tests/modules/im_intake/test_decision.py`
+- `tests/modules/im_intake/test_promote.py`
+- `tests/modules/im_intake/test_router_collect_chat.py`
+- `tests/modules/im_intake/test_router_start_conversation.py`
+- `tests/modules/im_intake/test_router_ack_sent.py`
+- `tests/modules/im_intake/test_router_list_candidates_from_candidate_table.py`
+
+**Modify:**
+- `app/modules/im_intake/models.py` — `IntakeSlot.resume_id` 改为 `candidate_id`，外键指向 `intake_candidates`
+- `app/modules/im_intake/schemas.py` — 加 `ChatMessageIn` / `CollectChatIn` / `NextActionOut` / `AckSentIn` / `StartConversationOut`
+- `app/modules/im_intake/service.py` — `process_one` 拆分；新增 `analyze_chat`；去掉 `_ensure_resume`（改 `_ensure_candidate`）
+- `app/modules/im_intake/router.py` — 新增 3 个 endpoint；list/detail 改从 `IntakeCandidate` 查；`promote` 端点
+- `app/modules/im_intake/scheduler.py` — gate 在 `settings.f4_enabled`
+- `app/main.py` — scheduler 仅在 `F4_ENABLED=true` 时启动；F5 router 注册（复用现有 `/api/intake`）
+- `app/config.py` — `f4_enabled: bool = False`；`frontend_base_url: str` 用于构造 deep link
+- `app/modules/recruit_bot/service.py` — F3 `upsert_candidate` 改写入 `intake_candidates` 而不是 `resumes`
+- `edge_extension/manifest.json` — `content_scripts` 匹配 `zhipin.com/web/chat/*`；加 `storage` 权限
+- `edge_extension/popup.html` — 新 section "F4 单人采集"（替换"F4"相关老元素如有）
+- `edge_extension/popup.js` — 绑按钮 `btnCollectSingleChat`
+- `edge_extension/content.js` — 加 `scrapeChatPageCandidate()` / `scrapeChatMessages()` / `typeAndSendChatMessage()` / `clickRequestResumeButton()` / 自动接管 orchestrator
+- `edge_extension/f3_selectors.js` → 新增 `chat_page_selectors.js`（或合并到 `content.js`）记录聊天页 DOM 选择器
+- `frontend/src/views/Intake.vue` — 行操作加"开始沟通"按钮
+- `frontend/src/views/Resumes.vue` — 简历库表语义改变，加标签说明"仅显示采集完成候选人"
+- `frontend/src/api/intake.js` — `startConversation(candidateId)` / `promoteToResume(candidateId)`
+- `tests/modules/recruit_bot/test_upsert_candidate.py` — 改断言为写入 intake_candidates
+- `CHANGELOG.md`
+
+---
+
+## Data Migration Strategy (重要)
+
+迁移 0012 做三件事：
+
+1. **建新表** `intake_candidates`（字段见 Task 1）
+2. **FK 改造** `intake_slots.resume_id` → `intake_slots.candidate_id`（SQLite 走 batch_alter_table）
+3. **数据搬家**：
+   - 所有 `resumes.intake_status != 'complete'` 的行 → 复制到 `intake_candidates`，`intake_slots.resume_id` 重指向新候选人 id，删除 `resumes` 原行
+   - F3 建的行（`intake_status = 'collecting'` + `greet_status` 非空）也走上面这条
+   - `resumes.intake_status == 'complete'` 的保留在 `resumes`（它们是"简历库"）
+   - 降级后 `resumes` 仍保留 `intake_*` 字段（兼容已完成的历史数据查询）
+
+降级（downgrade）把数据搬回去（对称操作）。
+
+---
+
+## Task 1: Alembic migration 0012 — intake_candidates 表 + 数据搬家
+
+**Files:**
+- Create: `migrations/versions/0012_f5_intake_candidates.py`
+- Test: `tests/modules/im_intake/test_migration_0012.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_migration_0012.py
+import os, tempfile, pathlib
+from sqlalchemy import create_engine, inspect, text
+from alembic.config import Config
+from alembic import command
+
+
+def _run_upgrade(db_url: str) -> None:
+    root = pathlib.Path(__file__).resolve().parents[3]
+    cfg = Config(str(root / "alembic.ini"))
+    cfg.set_main_option("script_location", str(root / "migrations"))
+    cfg.set_main_option("sqlalchemy.url", db_url)
+    command.upgrade(cfg, "0012")
+
+
+def test_0012_creates_intake_candidates_and_moves_non_complete_rows():
+    fd, path = tempfile.mkstemp(suffix=".db"); os.close(fd)
+    db_url = f"sqlite:///{path}"
+    try:
+        # first bring up to 0011 and seed data
+        root = pathlib.Path(__file__).resolve().parents[3]
+        cfg = Config(str(root / "alembic.ini"))
+        cfg.set_main_option("script_location", str(root / "migrations"))
+        cfg.set_main_option("sqlalchemy.url", db_url)
+        command.upgrade(cfg, "0011")
+
+        eng = create_engine(db_url)
+        with eng.begin() as c:
+            c.execute(text(
+                "INSERT INTO resumes (name, boss_id, status, source, intake_status) "
+                "VALUES ('A','bx1','passed','boss_zhipin','collecting'), "
+                "('B','bx2','passed','boss_zhipin','complete')"
+            ))
+            c.execute(text(
+                "INSERT INTO intake_slots (resume_id, slot_key, slot_category, ask_count) "
+                "VALUES (1,'arrival_date','hard',0)"
+            ))
+
+        # now upgrade to 0012
+        command.upgrade(cfg, "0012")
+
+        insp = inspect(eng)
+        assert "intake_candidates" in insp.get_table_names()
+        with eng.begin() as c:
+            ic_rows = c.execute(text("SELECT name, boss_id, intake_status FROM intake_candidates")).all()
+            r_rows = c.execute(text("SELECT name, boss_id, intake_status FROM resumes")).all()
+            slot_rows = c.execute(text(
+                "SELECT candidate_id FROM intake_slots"
+            )).all()
+        assert [r[0] for r in ic_rows] == ["A"]
+        assert [r[0] for r in r_rows] == ["B"]
+        assert slot_rows[0][0] is not None  # candidate_id re-pointed
+    finally:
+        os.unlink(path)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/modules/im_intake/test_migration_0012.py -v
+```
+
+Expected: FAIL — migration 0012 not found.
+
+- [ ] **Step 3: Write the migration**
+
+```python
+# migrations/versions/0012_f5_intake_candidates.py
+"""F5 intake_candidates table + move non-complete rows out of resumes
+
+Revision ID: 0012
+Revises: 0011
+Create Date: 2026-04-22
+"""
+from alembic import op
+import sqlalchemy as sa
+
+revision = "0012"
+down_revision = "0011"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    op.create_table(
+        "intake_candidates",
+        sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
+        sa.Column("boss_id", sa.String(64), nullable=False),
+        sa.Column("name", sa.String(128), nullable=False, server_default=""),
+        sa.Column("job_intention", sa.String(256), nullable=True),
+        sa.Column("job_id", sa.Integer, nullable=True),
+        sa.Column("intake_status", sa.String(20), nullable=False, server_default="collecting"),
+        sa.Column("source", sa.String(32), nullable=False, server_default="plugin"),
+        sa.Column("pdf_path", sa.String(512), nullable=True),
+        sa.Column("raw_text", sa.Text, nullable=True),
+        sa.Column("chat_snapshot", sa.JSON, nullable=True),
+        sa.Column("intake_started_at", sa.DateTime, nullable=True),
+        sa.Column("intake_completed_at", sa.DateTime, nullable=True),
+        sa.Column("promoted_resume_id", sa.Integer, nullable=True),
+        sa.Column("created_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
+        sa.Column("updated_at", sa.DateTime, nullable=False, server_default=sa.func.current_timestamp()),
+        sa.ForeignKeyConstraint(["job_id"], ["jobs.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["promoted_resume_id"], ["resumes.id"], ondelete="SET NULL"),
+    )
+    op.create_index("ix_intake_candidates_boss_id", "intake_candidates", ["boss_id"], unique=True)
+    op.create_index("ix_intake_candidates_status", "intake_candidates", ["intake_status"])
+    op.create_index("ix_intake_candidates_job_id", "intake_candidates", ["job_id"])
+
+    # intake_slots: add candidate_id, copy from resume_id for rows that will move, then drop old
+    with op.batch_alter_table("intake_slots") as batch:
+        batch.add_column(sa.Column("candidate_id", sa.Integer, nullable=True))
+        batch.create_foreign_key(
+            "fk_intake_slots_candidate_id",
+            "intake_candidates", ["candidate_id"], ["id"], ondelete="CASCADE",
+        )
+        batch.create_index("ix_intake_slots_candidate_id", ["candidate_id"])
+
+    # move non-complete resumes → intake_candidates
+    conn = op.get_bind()
+    rows = conn.execute(sa.text(
+        "SELECT id, boss_id, name, job_id, intake_status, intake_started_at, "
+        "intake_completed_at, created_at, updated_at FROM resumes "
+        "WHERE intake_status IS NOT NULL AND intake_status != 'complete'"
+    )).fetchall()
+    id_map = {}
+    for r in rows:
+        res = conn.execute(sa.text(
+            "INSERT INTO intake_candidates "
+            "(boss_id, name, job_id, intake_status, source, "
+            "intake_started_at, intake_completed_at, created_at, updated_at) "
+            "VALUES (:boss_id, :name, :job_id, :st, 'migration', "
+            ":s_at, :c_at, :cr, :up)"
+        ), dict(boss_id=r[1] or f"legacy_{r[0]}", name=r[2] or "", job_id=r[3],
+                st=r[4], s_at=r[5], c_at=r[6], cr=r[7], up=r[8]))
+        id_map[r[0]] = res.lastrowid if res.lastrowid else conn.execute(
+            sa.text("SELECT last_insert_rowid()")
+        ).scalar()
+
+    # re-point intake_slots.candidate_id
+    for old_id, new_id in id_map.items():
+        conn.execute(sa.text(
+            "UPDATE intake_slots SET candidate_id = :new WHERE resume_id = :old"
+        ), dict(new=new_id, old=old_id))
+
+    # delete moved resumes rows (slots keep new candidate_id)
+    if id_map:
+        conn.execute(sa.text(
+            "DELETE FROM resumes WHERE id IN :ids"
+        ).bindparams(sa.bindparam("ids", expanding=True)), dict(ids=list(id_map.keys())))
+
+    # drop old FK + column
+    with op.batch_alter_table("intake_slots") as batch:
+        batch.alter_column("candidate_id", nullable=False)
+        batch.drop_index("ix_intake_slots_resume_slot")
+        batch.drop_index("ix_intake_slots_resume_id")
+        batch.drop_column("resume_id")
+        batch.create_index(
+            "ix_intake_slots_candidate_slot", ["candidate_id", "slot_key"], unique=True
+        )
+
+
+def downgrade() -> None:
+    # restore resume_id column
+    with op.batch_alter_table("intake_slots") as batch:
+        batch.add_column(sa.Column("resume_id", sa.Integer, nullable=True))
+
+    conn = op.get_bind()
+    candidates = conn.execute(sa.text(
+        "SELECT id, boss_id, name, job_id, intake_status, "
+        "intake_started_at, intake_completed_at, created_at, updated_at "
+        "FROM intake_candidates"
+    )).fetchall()
+    id_map = {}
+    for c in candidates:
+        res = conn.execute(sa.text(
+            "INSERT INTO resumes (boss_id, name, job_id, status, source, intake_status, "
+            "intake_started_at, intake_completed_at, created_at, updated_at) "
+            "VALUES (:boss_id, :name, :job_id, 'passed', 'boss_zhipin', :st, "
+            ":s_at, :c_at, :cr, :up)"
+        ), dict(boss_id=c[1], name=c[2], job_id=c[3], st=c[4],
+                s_at=c[5], c_at=c[6], cr=c[7], up=c[8]))
+        id_map[c[0]] = res.lastrowid or conn.execute(
+            sa.text("SELECT last_insert_rowid()")
+        ).scalar()
+    for old, new in id_map.items():
+        conn.execute(sa.text(
+            "UPDATE intake_slots SET resume_id = :new WHERE candidate_id = :old"
+        ), dict(new=new, old=old))
+
+    with op.batch_alter_table("intake_slots") as batch:
+        batch.drop_index("ix_intake_slots_candidate_slot")
+        batch.alter_column("resume_id", nullable=False)
+        batch.drop_index("ix_intake_slots_candidate_id")
+        batch.drop_constraint("fk_intake_slots_candidate_id", type_="foreignkey")
+        batch.drop_column("candidate_id")
+        batch.create_index("ix_intake_slots_resume_slot", ["resume_id", "slot_key"], unique=True)
+        batch.create_index("ix_intake_slots_resume_id", ["resume_id"])
+
+    op.drop_index("ix_intake_candidates_job_id", table_name="intake_candidates")
+    op.drop_index("ix_intake_candidates_status", table_name="intake_candidates")
+    op.drop_index("ix_intake_candidates_boss_id", table_name="intake_candidates")
+    op.drop_table("intake_candidates")
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+```bash
+pytest tests/modules/im_intake/test_migration_0012.py -v
+```
+
+Expected: PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add migrations/versions/0012_f5_intake_candidates.py tests/modules/im_intake/test_migration_0012.py
+git commit -m "feat(f5-T1): migration 0012 — intake_candidates table + move non-complete rows"
+```
+
+---
+
+## Task 2: IntakeCandidate model + IntakeSlot FK 切换
+
+**Files:**
+- Create: `app/modules/im_intake/candidate_model.py`
+- Modify: `app/modules/im_intake/models.py:10` — `resume_id` → `candidate_id`
+- Test: `tests/modules/im_intake/test_candidate_model.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_candidate_model.py
+from datetime import datetime, timezone
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.database import Base
+from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.im_intake.models import IntakeSlot
+
+
+def _session():
+    eng = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(eng)
+    return sessionmaker(bind=eng)()
+
+
+def test_candidate_insert_and_slot_fk():
+    s = _session()
+    c = IntakeCandidate(boss_id="bx123", name="张三", intake_status="collecting",
+                        source="plugin", intake_started_at=datetime.now(timezone.utc))
+    s.add(c); s.commit()
+    assert c.id is not None
+
+    slot = IntakeSlot(candidate_id=c.id, slot_key="arrival_date", slot_category="hard")
+    s.add(slot); s.commit()
+    assert slot.candidate_id == c.id
+
+
+def test_candidate_boss_id_unique():
+    s = _session()
+    s.add(IntakeCandidate(boss_id="bx1", name="A", intake_status="collecting", source="plugin"))
+    s.commit()
+    s.add(IntakeCandidate(boss_id="bx1", name="B", intake_status="collecting", source="plugin"))
+    import pytest
+    with pytest.raises(Exception):
+        s.commit()
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/modules/im_intake/test_candidate_model.py -v
+```
+
+Expected: FAIL — `IntakeCandidate` not importable, or `IntakeSlot.candidate_id` missing.
+
+- [ ] **Step 3: Create candidate_model.py**
+
+```python
+# app/modules/im_intake/candidate_model.py
+from datetime import datetime, timezone
+from sqlalchemy import Column, Integer, String, Text, DateTime, JSON, ForeignKey, UniqueConstraint
+from app.database import Base
+
+
+class IntakeCandidate(Base):
+    __tablename__ = "intake_candidates"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    boss_id = Column(String(64), nullable=False)
+    name = Column(String(128), nullable=False, default="")
+    job_intention = Column(String(256), nullable=True)
+    job_id = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
+    intake_status = Column(String(20), nullable=False, default="collecting")
+    source = Column(String(32), nullable=False, default="plugin")
+    pdf_path = Column(String(512), nullable=True)
+    raw_text = Column(Text, nullable=True)
+    chat_snapshot = Column(JSON, nullable=True)
+    intake_started_at = Column(DateTime, nullable=True)
+    intake_completed_at = Column(DateTime, nullable=True)
+    promoted_resume_id = Column(Integer, ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (UniqueConstraint("boss_id", name="uq_intake_candidates_boss_id"),)
+```
+
+- [ ] **Step 4: Modify models.py — `resume_id` → `candidate_id`**
+
+Replace line 10 in `app/modules/im_intake/models.py`:
+```python
+resume_id = Column(Integer, ForeignKey("resumes.id", ondelete="CASCADE"), nullable=False)
+```
+with:
+```python
+candidate_id = Column(Integer, ForeignKey("intake_candidates.id", ondelete="CASCADE"), nullable=False)
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+```bash
+pytest tests/modules/im_intake/test_candidate_model.py -v
+```
+
+Expected: PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/modules/im_intake/candidate_model.py app/modules/im_intake/models.py tests/modules/im_intake/test_candidate_model.py
+git commit -m "feat(f5-T2): IntakeCandidate model + IntakeSlot.candidate_id FK"
+```
+
+---
+
+## Task 3: 纯决策函数 decide_next_action
+
+**Files:**
+- Create: `app/modules/im_intake/decision.py`
+- Test: `tests/modules/im_intake/test_decision.py`
+
+决策函数读取候选人 + slot 列表 + 岗位，返回 `NextAction`。无副作用。
+
+`NextAction` 枚举：
+- `send_hard` — 还有硬性字段待问且 ask_count<3，附 packed 文本
+- `request_pdf` — 第一次点"求简历"按钮
+- `wait_pdf` — 已点按钮，等 72h 内
+- `send_soft` — 硬性全填 + PDF 到 + 岗位有胜任力模型 + 还没发过软性
+- `abandon` — PDF 72h 未到
+- `mark_pending_human` — 硬性问够 3 次仍缺 + PDF 到
+- `complete` — 硬性全填 + PDF 到 + 软性不需要或已发过
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_decision.py
+from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock
+from app.modules.im_intake.decision import decide_next_action, NextAction
+
+
+def _slot(key, value=None, ask_count=0, asked_at=None, category="hard"):
+    s = MagicMock()
+    s.slot_key, s.value, s.ask_count, s.asked_at, s.slot_category = key, value, ask_count, asked_at, category
+    return s
+
+
+def test_send_hard_when_all_empty():
+    slots = [_slot("arrival_date"), _slot("free_slots"), _slot("intern_duration"),
+             _slot("pdf", value="p.pdf", category="pdf")]
+    cand = MagicMock(name="张三"); job = MagicMock(title="前端", competency_model=None)
+    action = decide_next_action(cand, slots, job, hard_max=3, pdf_timeout_h=72)
+    assert action.type == "send_hard"
+    assert "arrival_date" in action.meta["slot_keys"]
+    assert "想跟您先确认" in action.text
+
+
+def test_request_pdf_when_pdf_never_asked():
+    slots = [_slot("arrival_date", value="下周一"), _slot("free_slots", value="周三下午"),
+             _slot("intern_duration", value="6个月"), _slot("pdf", category="pdf")]
+    cand = MagicMock(); job = MagicMock(competency_model=None)
+    action = decide_next_action(cand, slots, job, hard_max=3, pdf_timeout_h=72)
+    assert action.type == "request_pdf"
+
+
+def test_wait_pdf_within_timeout():
+    now = datetime.now(timezone.utc)
+    slots = [_slot("arrival_date", value="x"), _slot("free_slots", value="x"),
+             _slot("intern_duration", value="x"),
+             _slot("pdf", ask_count=1, asked_at=now - timedelta(hours=10), category="pdf")]
+    job = MagicMock(competency_model=None)
+    action = decide_next_action(MagicMock(), slots, job, 3, 72)
+    assert action.type == "wait_pdf"
+
+
+def test_abandon_pdf_expired():
+    past = datetime.now(timezone.utc) - timedelta(hours=80)
+    slots = [_slot("arrival_date", value="x"), _slot("free_slots", value="x"),
+             _slot("intern_duration", value="x"),
+             _slot("pdf", ask_count=1, asked_at=past, category="pdf")]
+    action = decide_next_action(MagicMock(), slots, MagicMock(competency_model=None), 3, 72)
+    assert action.type == "abandon"
+
+
+def test_mark_pending_human_when_hard_exhausted_pdf_done():
+    slots = [_slot("arrival_date", ask_count=3), _slot("free_slots", value="x"),
+             _slot("intern_duration", value="x"), _slot("pdf", value="p.pdf", category="pdf")]
+    action = decide_next_action(MagicMock(), slots, MagicMock(competency_model=None), 3, 72)
+    assert action.type == "mark_pending_human"
+
+
+def test_complete_when_all_filled_no_soft_needed():
+    slots = [_slot("arrival_date", value="x"), _slot("free_slots", value="x"),
+             _slot("intern_duration", value="x"), _slot("pdf", value="p.pdf", category="pdf")]
+    action = decide_next_action(MagicMock(), slots, MagicMock(competency_model=None), 3, 72)
+    assert action.type == "complete"
+
+
+def test_send_soft_when_hard_filled_and_competency_model_exists():
+    slots = [_slot("arrival_date", value="x"), _slot("free_slots", value="x"),
+             _slot("intern_duration", value="x"), _slot("pdf", value="p.pdf", category="pdf")]
+    job = MagicMock(competency_model={"assessment_dimensions": [{"name": "技术深度"}]})
+    action = decide_next_action(MagicMock(), slots, job, 3, 72)
+    assert action.type == "send_soft"
+
+
+def test_complete_when_soft_already_sent():
+    slots = [_slot("arrival_date", value="x"), _slot("free_slots", value="x"),
+             _slot("intern_duration", value="x"), _slot("pdf", value="p.pdf", category="pdf"),
+             _slot("soft_q_1", ask_count=1, category="soft")]
+    job = MagicMock(competency_model={"assessment_dimensions": [{"name": "技术深度"}]})
+    action = decide_next_action(MagicMock(), slots, job, 3, 72)
+    assert action.type == "complete"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/modules/im_intake/test_decision.py -v
+```
+
+Expected: FAIL — module not found.
+
+- [ ] **Step 3: Write decision.py**
+
+```python
+# app/modules/im_intake/decision.py
+from dataclasses import dataclass, field
+from datetime import datetime, timezone, timedelta
+from typing import Literal, Any
+from app.modules.im_intake.templates import HARD_SLOT_KEYS
+from app.modules.im_intake.question_generator import QuestionGenerator
+
+ActionType = Literal[
+    "send_hard", "request_pdf", "wait_pdf",
+    "send_soft", "complete", "mark_pending_human", "abandon",
+]
+
+
+@dataclass
+class NextAction:
+    type: ActionType
+    text: str = ""
+    meta: dict[str, Any] = field(default_factory=dict)
+
+
+def _slots_by_key(slots):
+    return {s.slot_key: s for s in slots}
+
+
+def decide_next_action(candidate, slots, job, hard_max: int = 3, pdf_timeout_h: int = 72) -> NextAction:
+    by = _slots_by_key(slots)
+    pdf = by.get("pdf")
+
+    # PDF 超时 → abandon
+    if pdf and not pdf.value and pdf.asked_at:
+        asked = pdf.asked_at if pdf.asked_at.tzinfo else pdf.asked_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - asked > timedelta(hours=pdf_timeout_h):
+            return NextAction(type="abandon")
+
+    # 硬性还能问 → send_hard
+    pending = [k for k in HARD_SLOT_KEYS
+               if k in by and not by[k].value and by[k].ask_count < hard_max]
+    if pending:
+        qg = QuestionGenerator(llm=None)
+        missing = [(k, by[k].ask_count) for k in pending]
+        text = qg.pack_hard(
+            candidate_name=getattr(candidate, "name", ""),
+            job_title=getattr(job, "title", "") if job else "",
+            missing=missing,
+        )
+        return NextAction(type="send_hard", text=text, meta={"slot_keys": pending})
+
+    # 硬性已无可问 + PDF 未到 → 看 PDF 状态
+    if pdf and not pdf.value:
+        if pdf.ask_count == 0:
+            return NextAction(type="request_pdf")
+        return NextAction(type="wait_pdf")
+
+    # 硬性问够但仍缺 → pending_human（PDF 已到的情况）
+    hard_filled = all(by[k].value for k in HARD_SLOT_KEYS if k in by)
+    if not hard_filled:
+        return NextAction(type="mark_pending_human")
+
+    # 全填 + PDF 到 → 看软性
+    soft_sent = any(s.slot_category == "soft" for s in slots)
+    dims = (getattr(job, "competency_model", None) or {}).get("assessment_dimensions") if job else None
+    if dims and not soft_sent:
+        return NextAction(type="send_soft", meta={"dimensions": dims})
+
+    return NextAction(type="complete")
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+```bash
+pytest tests/modules/im_intake/test_decision.py -v
+```
+
+Expected: PASS (8/8)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/modules/im_intake/decision.py tests/modules/im_intake/test_decision.py
+git commit -m "feat(f5-T3): decide_next_action pure function with 8 branches"
+```
+
+---
+
+## Task 4: promote_to_resume — 候选人齐全后搬家
+
+**Files:**
+- Create: `app/modules/im_intake/promote.py`
+- Test: `tests/modules/im_intake/test_promote.py`
+
+齐全时把 `IntakeCandidate` 搬到 `resumes`：拷贝字段、写 `promoted_resume_id` 回链、`intake_status='complete'`。
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_promote.py
+from datetime import datetime, timezone
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.database import Base
+from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.im_intake.models import IntakeSlot
+from app.modules.resume.models import Resume
+from app.modules.im_intake.promote import promote_to_resume
+
+
+def _s():
+    eng = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(eng)
+    return sessionmaker(bind=eng)()
+
+
+def test_promote_creates_resume_and_links():
+    s = _s()
+    c = IntakeCandidate(
+        boss_id="bx1", name="李四", job_id=None, intake_status="collecting",
+        source="plugin", pdf_path="/tmp/bx1.pdf",
+        intake_started_at=datetime.now(timezone.utc),
+    )
+    s.add(c); s.commit()
+
+    resume = promote_to_resume(s, c)
+    s.commit()
+
+    assert resume.id is not None
+    assert resume.boss_id == "bx1"
+    assert resume.name == "李四"
+    assert resume.pdf_path == "/tmp/bx1.pdf"
+    assert resume.intake_status == "complete"
+    assert resume.status == "passed"
+
+    s.refresh(c)
+    assert c.promoted_resume_id == resume.id
+    assert c.intake_status == "complete"
+    assert c.intake_completed_at is not None
+
+
+def test_promote_idempotent():
+    s = _s()
+    c = IntakeCandidate(boss_id="bx1", name="A", intake_status="collecting", source="plugin")
+    s.add(c); s.commit()
+    r1 = promote_to_resume(s, c); s.commit()
+    r2 = promote_to_resume(s, c); s.commit()
+    assert r1.id == r2.id
+    assert s.query(Resume).count() == 1
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/modules/im_intake/test_promote.py -v
+```
+
+Expected: FAIL.
+
+- [ ] **Step 3: Write promote.py**
+
+```python
+# app/modules/im_intake/promote.py
+from datetime import datetime, timezone
+from sqlalchemy.orm import Session
+from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.resume.models import Resume
+
+
+def promote_to_resume(db: Session, candidate: IntakeCandidate) -> Resume:
+    if candidate.promoted_resume_id:
+        existing = db.query(Resume).filter_by(id=candidate.promoted_resume_id).first()
+        if existing:
+            return existing
+
+    r = Resume(
+        name=candidate.name,
+        boss_id=candidate.boss_id,
+        job_id=candidate.job_id,
+        pdf_path=candidate.pdf_path,
+        raw_text=candidate.raw_text,
+        status="passed",
+        source="boss_zhipin",
+        intake_status="complete",
+        intake_started_at=candidate.intake_started_at,
+        intake_completed_at=datetime.now(timezone.utc),
+    )
+    db.add(r)
+    db.flush()
+
+    candidate.promoted_resume_id = r.id
+    candidate.intake_status = "complete"
+    candidate.intake_completed_at = datetime.now(timezone.utc)
+    return r
+```
+
+- [ ] **Step 4: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_promote.py -v
+```
+
+Expected: PASS (2/2)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/modules/im_intake/promote.py tests/modules/im_intake/test_promote.py
+git commit -m "feat(f5-T4): promote_to_resume — copy complete candidate into resumes table"
+```
+
+---
+
+## Task 5: 重构 IntakeService — analyze_chat 独立
+
+**Files:**
+- Modify: `app/modules/im_intake/service.py` — 拆出 `analyze_chat()`，`process_one` 变成 `analyze_chat + execute_action`
+- Test: `tests/modules/im_intake/test_service_analyze_chat.py` (new)
+
+拆解后：
+- `analyze_chat(candidate, messages, job)` — 只读聊天 + slot 解析 + PDF 状态检查，**不**发消息；返回下一步 NextAction。可被 collect-chat 端点复用。
+- `execute_action(candidate, action)` — 真正调 adapter 发消息 / 点按钮（batch 模式用；手动模式由插件代替执行，只走 ack）
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_service_analyze_chat.py
+import pytest
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, AsyncMock
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from app.database import Base
+from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.im_intake.models import IntakeSlot
+from app.modules.im_intake.templates import HARD_SLOT_KEYS
+from app.modules.im_intake.service import IntakeService
+
+
+def _s():
+    eng = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(eng)
+    return sessionmaker(bind=eng)()
+
+
+@pytest.mark.asyncio
+async def test_analyze_chat_fills_slots_and_returns_next_action():
+    s = _s()
+    c = IntakeCandidate(boss_id="bx1", name="王五", intake_status="collecting", source="plugin")
+    s.add(c); s.commit()
+    # seed empty slots
+    for k in HARD_SLOT_KEYS:
+        s.add(IntakeSlot(candidate_id=c.id, slot_key=k, slot_category="hard"))
+    s.add(IntakeSlot(candidate_id=c.id, slot_key="pdf", slot_category="pdf"))
+    s.commit()
+
+    svc = IntakeService(db=s, adapter=MagicMock(), llm=None, storage_dir="/tmp")
+    messages = [{"sender_id": "bx1", "content": "下周一能到，能实习6个月"}]
+    action = await svc.analyze_chat(c, messages, job=None)
+    s.refresh(c)
+
+    by = {sl.slot_key: sl for sl in s.query(IntakeSlot).filter_by(candidate_id=c.id).all()}
+    assert by["arrival_date"].value == "下周一"
+    assert by["intern_duration"].value == "6个月"
+    assert by["free_slots"].value in (None, "")
+    # free_slots still missing + pdf missing → request_pdf OR send_hard; decision says send_hard takes priority
+    assert action.type in ("send_hard",)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/modules/im_intake/test_service_analyze_chat.py -v
+```
+
+Expected: FAIL — `analyze_chat` not defined.
+
+- [ ] **Step 3: Refactor service.py**
+
+Replace the whole `IntakeService` class with:
+
+```python
+# app/modules/im_intake/service.py
+import logging
+from datetime import datetime, timezone
+from sqlalchemy.orm import Session
+from app.adapters.boss.base import BossAdapter, BossCandidate
+from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.im_intake.models import IntakeSlot
+from app.modules.im_intake.slot_filler import SlotFiller
+from app.modules.im_intake.question_generator import QuestionGenerator
+from app.modules.im_intake.pdf_collector import PdfCollector
+from app.modules.im_intake.job_matcher import match_job_title
+from app.modules.im_intake.decision import decide_next_action, NextAction
+from app.modules.im_intake.promote import promote_to_resume
+from app.modules.im_intake.templates import HARD_SLOT_KEYS
+from app.modules.screening.models import Job
+
+logger = logging.getLogger(__name__)
+
+
+class IntakeService:
+    def __init__(self, db: Session, adapter: BossAdapter, llm,
+                 storage_dir: str, hard_max_asks: int = 3, pdf_timeout_hours: int = 72,
+                 soft_max_n: int = 3):
+        self.db = db
+        self.adapter = adapter
+        self.llm = llm
+        self.filler = SlotFiller(llm=llm)
+        self.qg = QuestionGenerator(llm=llm)
+        self.pdf = PdfCollector(adapter=adapter, storage_dir=storage_dir, timeout_hours=pdf_timeout_hours)
+        self.hard_max_asks = hard_max_asks
+        self.pdf_timeout_hours = pdf_timeout_hours
+        self.soft_max_n = soft_max_n
+
+    def ensure_candidate(self, boss_id: str, name: str = "",
+                         job_intention: str | None = None) -> IntakeCandidate:
+        c = self.db.query(IntakeCandidate).filter_by(boss_id=boss_id).first()
+        if c is None:
+            job_id = None
+            if job_intention:
+                jobs = self.db.query(Job).all()
+                job_id = match_job_title(
+                    job_intention, [{"id": j.id, "title": j.title} for j in jobs], threshold=0.7,
+                )
+            c = IntakeCandidate(
+                boss_id=boss_id, name=name or "", job_intention=job_intention, job_id=job_id,
+                intake_status="collecting", source="plugin",
+                intake_started_at=datetime.now(timezone.utc),
+            )
+            self.db.add(c); self.db.commit()
+        elif name and not c.name:
+            c.name = name; self.db.commit()
+        return c
+
+    def ensure_slot_rows(self, candidate_id: int) -> dict[str, IntakeSlot]:
+        existing = {s.slot_key: s for s in
+                    self.db.query(IntakeSlot).filter_by(candidate_id=candidate_id).all()}
+        for k in HARD_SLOT_KEYS:
+            if k not in existing:
+                s = IntakeSlot(candidate_id=candidate_id, slot_key=k, slot_category="hard")
+                self.db.add(s); existing[k] = s
+        if "pdf" not in existing:
+            s = IntakeSlot(candidate_id=candidate_id, slot_key="pdf", slot_category="pdf")
+            self.db.add(s); existing["pdf"] = s
+        self.db.commit()
+        return existing
+
+    async def analyze_chat(self, candidate: IntakeCandidate,
+                           messages: list[dict], job: Job | None) -> NextAction:
+        slots_by_key = self.ensure_slot_rows(candidate.id)
+
+        candidate_text = "\n".join(
+            m["content"] for m in messages
+            if m.get("sender_id") == candidate.boss_id and m.get("content")
+        )
+
+        pending_hard = [k for k in HARD_SLOT_KEYS if not slots_by_key[k].value]
+        if candidate_text and pending_hard:
+            parsed = await self.filler.parse_reply(candidate_text, pending_hard)
+            for key, (val, source) in parsed.items():
+                s = slots_by_key[key]
+                s.value = val if isinstance(val, str) else str(val)
+                s.source = source
+                s.answered_at = datetime.now(timezone.utc)
+            self.db.commit()
+
+        candidate.chat_snapshot = {"messages": messages,
+                                   "captured_at": datetime.now(timezone.utc).isoformat()}
+        self.db.commit()
+
+        slots = list(slots_by_key.values())
+        action = decide_next_action(
+            candidate, slots, job, hard_max=self.hard_max_asks, pdf_timeout_h=self.pdf_timeout_hours,
+        )
+
+        if action.type == "send_soft":
+            dims = action.meta["dimensions"]
+            questions = await self.qg.generate_soft(
+                dimensions=[{"id": d.get("name"), "name": d.get("name"),
+                             "description": d.get("description", "")} for d in dims],
+                resume_summary=candidate.raw_text or "",
+                max_n=self.soft_max_n,
+            )
+            if questions:
+                action.text = self.qg.pack_soft(questions)
+                action.meta["questions"] = questions
+            else:
+                action = NextAction(type="complete")
+
+        return action
+
+    def record_asked(self, candidate: IntakeCandidate, action: NextAction) -> None:
+        """Called by router after plugin/adapter confirms send — writes ask_count/asked_at."""
+        by = {s.slot_key: s for s in
+              self.db.query(IntakeSlot).filter_by(candidate_id=candidate.id).all()}
+        now = datetime.now(timezone.utc)
+        if action.type == "send_hard":
+            for k in action.meta.get("slot_keys", []):
+                by[k].ask_count += 1
+                by[k].asked_at = now
+                by[k].last_ask_text = action.text
+            candidate.intake_status = "awaiting_reply"
+        elif action.type == "request_pdf":
+            by["pdf"].ask_count += 1
+            by["pdf"].asked_at = now
+            by["pdf"].last_ask_text = "求简历按钮"
+        elif action.type == "send_soft":
+            for i, q in enumerate(action.meta.get("questions", []), 1):
+                sk = f"soft_q_{i}"
+                s = IntakeSlot(
+                    candidate_id=candidate.id, slot_key=sk, slot_category="soft",
+                    ask_count=1, asked_at=now, last_ask_text=q["question"],
+                    question_meta={"dimension_id": q.get("dimension_id"),
+                                   "dimension_name": q.get("dimension_name")},
+                )
+                self.db.add(s)
+        self.db.commit()
+
+    def apply_terminal(self, candidate: IntakeCandidate, action: NextAction):
+        if action.type == "abandon":
+            candidate.intake_status = "abandoned"
+            candidate.intake_completed_at = datetime.now(timezone.utc)
+            self.db.commit()
+            return None
+        if action.type == "mark_pending_human":
+            candidate.intake_status = "pending_human"
+            candidate.intake_completed_at = datetime.now(timezone.utc)
+            self.db.commit()
+            return None
+        if action.type == "complete":
+            resume = promote_to_resume(self.db, candidate)
+            self.db.commit()
+            return resume
+        return None
+
+    # ---- legacy batch path (scheduler) ----
+    async def process_one(self, boss_candidate: BossCandidate) -> None:
+        c = self.ensure_candidate(
+            boss_id=boss_candidate.boss_id, name=boss_candidate.name,
+            job_intention=boss_candidate.job_intention,
+        )
+        job = self.db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+        try:
+            msgs = await self.adapter.get_chat_messages(c.boss_id)
+            messages = [{"sender_id": m.sender_id, "content": m.content} for m in msgs]
+        except Exception as e:
+            logger.error(f"get_chat_messages failed [{c.boss_id}]: {e}")
+            return
+
+        action = await self.analyze_chat(c, messages, job)
+        if action.type in ("send_hard", "send_soft"):
+            ok = await self.adapter.send_message(c.boss_id, action.text)
+            if ok:
+                self.record_asked(c, action)
+        elif action.type == "request_pdf":
+            try:
+                ok = await self.adapter.click_request_resume(c.boss_id)
+            except Exception:
+                ok = False
+            if ok:
+                self.record_asked(c, action)
+        self.apply_terminal(c, action)
+```
+
+- [ ] **Step 4: Run tests**
+
+```bash
+pytest tests/modules/im_intake/test_service_analyze_chat.py -v
+pytest tests/modules/im_intake/ -v
+```
+
+Expected: PASS for new test. Existing tests referencing `resume_id` will fail — fix in next task.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/modules/im_intake/service.py tests/modules/im_intake/test_service_analyze_chat.py
+git commit -m "feat(f5-T5): IntakeService refactor — analyze_chat + record_asked + apply_terminal"
+```
+
+---
+
+## Task 6: 修补现有 im_intake 旧测试 — `resume_id` → `candidate_id`
+
+**Files:**
+- Modify: `tests/modules/im_intake/test_service_pipeline.py`, `test_pending_human.py`, `test_abandoned.py`, `test_scheduler_lock.py`, `test_router.py`, `conftest.py`
+
+批量改测试里所有 `IntakeSlot(resume_id=...)` → `IntakeSlot(candidate_id=...)`；`Resume(intake_status=..., boss_id=...)` 改成先建 `IntakeCandidate`。
+
+- [ ] **Step 1: Baseline run**
+
+```bash
+pytest tests/modules/im_intake/ -v --no-header -q 2>&1 | tail -30
+```
+
+记录失败清单。
+
+- [ ] **Step 2: Fix each failing test**
+
+对每个 fail 的测试：
+1. 查 `resume_id=` 出现位置
+2. 改成先 `db.add(IntakeCandidate(boss_id=..., ...))`、拿到 `candidate.id` 后 `IntakeSlot(candidate_id=...)`
+3. 断言 `IntakeCandidate.intake_status` 而不是 `Resume.intake_status`
+
+示例 `test_pending_human.py`：
+```python
+# OLD
+resume = Resume(name="A", boss_id="bx1", intake_status="collecting")
+db.add(resume); db.commit()
+slot = IntakeSlot(resume_id=resume.id, slot_key="arrival_date", ...)
+
+# NEW
+cand = IntakeCandidate(boss_id="bx1", name="A", intake_status="collecting", source="plugin")
+db.add(cand); db.commit()
+slot = IntakeSlot(candidate_id=cand.id, slot_key="arrival_date", ...)
+```
+
+- [ ] **Step 3: Run all**
+
+```bash
+pytest tests/modules/im_intake/ -v
+```
+
+Expected: all pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/modules/im_intake/
+git commit -m "test(f5-T6): migrate im_intake tests from resume_id to candidate_id"
+```
+
+---
+
+## Task 7: Pydantic schemas — `CollectChatIn` / `NextActionOut` / `AckSentIn` / `StartConversationOut`
+
+**Files:**
+- Modify: `app/modules/im_intake/schemas.py`
+- Test: `tests/modules/im_intake/test_schemas_f5.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_schemas_f5.py
+import pytest
+from pydantic import ValidationError
+from app.modules.im_intake.schemas import (
+    ChatMessageIn, CollectChatIn, NextActionOut, AckSentIn, StartConversationOut,
+)
+
+
+def test_collect_chat_in_requires_boss_id_and_messages():
+    m = ChatMessageIn(sender_id="bx1", content="hi", sent_at="2026-04-22T10:00:00Z")
+    payload = CollectChatIn(boss_id="bx1", name="张三", job_intention="前端实习", messages=[m])
+    assert payload.boss_id == "bx1"
+    assert len(payload.messages) == 1
+
+
+def test_collect_chat_in_rejects_empty_boss_id():
+    with pytest.raises(ValidationError):
+        CollectChatIn(boss_id="", messages=[])
+
+
+def test_next_action_out_serializes():
+    a = NextActionOut(type="send_hard", text="您好~...", slot_keys=["arrival_date"])
+    d = a.model_dump()
+    assert d["type"] == "send_hard"
+
+
+def test_ack_sent_requires_action_type():
+    AckSentIn(action_type="send_hard", delivered=True)
+    with pytest.raises(ValidationError):
+        AckSentIn(delivered=True)
+
+
+def test_start_conversation_out_has_deep_link():
+    o = StartConversationOut(candidate_id=1, boss_id="bx1", deep_link="https://www.zhipin.com/web/chat/index?id=bx1")
+    assert "zhipin.com" in o.deep_link
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/modules/im_intake/test_schemas_f5.py -v
+```
+
+Expected: FAIL.
+
+- [ ] **Step 3: Append to schemas.py**
+
+Append below existing classes:
+
+```python
+# ---- F5 additions ----
+
+class ChatMessageIn(BaseModel):
+    sender_id: str
+    content: str
+    sent_at: str | None = None
+
+
+class CollectChatIn(BaseModel):
+    boss_id: str = Field(min_length=1)
+    name: str = ""
+    job_intention: str | None = None
+    messages: list[ChatMessageIn] = Field(default_factory=list)
+    pdf_present: bool = False
+    pdf_url: str | None = None
+
+
+class NextActionOut(BaseModel):
+    type: Literal["send_hard", "request_pdf", "wait_pdf",
+                  "send_soft", "complete", "mark_pending_human", "abandon"]
+    text: str = ""
+    slot_keys: list[str] = Field(default_factory=list)
+
+
+class CollectChatOut(BaseModel):
+    candidate_id: int
+    intake_status: str
+    next_action: NextActionOut
+
+
+class AckSentIn(BaseModel):
+    action_type: Literal["send_hard", "request_pdf", "send_soft"]
+    delivered: bool = True
+
+
+class StartConversationOut(BaseModel):
+    candidate_id: int
+    boss_id: str
+    deep_link: str
+```
+
+- [ ] **Step 4: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_schemas_f5.py -v
+```
+
+Expected: PASS (5/5)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/modules/im_intake/schemas.py tests/modules/im_intake/test_schemas_f5.py
+git commit -m "feat(f5-T7): F5 pydantic schemas (CollectChatIn, NextActionOut, AckSentIn, StartConversationOut)"
+```
+
+---
+
+## Task 8: API `POST /api/intake/collect-chat`
+
+**Files:**
+- Modify: `app/modules/im_intake/router.py` — add endpoint
+- Test: `tests/modules/im_intake/test_router_collect_chat.py`
+
+接收插件抓取的聊天快照，建/更新 IntakeCandidate，跑 analyze_chat，返回 NextAction。
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_router_collect_chat.py
+import pytest
+from fastapi.testclient import TestClient
+from tests.modules.im_intake.conftest import get_test_client_and_token  # helper to create
+
+
+def test_collect_chat_creates_candidate_and_returns_send_hard(client, auth_header):
+    payload = {
+        "boss_id": "bxTest1",
+        "name": "测试张三",
+        "job_intention": "前端实习",
+        "messages": [{"sender_id": "bxTest1", "content": "你好"}],
+    }
+    r = client.post("/api/intake/collect-chat", json=payload, headers=auth_header)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["candidate_id"] > 0
+    assert data["intake_status"] in ("collecting", "awaiting_reply")
+    assert data["next_action"]["type"] in ("send_hard", "request_pdf")
+
+
+def test_collect_chat_idempotent_on_boss_id(client, auth_header):
+    p = {"boss_id": "bxDup", "messages": []}
+    r1 = client.post("/api/intake/collect-chat", json=p, headers=auth_header); r1.raise_for_status()
+    r2 = client.post("/api/intake/collect-chat", json=p, headers=auth_header); r2.raise_for_status()
+    assert r1.json()["candidate_id"] == r2.json()["candidate_id"]
+
+
+def test_collect_chat_fills_slots_from_messages(client, auth_header, db):
+    from app.modules.im_intake.models import IntakeSlot
+    payload = {
+        "boss_id": "bxParse",
+        "messages": [{"sender_id": "bxParse", "content": "下周一到岗，能实习半年"}],
+    }
+    r = client.post("/api/intake/collect-chat", json=payload, headers=auth_header)
+    cid = r.json()["candidate_id"]
+    slots = {s.slot_key: s for s in db.query(IntakeSlot).filter_by(candidate_id=cid).all()}
+    assert slots["arrival_date"].value == "下周一"
+    assert slots["intern_duration"].value == "半年"
+```
+
+(conftest must provide `client`, `auth_header`, `db` fixtures — follow existing pattern in `tests/modules/im_intake/conftest.py`.)
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+pytest tests/modules/im_intake/test_router_collect_chat.py -v
+```
+
+Expected: FAIL — endpoint not defined.
+
+- [ ] **Step 3: Add endpoint in router.py**
+
+Append to `app/modules/im_intake/router.py` (imports at top):
+
+```python
+from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.im_intake.schemas import (
+    CollectChatIn, CollectChatOut, NextActionOut, AckSentIn, StartConversationOut,
+)
+from app.modules.im_intake.service import IntakeService
+from app.modules.im_intake.promote import promote_to_resume
+from app.config import settings
+```
+
+Then:
+
+```python
+def _build_service(db: Session) -> IntakeService:
+    from app.main import boss_adapter, llm_client, intake_storage_dir  # late import
+    return IntakeService(
+        db=db,
+        adapter=boss_adapter,
+        llm=llm_client,
+        storage_dir=intake_storage_dir,
+        hard_max_asks=settings.f4_hard_max_asks,
+        pdf_timeout_hours=settings.f4_pdf_timeout_hours,
+        soft_max_n=settings.f4_soft_question_max,
+    )
+
+
+@router.post("/collect-chat", response_model=CollectChatOut)
+async def collect_chat(
+    body: CollectChatIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    svc = _build_service(db)
+    c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_intention)
+    job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+
+    messages = [m.model_dump() for m in body.messages]
+    if body.pdf_present and body.pdf_url and not c.pdf_path:
+        # plugin has already verified PDF is in received list; mark slot directly
+        slots = svc.ensure_slot_rows(c.id)
+        slots["pdf"].value = body.pdf_url
+        slots["pdf"].source = "plugin_detected"
+        slots["pdf"].answered_at = datetime.now(timezone.utc)
+        c.pdf_path = body.pdf_url
+        db.commit()
+
+    action = await svc.analyze_chat(c, messages, job)
+    svc.apply_terminal(c, action)
+    db.refresh(c)
+    return CollectChatOut(
+        candidate_id=c.id,
+        intake_status=c.intake_status,
+        next_action=NextActionOut(type=action.type, text=action.text,
+                                  slot_keys=action.meta.get("slot_keys", [])),
+    )
+```
+
+- [ ] **Step 4: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_router_collect_chat.py -v
+```
+
+Expected: PASS (3/3)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/modules/im_intake/router.py tests/modules/im_intake/test_router_collect_chat.py
+git commit -m "feat(f5-T8): POST /api/intake/collect-chat — plugin submits snapshot → NextAction"
+```
+
+---
+
+## Task 9: API `POST /api/intake/candidates/{id}/start-conversation`
+
+**Files:**
+- Modify: `app/modules/im_intake/router.py`
+- Modify: `app/config.py` — add `boss_chat_url_template: str = "https://www.zhipin.com/web/chat/index?id={boss_id}"`
+- Test: `tests/modules/im_intake/test_router_start_conversation.py`
+
+返回 deep link，前端 `window.open()` 打开 Boss 聊天页。URL 里拼 `?intake_candidate_id={id}`，插件识别这个参数就自动接管。
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_router_start_conversation.py
+def test_start_conversation_returns_deep_link(client, auth_header, db):
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    c = IntakeCandidate(boss_id="bxSC1", name="启动测试", intake_status="collecting", source="plugin")
+    db.add(c); db.commit()
+
+    r = client.post(f"/api/intake/candidates/{c.id}/start-conversation", headers=auth_header)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["candidate_id"] == c.id
+    assert data["boss_id"] == "bxSC1"
+    assert "zhipin.com" in data["deep_link"]
+    assert "bxSC1" in data["deep_link"]
+    assert f"intake_candidate_id={c.id}" in data["deep_link"]
+
+
+def test_start_conversation_404_if_missing(client, auth_header):
+    r = client.post("/api/intake/candidates/99999/start-conversation", headers=auth_header)
+    assert r.status_code == 404
+```
+
+- [ ] **Step 2: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_router_start_conversation.py -v
+```
+
+Expected: FAIL.
+
+- [ ] **Step 3: Add config + endpoint**
+
+In `app/config.py` (Settings class):
+```python
+boss_chat_url_template: str = "https://www.zhipin.com/web/chat/index?id={boss_id}"
+```
+
+In `app/modules/im_intake/router.py`:
+```python
+@router.post("/candidates/{candidate_id}/start-conversation", response_model=StartConversationOut)
+def start_conversation(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "candidate not found")
+    base = settings.boss_chat_url_template.format(boss_id=c.boss_id)
+    sep = "&" if "?" in base else "?"
+    deep_link = f"{base}{sep}intake_candidate_id={c.id}"
+    return StartConversationOut(candidate_id=c.id, boss_id=c.boss_id, deep_link=deep_link)
+```
+
+- [ ] **Step 4: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_router_start_conversation.py -v
+```
+
+Expected: PASS (2/2)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/modules/im_intake/router.py app/config.py tests/modules/im_intake/test_router_start_conversation.py
+git commit -m "feat(f5-T9): POST /api/intake/candidates/{id}/start-conversation — deep link for plugin takeover"
+```
+
+---
+
+## Task 10: API `POST /api/intake/candidates/{id}/ack-sent`
+
+**Files:**
+- Modify: `app/modules/im_intake/router.py`
+- Test: `tests/modules/im_intake/test_router_ack_sent.py`
+
+插件发完消息回报后端 → 写 ask_count/asked_at。
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_router_ack_sent.py
+from datetime import datetime, timezone
+
+
+def test_ack_sent_records_asked(client, auth_header, db):
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.im_intake.models import IntakeSlot
+
+    c = IntakeCandidate(boss_id="bxAck", name="ack测试", intake_status="collecting", source="plugin")
+    db.add(c); db.commit()
+    for k in ("arrival_date", "free_slots", "intern_duration"):
+        db.add(IntakeSlot(candidate_id=c.id, slot_key=k, slot_category="hard"))
+    db.add(IntakeSlot(candidate_id=c.id, slot_key="pdf", slot_category="pdf"))
+    db.commit()
+
+    # first call collect-chat so analysis marks what was "sent"
+    payload = {"boss_id": "bxAck", "messages": []}
+    r1 = client.post("/api/intake/collect-chat", json=payload, headers=auth_header)
+    assert r1.json()["next_action"]["type"] == "send_hard"
+
+    r = client.post(
+        f"/api/intake/candidates/{c.id}/ack-sent",
+        json={"action_type": "send_hard", "delivered": True},
+        headers=auth_header,
+    )
+    assert r.status_code == 200
+
+    slots = {s.slot_key: s for s in db.query(IntakeSlot).filter_by(candidate_id=c.id).all()}
+    assert slots["arrival_date"].ask_count == 1
+    assert slots["arrival_date"].asked_at is not None
+
+
+def test_ack_request_pdf(client, auth_header, db):
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.im_intake.models import IntakeSlot
+
+    c = IntakeCandidate(boss_id="bxPdf", name="PDFtest", intake_status="collecting", source="plugin")
+    db.add(c); db.commit()
+    # seed all hard filled
+    for k in ("arrival_date", "free_slots", "intern_duration"):
+        db.add(IntakeSlot(candidate_id=c.id, slot_key=k, slot_category="hard", value="x"))
+    db.add(IntakeSlot(candidate_id=c.id, slot_key="pdf", slot_category="pdf"))
+    db.commit()
+
+    client.post("/api/intake/collect-chat", json={"boss_id": "bxPdf", "messages": []}, headers=auth_header)
+    client.post(
+        f"/api/intake/candidates/{c.id}/ack-sent",
+        json={"action_type": "request_pdf", "delivered": True},
+        headers=auth_header,
+    )
+    pdf = db.query(IntakeSlot).filter_by(candidate_id=c.id, slot_key="pdf").first()
+    assert pdf.ask_count == 1
+```
+
+- [ ] **Step 2: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_router_ack_sent.py -v
+```
+
+Expected: FAIL.
+
+- [ ] **Step 3: Add endpoint**
+
+Need to cache last NextAction per candidate. Simplest: recompute from DB in ack handler — re-run `analyze_chat` with empty new messages, trust the returned action's `slot_keys`.
+
+```python
+@router.post("/candidates/{candidate_id}/ack-sent")
+async def ack_sent(
+    candidate_id: int,
+    body: AckSentIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    if not body.delivered:
+        return {"ok": True, "noop": True}
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "candidate not found")
+    svc = _build_service(db)
+    job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+    # recompute action from current state (no new messages)
+    action = await svc.analyze_chat(c, messages=[], job=job)
+    if action.type != body.action_type:
+        raise HTTPException(409, f"state mismatch: expected {action.type}, got {body.action_type}")
+    svc.record_asked(c, action)
+    return {"ok": True}
+```
+
+- [ ] **Step 4: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_router_ack_sent.py -v
+```
+
+Expected: PASS (2/2)
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/modules/im_intake/router.py tests/modules/im_intake/test_router_ack_sent.py
+git commit -m "feat(f5-T10): POST /api/intake/candidates/{id}/ack-sent — plugin confirms send"
+```
+
+---
+
+## Task 11: 改 list/detail endpoint 源为 IntakeCandidate
+
+**Files:**
+- Modify: `app/modules/im_intake/router.py`
+- Test: `tests/modules/im_intake/test_router_list_candidates_from_candidate_table.py`
+
+之前 `/api/intake/candidates` 从 `Resume` 查。改成从 `IntakeCandidate` 查。
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_router_list_candidates_from_candidate_table.py
+def test_list_returns_intake_candidates_not_resumes(client, auth_header, db):
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.resume.models import Resume
+
+    # seed: one candidate, one unrelated resume (should NOT appear)
+    db.add(IntakeCandidate(boss_id="bxL1", name="列表1", intake_status="collecting", source="plugin"))
+    db.add(Resume(name="不应出现", boss_id="bxR1", status="passed", source="boss_zhipin", intake_status="complete"))
+    db.commit()
+
+    r = client.get("/api/intake/candidates", headers=auth_header)
+    assert r.status_code == 200
+    names = [it["name"] for it in r.json()["items"]]
+    assert "列表1" in names
+    assert "不应出现" not in names
+
+
+def test_detail_returns_candidate_with_slots(client, auth_header, db):
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.im_intake.models import IntakeSlot
+
+    c = IntakeCandidate(boss_id="bxD1", name="详情", intake_status="collecting", source="plugin")
+    db.add(c); db.commit()
+    db.add(IntakeSlot(candidate_id=c.id, slot_key="arrival_date", slot_category="hard", value="明天"))
+    db.commit()
+
+    r = client.get(f"/api/intake/candidates/{c.id}", headers=auth_header)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["name"] == "详情"
+    assert any(s["slot_key"] == "arrival_date" and s["value"] == "明天" for s in data["slots"])
+```
+
+- [ ] **Step 2: Rewrite list/detail endpoints**
+
+Replace `list_candidates` and `get_candidate` in router.py:
+
+```python
+def _candidate_summary(c: IntakeCandidate, slots: list[IntakeSlot], job_title: str = "") -> CandidateOut:
+    expected = list(HARD_SLOT_KEYS) + ["pdf"]
+    soft_keys = [s.slot_key for s in slots if s.slot_category == "soft"]
+    expected += soft_keys
+    done = sum(1 for s in slots if s.value)
+    last = max((s.updated_at for s in slots if getattr(s, "updated_at", None)),
+               default=c.intake_started_at or c.created_at)
+    return CandidateOut(
+        resume_id=c.id,  # field name kept for frontend compat; semantically candidate_id now
+        boss_id=c.boss_id,
+        name=c.name,
+        job_id=c.job_id,
+        job_title=job_title,
+        intake_status=c.intake_status,
+        progress_done=done,
+        progress_total=len(expected),
+        last_activity_at=last,
+    )
+
+
+@router.get("/candidates")
+def list_candidates(
+    status: str | None = None,
+    job_id: int | None = None,
+    page: int = Query(1, ge=1),
+    size: int = Query(20, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    q = db.query(IntakeCandidate)
+    if status:
+        q = q.filter(IntakeCandidate.intake_status == status)
+    if job_id:
+        q = q.filter(IntakeCandidate.job_id == job_id)
+    total = q.count()
+    rows = q.order_by(IntakeCandidate.updated_at.desc()).offset((page - 1) * size).limit(size).all()
+    items = []
+    for c in rows:
+        slots = db.query(IntakeSlot).filter_by(candidate_id=c.id).all()
+        job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+        items.append(_candidate_summary(c, slots, job.title if job else ""))
+    return {"items": items, "total": total, "page": page, "size": size}
+
+
+@router.get("/candidates/{candidate_id}", response_model=CandidateDetailOut)
+def get_candidate(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id).first()
+    if not c:
+        raise HTTPException(404, "not found")
+    slots = db.query(IntakeSlot).filter_by(candidate_id=c.id).all()
+    job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+    summary = _candidate_summary(c, slots, job.title if job else "")
+    return CandidateDetailOut(
+        **summary.model_dump(),
+        slots=[SlotOut.model_validate(s, from_attributes=True) for s in slots],
+    )
+```
+
+Also update the `patch_slot`, `abandon`, `force_complete` endpoints to query `IntakeCandidate` instead of `Resume`.
+
+- [ ] **Step 3: Run tests**
+
+```bash
+pytest tests/modules/im_intake/test_router_list_candidates_from_candidate_table.py -v
+pytest tests/modules/im_intake/ -v
+```
+
+Expected: all PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add app/modules/im_intake/router.py tests/modules/im_intake/test_router_list_candidates_from_candidate_table.py
+git commit -m "feat(f5-T11): list/detail endpoints switch source from Resume to IntakeCandidate"
+```
+
+---
+
+## Task 12: F3 recruit_bot 改写 intake_candidates
+
+**Files:**
+- Modify: `app/modules/recruit_bot/service.py` — `upsert_candidate` (or `evaluate_and_record` / `record_greet`) 改写 `IntakeCandidate`
+- Modify: `tests/modules/recruit_bot/test_upsert_candidate.py` + any affected recruit_bot tests
+- Test: add `tests/modules/recruit_bot/test_upsert_writes_intake_candidate.py`
+
+F3 打招呼成功 → 建 IntakeCandidate 行（不再写 Resume）。
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/recruit_bot/test_upsert_writes_intake_candidate.py
+def test_record_greet_creates_intake_candidate_not_resume(client, auth_header, db):
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.resume.models import Resume
+
+    r = client.post(
+        "/api/recruit/record-greet",
+        json={"boss_id": "bxRG1", "name": "打招呼候选人",
+              "job_intention": "后端实习", "job_id": None},
+        headers=auth_header,
+    )
+    assert r.status_code == 200
+
+    # IntakeCandidate exists
+    c = db.query(IntakeCandidate).filter_by(boss_id="bxRG1").first()
+    assert c is not None
+    assert c.source == "f3_greet"
+    assert c.intake_status == "collecting"
+
+    # Resume must NOT exist
+    assert db.query(Resume).filter_by(boss_id="bxRG1").first() is None
+```
+
+- [ ] **Step 2: Run test**
+
+```bash
+pytest tests/modules/recruit_bot/test_upsert_writes_intake_candidate.py -v
+```
+
+Expected: FAIL.
+
+- [ ] **Step 3: Modify recruit_bot/service.py**
+
+Locate the function that currently writes `Resume(boss_id=..., greet_status="greeted")`. Change to write `IntakeCandidate(source="f3_greet", ...)` and if `resumes` has a greet-related tracking table, split the concerns (greet_log separate from candidate storage). For brevity assume the current code's `_upsert_resume` becomes `_upsert_intake_candidate`:
+
+```python
+def _upsert_intake_candidate(db, boss_id, name, job_intention, job_id):
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from datetime import datetime, timezone
+
+    c = db.query(IntakeCandidate).filter_by(boss_id=boss_id).first()
+    if c is None:
+        c = IntakeCandidate(
+            boss_id=boss_id, name=name or "",
+            job_intention=job_intention, job_id=job_id,
+            intake_status="collecting", source="f3_greet",
+            intake_started_at=datetime.now(timezone.utc),
+        )
+        db.add(c)
+    else:
+        if name and not c.name:
+            c.name = name
+        if job_intention and not c.job_intention:
+            c.job_intention = job_intention
+    db.commit()
+    return c
+```
+
+Update the route handlers that used to touch `Resume` to call `_upsert_intake_candidate` instead. Keep the "greet usage quota" code (`users.daily_cap`, UserGreetStat or wherever) as-is — that's separate from candidate storage.
+
+- [ ] **Step 4: Fix existing recruit_bot tests**
+
+`tests/modules/recruit_bot/` 里断言 `Resume.greet_status` 的改成断言 `IntakeCandidate` 存在且 `source='f3_greet'`。有独立 greet 日志表的保持不变。
+
+- [ ] **Step 5: Run all**
+
+```bash
+pytest tests/modules/recruit_bot/ -v
+pytest tests/modules/im_intake/ -v
+```
+
+Expected: all PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/modules/recruit_bot/ tests/modules/recruit_bot/
+git commit -m "feat(f5-T12): F3 writes IntakeCandidate (source='f3_greet') instead of Resume"
+```
+
+---
+
+## Task 13: Scheduler default off + config
+
+**Files:**
+- Modify: `app/config.py` — `f4_enabled: bool = False`
+- Modify: `app/main.py` — 启动钩子 gate on `settings.f4_enabled`
+- Test: `tests/modules/im_intake/test_scheduler_disabled_by_default.py`
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+# tests/modules/im_intake/test_scheduler_disabled_by_default.py
+import os
+from importlib import reload
+
+
+def test_f4_enabled_default_false(monkeypatch):
+    monkeypatch.delenv("F4_ENABLED", raising=False)
+    from app import config as cfg
+    reload(cfg)
+    assert cfg.settings.f4_enabled is False
+
+
+def test_main_does_not_start_scheduler_when_disabled(monkeypatch):
+    monkeypatch.setenv("F4_ENABLED", "false")
+    # app.main should not bind intake_scheduler (or it's None)
+    from importlib import reload
+    from app import main
+    reload(main)
+    assert getattr(main, "intake_scheduler", None) is None
+```
+
+- [ ] **Step 2: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_scheduler_disabled_by_default.py -v
+```
+
+Expected: FAIL (default currently true, or scheduler always initialized).
+
+- [ ] **Step 3: Change defaults**
+
+In `app/config.py` Settings:
+```python
+f4_enabled: bool = False
+```
+
+In `app/main.py`, wrap scheduler init:
+```python
+intake_scheduler = None
+if settings.f4_enabled:
+    intake_scheduler = IntakeScheduler(
+        adapter=boss_adapter,
+        service_factory=lambda: IntakeService(...),
+        batch_cap=settings.f4_batch_cap,
+    )
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(intake_scheduler.tick, "interval", minutes=settings.f4_scan_interval_min)
+    scheduler.start()
+```
+
+- [ ] **Step 4: Run test**
+
+```bash
+pytest tests/modules/im_intake/test_scheduler_disabled_by_default.py -v
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add app/config.py app/main.py tests/modules/im_intake/test_scheduler_disabled_by_default.py
+git commit -m "feat(f5-T13): F4_ENABLED default false; scheduler skipped unless explicitly on"
+```
+
+---
+
+## Task 14: 插件 content.js — 聊天页 DOM 抓取
+
+**Files:**
+- Modify: `edge_extension/content.js` — add `scrapeChatPageCandidate()` / `scrapeChatMessages()`
+- Modify: `edge_extension/manifest.json` — `content_scripts.matches` include `https://www.zhipin.com/web/chat/*`
+- Test: Manual DevTools console test + Jest-style vanilla unit test for pure helpers
+
+No automated e2e for DOM — document test procedure. Add **pure** helpers in a separate file so they can be unit-tested:
+
+- Create: `edge_extension/chat_scrape.js` — pure `parseChatFromDOM(rootElement) → {boss_id, name, job_intention, messages[]}`
+- Create: `tests/extension/test_chat_scrape.js` (vitest or jest if configured; else check `frontend/` test setup)
+
+- [ ] **Step 1: Write a fixture-based DOM parser test**
+
+```javascript
+// edge_extension/chat_scrape.test.js (vitest)
+import { parseChatFromDOM } from "./chat_scrape.js";
+import { JSDOM } from "jsdom";
+
+const FIXTURE = `
+<div id="chat-root">
+  <div class="chat-conversation">
+    <div class="user-info">
+      <span class="name">王五</span>
+      <span class="position">前端实习生</span>
+      <span data-boss-id="bxWuWu"></span>
+    </div>
+    <ul class="message-list">
+      <li class="msg-row" data-sender="bxWuWu"><div class="msg-bubble">下周一能到岗</div></li>
+      <li class="msg-row" data-sender="hr1"><div class="msg-bubble">你好</div></li>
+    </ul>
+  </div>
+</div>`;
+
+test("parseChatFromDOM extracts candidate + messages", () => {
+  const dom = new JSDOM(FIXTURE);
+  const parsed = parseChatFromDOM(dom.window.document.getElementById("chat-root"));
+  expect(parsed.boss_id).toBe("bxWuWu");
+  expect(parsed.name).toBe("王五");
+  expect(parsed.job_intention).toBe("前端实习生");
+  expect(parsed.messages).toHaveLength(2);
+  expect(parsed.messages[0]).toMatchObject({sender_id: "bxWuWu", content: "下周一能到岗"});
+});
+```
+
+- [ ] **Step 2: Run test**
+
+```bash
+cd edge_extension && npx vitest run chat_scrape.test.js
+```
+
+Expected: FAIL.
+
+- [ ] **Step 3: Create chat_scrape.js**
+
+```javascript
+// edge_extension/chat_scrape.js
+// Pure DOM parser — selectors may need tuning against real Boss page.
+// Hostnames and class names here are PLACEHOLDERS; update via manual verification step.
+
+export const CHAT_SELECTORS = {
+  root: ".chat-conversation",
+  bossIdAttr: "[data-boss-id]",
+  bossIdField: "data-boss-id",
+  name: ".user-info .name",
+  jobIntention: ".user-info .position",
+  messageList: ".message-list .msg-row",
+  messageSenderAttr: "data-sender",
+  messageContent: ".msg-bubble",
+};
+
+export function parseChatFromDOM(root, sel = CHAT_SELECTORS) {
+  if (!root) return null;
+  const idEl = root.querySelector(sel.bossIdAttr);
+  const boss_id = idEl ? idEl.getAttribute(sel.bossIdField) : "";
+  const name = (root.querySelector(sel.name)?.textContent || "").trim();
+  const job_intention = (root.querySelector(sel.jobIntention)?.textContent || "").trim();
+  const messages = [];
+  root.querySelectorAll(sel.messageList).forEach((row) => {
+    const sender_id = row.getAttribute(sel.messageSenderAttr);
+    const content = (row.querySelector(sel.messageContent)?.textContent || "").trim();
+    if (content) messages.push({ sender_id, content });
+  });
+  return { boss_id, name, job_intention, messages };
+}
+```
+
+- [ ] **Step 4: Run test + add selector verification TODO**
+
+```bash
+npx vitest run edge_extension/chat_scrape.test.js
+```
+
+Expected: PASS.
+
+Add a note in the file: `// TODO: verify CHAT_SELECTORS against live boss.zhipin.com/web/chat/index — DevTools → Elements → right-click → Copy selector`.
+
+- [ ] **Step 5: Manifest — content_scripts match chat page**
+
+Modify `edge_extension/manifest.json`:
+```json
+{
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.zhipin.com/web/geek/recommend*",
+        "https://www.zhipin.com/web/chat/*"
+      ],
+      "js": ["chat_scrape.js", "f3_selectors.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add edge_extension/chat_scrape.js edge_extension/chat_scrape.test.js edge_extension/manifest.json
+git commit -m "feat(f5-T14): chat_scrape.js — pure DOM → candidate+messages parser"
+```
+
+---
+
+## Task 15: 插件 content.js — 聊天页自动化动作
+
+**Files:**
+- Modify: `edge_extension/content.js` — `typeAndSendChatMessage(text)`, `clickRequestResumeButton()`, `checkPdfReceived()`
+
+浏览器页面自动化：往输入框打字、点发送、点"求简历"按钮。用已有的 `simulateHumanClick` + 随机延迟。
+
+- [ ] **Step 1: Add functions to content.js**
+
+```javascript
+// Add to content.js (after existing F3 helpers)
+
+async function typeAndSendChatMessage(text) {
+  const input = document.querySelector(".chat-input textarea, .chat-input [contenteditable=true]");
+  if (!input) return { ok: false, reason: "input not found" };
+  input.focus();
+  // type chars one by one with jitter (anti-bot)
+  if (input.tagName === "TEXTAREA") {
+    input.value = "";
+    for (const ch of text) {
+      input.value += ch;
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: ch }));
+      await sleep(20 + Math.random() * 60);
+    }
+  } else {
+    input.textContent = text;
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+  }
+  await sleep(200 + Math.random() * 300);
+  const sendBtn = document.querySelector(
+    ".chat-input .send-btn, button[data-action=send], .chat-action-send"
+  );
+  if (!sendBtn) return { ok: false, reason: "send button not found" };
+  await simulateHumanClick(sendBtn);
+  return { ok: true };
+}
+
+async function clickRequestResumeButton() {
+  const btn = Array.from(document.querySelectorAll("button, a")).find(
+    (el) => /求简历|索要简历/.test(el.textContent || "")
+  );
+  if (!btn) return { ok: false, reason: "请求简历按钮未找到" };
+  await simulateHumanClick(btn);
+  return { ok: true };
+}
+
+async function checkPdfReceived(bossId) {
+  // lightweight: scan the message list for an attachment card belonging to the candidate
+  const attachRows = document.querySelectorAll(".msg-row.attachment, .attachment-card");
+  for (const el of attachRows) {
+    const fromId = el.getAttribute("data-sender");
+    if (fromId === bossId) {
+      const link = el.querySelector("a[href*='.pdf'], a[download]");
+      if (link) return { present: true, url: link.href };
+    }
+  }
+  return { present: false };
+}
+```
+
+- [ ] **Step 2: Selectors note**
+
+Add to file top: `// TODO: selectors .chat-input/.send-btn/.attachment-card are placeholders — verify via DevTools on live page`.
+
+No unit test for this step (requires live DOM); tested in Task 18 manual e2e.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add edge_extension/content.js
+git commit -m "feat(f5-T15): content.js — typeAndSend/clickRequestResume/checkPdfReceived"
+```
+
+---
+
+## Task 16: 插件 orchestrator — auto takeover on deep link
+
+**Files:**
+- Modify: `edge_extension/content.js` — `runIntakeOrchestrator()`；加 URL 参数识别
+
+流程：
+1. content.js 启动时检查 `location.search.get('intake_candidate_id')`
+2. 若有，等聊天页加载完 → `parseChatFromDOM` → POST `/api/intake/collect-chat`
+3. 根据 `next_action.type`：
+   - `send_hard` / `send_soft` → `typeAndSendChatMessage(text)` → POST `/ack-sent`
+   - `request_pdf` → `clickRequestResumeButton()` → POST `/ack-sent`
+   - `complete` / `mark_pending_human` / `abandon` → 显示通知 badge，关闭
+   - `wait_pdf` → 显示通知 "等待候选人发简历"
+4. 在页面加浮层气泡显示当前状态（`Intake: ready / sending / done`）
+
+- [ ] **Step 1: Add orchestrator to content.js**
+
+```javascript
+function getQueryParam(key) {
+  const p = new URL(location.href).searchParams;
+  return p.get(key);
+}
+
+async function postJSON(path, body) {
+  const token = await getAuthToken(); // existing helper
+  const base = await getServerUrl();   // existing helper
+  const r = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`${path} → ${r.status}`);
+  return r.json();
+}
+
+function showIntakeToast(msg, kind = "info") {
+  let el = document.getElementById("intake-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "intake-toast";
+    el.style.cssText = "position:fixed;top:20px;right:20px;z-index:99999;background:#fff;"
+      + "border:1px solid #00b38a;padding:12px 16px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);"
+      + "font-size:13px;max-width:300px;";
+    document.body.appendChild(el);
+  }
+  el.textContent = `【采集】${msg}`;
+  el.style.borderColor = kind === "error" ? "#ff4d4f" : kind === "done" ? "#52c41a" : "#00b38a";
+}
+
+async function runIntakeOrchestrator() {
+  const cid = getQueryParam("intake_candidate_id");
+  if (!cid) return;
+
+  showIntakeToast("正在分析聊天记录...");
+  await waitFor(() => document.querySelector(CHAT_SELECTORS.root), 10000);
+  const root = document.querySelector(CHAT_SELECTORS.root);
+  const parsed = parseChatFromDOM(root);
+  if (!parsed || !parsed.boss_id) {
+    showIntakeToast("抓取聊天失败，请检查页面", "error");
+    return;
+  }
+
+  const pdf = await checkPdfReceived(parsed.boss_id);
+  const resp = await postJSON("/api/intake/collect-chat", {
+    boss_id: parsed.boss_id,
+    name: parsed.name,
+    job_intention: parsed.job_intention,
+    messages: parsed.messages,
+    pdf_present: pdf.present,
+    pdf_url: pdf.url || null,
+  });
+
+  const action = resp.next_action;
+  showIntakeToast(`下一步: ${action.type}`);
+
+  if (action.type === "send_hard" || action.type === "send_soft") {
+    const r = await typeAndSendChatMessage(action.text);
+    if (r.ok) {
+      await postJSON(`/api/intake/candidates/${resp.candidate_id}/ack-sent`,
+                     { action_type: action.type, delivered: true });
+      showIntakeToast("问题已发送", "done");
+    } else {
+      showIntakeToast(`发送失败: ${r.reason}`, "error");
+    }
+  } else if (action.type === "request_pdf") {
+    const r = await clickRequestResumeButton();
+    if (r.ok) {
+      await postJSON(`/api/intake/candidates/${resp.candidate_id}/ack-sent`,
+                     { action_type: "request_pdf", delivered: true });
+      showIntakeToast("已点击求简历", "done");
+    } else {
+      showIntakeToast(`按钮未找到: ${r.reason}`, "error");
+    }
+  } else if (action.type === "wait_pdf") {
+    showIntakeToast("等待候选人发送简历", "info");
+  } else if (action.type === "complete") {
+    showIntakeToast(`采集完成 → 已进入简历库`, "done");
+  } else if (action.type === "mark_pending_human") {
+    showIntakeToast("已标记为人工兜底", "done");
+  } else if (action.type === "abandon") {
+    showIntakeToast("候选人超时，已放弃", "error");
+  }
+}
+
+// Run on page load + on SPA URL changes
+if (location.host.includes("zhipin.com") && location.pathname.includes("/web/chat")) {
+  setTimeout(() => runIntakeOrchestrator(), 1500);
+  let lastHref = location.href;
+  setInterval(() => {
+    if (location.href !== lastHref) {
+      lastHref = location.href;
+      setTimeout(() => runIntakeOrchestrator(), 1500);
+    }
+  }, 1000);
+}
+
+function waitFor(predicate, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const start = Date.now();
+    const tick = () => {
+      if (predicate()) return resolve(true);
+      if (Date.now() - start > timeoutMs) return reject(new Error("timeout"));
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add edge_extension/content.js
+git commit -m "feat(f5-T16): plugin auto-orchestrator — reads intake_candidate_id query, drives collect-chat + next action + ack"
+```
+
+---
+
+## Task 17: 插件 popup 按钮 — 采集当前聊天候选人（手动触发）
+
+**Files:**
+- Modify: `edge_extension/popup.html` — 新 section
+- Modify: `edge_extension/popup.js` — 绑按钮
+
+用户不走 `/intake` 页面、已经自己点进了一个聊天，想临时触发一次采集：popup 按钮直接让当前 tab 的 content script 跑一次 `runIntakeOrchestrator`（不带 `intake_candidate_id`，让它先 POST collect-chat 用 boss_id 去查/建候选人）。
+
+Orchestrator 稍微改一下：允许无 `cid` 参数时继续跑（candidate_id 由 collect-chat 返回）。
+
+- [ ] **Step 1: Modify orchestrator to work without query param**
+
+In `content.js`, change:
+```javascript
+const cid = getQueryParam("intake_candidate_id");
+if (!cid) return;
+```
+to:
+```javascript
+const fromDeepLink = !!getQueryParam("intake_candidate_id");
+const manualTrigger = window.__intakeManualTrigger === true;
+if (!fromDeepLink && !manualTrigger) return;
+window.__intakeManualTrigger = false;
+```
+
+And expose a trigger via message:
+```javascript
+chrome.runtime.onMessage.addListener((req, sender, sendResponse) => {
+  if (req.type === "INTAKE_COLLECT_CURRENT_CHAT") {
+    window.__intakeManualTrigger = true;
+    runIntakeOrchestrator().then(() => sendResponse({ ok: true }))
+                           .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true; // async
+  }
+});
+```
+
+- [ ] **Step 2: popup.html — new section**
+
+Insert above "自动打招呼" section:
+
+```html
+<div class="section" style="padding-top: 12px;">
+  <div class="section-title">F4 单人采集（测试）</div>
+  <button class="btn btn-primary" id="btnCollectSingleChat" style="background:#1677ff;">
+    采集当前聊天候选人
+  </button>
+  <div style="font-size:11px;color:#999;margin-top:4px;">
+    需在 boss.zhipin.com 聊天页点此按钮
+  </div>
+</div>
+```
+
+- [ ] **Step 3: popup.js — wire button**
+
+Append:
+```javascript
+document.getElementById("btnCollectSingleChat").addEventListener("click", async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url?.includes("zhipin.com/web/chat")) {
+    showResult("请先在 Boss 直聘聊天页打开候选人对话", "error");
+    return;
+  }
+  showResult("正在采集...");
+  chrome.tabs.sendMessage(tab.id, { type: "INTAKE_COLLECT_CURRENT_CHAT" }, (resp) => {
+    if (chrome.runtime.lastError) {
+      showResult(`失败: ${chrome.runtime.lastError.message}`, "error");
+    } else if (resp?.ok) {
+      showResult("已触发采集，查看页面右上角提示", "success");
+    } else {
+      showResult(`采集失败: ${resp?.error || "未知错误"}`, "error");
+    }
+  });
+});
+```
+
+- [ ] **Step 4: Manual test**
+
+Load extension in Edge → open `https://www.zhipin.com/web/chat/...` with a real candidate → open popup → click "采集当前聊天候选人" → verify toast appears on page → verify `/api/intake/candidates` backend has new row.
+
+Document result in PR description.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add edge_extension/popup.html edge_extension/popup.js edge_extension/content.js
+git commit -m "feat(f5-T17): popup button — manually trigger intake on current chat tab"
+```
+
+---
+
+## Task 18: 前端 `/intake` — 开始沟通按钮
+
+**Files:**
+- Modify: `frontend/src/api/intake.js` — `startConversation(id)`
+- Modify: `frontend/src/views/Intake.vue` — 行操作加按钮
+- Test: `frontend/tests/views/Intake.spec.js` (vitest)
+
+- [ ] **Step 1: Add API client**
+
+In `frontend/src/api/intake.js`:
+```javascript
+export async function startConversation(candidateId) {
+  const r = await apiPost(`/api/intake/candidates/${candidateId}/start-conversation`);
+  return r; // { candidate_id, boss_id, deep_link }
+}
+```
+
+- [ ] **Step 2: Add button in Intake.vue**
+
+In the row actions column template:
+```vue
+<el-button size="small" type="primary" @click="handleStartConversation(row)">
+  开始沟通
+</el-button>
+```
+
+Method:
+```javascript
+async function handleStartConversation(row) {
+  const resp = await startConversation(row.resume_id);  // candidate id
+  window.open(resp.deep_link, "_blank");
+  ElMessage.info("已跳转 Boss 直聘，插件将自动接管");
+}
+```
+
+Import:
+```javascript
+import { startConversation } from "@/api/intake";
+import { ElMessage } from "element-plus";
+```
+
+- [ ] **Step 3: Write vitest for button**
+
+```javascript
+// frontend/tests/views/Intake.spec.js
+import { mount } from "@vue/test-utils";
+import Intake from "@/views/Intake.vue";
+import * as api from "@/api/intake";
+
+test("clicking 开始沟通 calls startConversation and opens deep_link", async () => {
+  const spy = vi.spyOn(api, "startConversation").mockResolvedValue({
+    candidate_id: 42, boss_id: "bx42",
+    deep_link: "https://www.zhipin.com/web/chat/index?id=bx42&intake_candidate_id=42",
+  });
+  const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+
+  const w = mount(Intake, { /* mock store + candidates */ });
+  await w.find("[data-testid=start-conv-btn]").trigger("click");
+
+  expect(spy).toHaveBeenCalledWith(42);
+  expect(openSpy).toHaveBeenCalledWith(
+    expect.stringContaining("intake_candidate_id=42"), "_blank",
+  );
+});
+```
+
+- [ ] **Step 4: Run**
+
+```bash
+cd frontend && pnpm test
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add frontend/src/api/intake.js frontend/src/views/Intake.vue frontend/tests/views/Intake.spec.js
+git commit -m "feat(f5-T18): Intake.vue 开始沟通按钮 → window.open(deep_link)"
+```
+
+---
+
+## Task 19: 前端简历库语义说明 + 页面标签
+
+**Files:**
+- Modify: `frontend/src/views/Resumes.vue`
+
+简历库页上方加说明条：`仅显示已完成信息采集的候选人。正在采集中的候选人见 /intake。`
+
+- [ ] **Step 1: Add banner**
+
+In Resumes.vue template top:
+```vue
+<el-alert type="info" :closable="false" show-icon
+  title="简历库语义"
+  description="本列表仅显示信息采集完成（可安排面试）的候选人。正在采集中的候选人请到 /intake 查看。"
+  style="margin-bottom: 12px;" />
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add frontend/src/views/Resumes.vue
+git commit -m "docs(f5-T19): Resumes.vue 顶部说明栏 — 仅显示采集完成候选人"
+```
+
+---
+
+## Task 20: e2e 手动测试 + CHANGELOG
+
+**Files:**
+- Modify: `CHANGELOG.md`
+- Create: `docs/f5-manual-intake-qa.md` — 手工测试步骤
+
+- [ ] **Step 1: e2e 手工走一遍**
+
+1. `alembic upgrade head` → 0012 应用
+2. 启动后端 `dev.bat` (env `F4_ENABLED=false`)，启动前端
+3. 装插件、登录
+4. 浏览器登录 Boss 直聘 HR 小号，打开一个真实候选人聊天
+5. 点 popup "采集当前聊天候选人" → 验证 toast 出现、`/intake` 列表出现该候选人
+6. 打开 `/intake` → 点该行"开始沟通" → 新 tab 到 Boss 聊天 → 插件自动发硬性问题 → toast "问题已发送"
+7. HR 替身回复 → 再次点"开始沟通" → 应解析 slot、若缺 PDF 则自动点求简历按钮
+8. PDF 到后 → 再次触发 → 应走 send_soft / complete → 在 `/resumes` 看到新简历行
+
+记录实际结果、DOM selector 调整到 `chat_scrape.js`。
+
+- [ ] **Step 2: CHANGELOG**
+
+```markdown
+## [Unreleased] — 2026-04-22
+
+### Added — F5: 单人手动采集模式
+- 新表 `intake_candidates` 专装采集中候选人；`resumes` 语义收紧为"采集完成可面试候选人"
+- F3 打招呼成功现在写入 `intake_candidates` (source=f3_greet)
+- `POST /api/intake/collect-chat` — 插件提交聊天快照，后端解析 slot 返回 NextAction
+- `POST /api/intake/candidates/{id}/start-conversation` — 返回 Boss 聊天 deep link
+- `POST /api/intake/candidates/{id}/ack-sent` — 插件回报已发送
+- 插件 popup "采集当前聊天候选人" 按钮（测试入口）
+- 插件 content.js 监听 `intake_candidate_id` URL 参数自动接管聊天页
+- `/intake` 行加 "开始沟通" 按钮，跳 Boss 直聘让插件接管
+- `promote_to_resume()` — 候选人信息齐全时自动搬到 resumes 表
+
+### Changed
+- `IntakeService.process_one` 拆分为 `analyze_chat` + `record_asked` + `apply_terminal`
+- `decide_next_action` 抽成纯函数便于测试
+- `intake_slots.resume_id` → `intake_slots.candidate_id`（迁移 0012 自动搬数据）
+- F4 APScheduler 默认关闭（`F4_ENABLED=false`），代码保留便于日后启用
+```
+
+- [ ] **Step 3: QA 文档**
+
+Create `docs/f5-manual-intake-qa.md` with numbered steps matching Step 1 above, plus screenshots placeholder.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add CHANGELOG.md docs/f5-manual-intake-qa.md
+git commit -m "docs(f5-T20): CHANGELOG + manual QA checklist"
+```
+
+---
+
+## Self-Review Checklist
+
+- [ ] Spec coverage
+  - [ ] 方案 A 新表分家 — Task 1, 2
+  - [ ] F3 写入 intake_candidates — Task 12
+  - [ ] 插件 "采集当前聊天" 按钮 (b 抓+分析+发问) — Task 14, 15, 16, 17
+  - [ ] `/intake` "开始沟通" + HR 自己浏览器路线 — Task 9, 16, 18
+  - [ ] scheduler 保留默认关闭 — Task 13
+  - [ ] 完整后搬 resumes — Task 4
+- [ ] No placeholders except clearly marked `TODO: verify selectors` which are unavoidable (live DOM required)
+- [ ] Types consistent: `candidate_id` used throughout after Task 2; `NextAction.type` literal consistent
+
+---
+
+## 风险与注意事项
+
+1. **DOM 选择器**（`chat_scrape.js` / `content.js`）基于占位猜测。Task 20 e2e 必须在真实页面调整并回填。
+2. **CORS / Auth**：content.js fetch 后端要能跨域 + 带 token。manifest v3 要 `host_permissions` 覆盖后端地址。
+3. **迁移 0012 数据搬家**：生产环境先备份 DB。已合并到 main 的候选人（`resumes.intake_status != 'complete'`）会被挪走。
+4. **F3 既有行为**：Task 12 改写后，已合并代码里 recruit_bot 依赖 `Resume.boss_id` / `greet_status` 的路径必须全部换到 IntakeCandidate。漏一处会导致 F3 打招呼失败。
+5. **合规**：插件在用户本机跑，用 HR 真实 session。账号封禁风险由 HR 自行承担（同 F3 现状）。
+6. **ack 端点状态重算**：Task 10 里 ack 处理重新跑 `analyze_chat` 恢复上次 action，消息为空。假设两次调用间状态未变。若 HR 期间手动改了 slot 可能状态不匹配（409 状态码告知）。
+
+---
+
+## Execution Handoff
+
+**Plan complete and saved to `docs/superpowers/plans/2026-04-22-f5-manual-intake-plan.md`. Two execution options:**
+
+**1. Subagent-Driven (recommended)** — 每 task 派新 subagent，两阶段 review，增量推进
+**2. Inline Execution** — 本会话内批量执行，checkpoint 审阅
+
+**你选哪个？**

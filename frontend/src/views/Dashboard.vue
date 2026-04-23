@@ -119,9 +119,9 @@ onMounted(async () => {
   // Fetch stats（4 个统计并行取，首屏更快）
   try {
     const [all, passed, rejected, interviews] = await Promise.all([
-      resumeApi.list({ page: 1, page_size: 1 }),
-      resumeApi.list({ page: 1, page_size: 1, status: 'passed' }),
-      resumeApi.list({ page: 1, page_size: 1, status: 'rejected' }),
+      resumeApi.list({ page: 1, page_size: 1, intake_status: 'complete' }),
+      resumeApi.list({ page: 1, page_size: 1, status: 'passed', intake_status: 'complete' }),
+      resumeApi.list({ page: 1, page_size: 1, status: 'rejected', intake_status: 'complete' }),
       schedulingApi.listInterviews({ status: 'scheduled' }),
     ])
     stats.value.totalResumes = all.total

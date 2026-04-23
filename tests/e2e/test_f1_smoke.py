@@ -154,7 +154,7 @@ def env(tmp_path, monkeypatch):
     cfg = Config("migrations/alembic.ini")
     cfg.set_main_option("script_location", "migrations")
     cfg.set_main_option("sqlalchemy.url", url)
-    command.upgrade(cfg, "0006")
+    command.upgrade(cfg, "head")
 
     engine = sa.create_engine(url, connect_args={"check_same_thread": False})
     factory = sessionmaker(bind=engine)

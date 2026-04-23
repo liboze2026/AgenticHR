@@ -16,6 +16,8 @@ class SlotOut(BaseModel):
     ask_count: int = 0
     asked_at: datetime | None = None
     answered_at: datetime | None = None
+    msg_sent_at: datetime | None = None
+    phrase_timestamps: list | None = None
     last_ask_text: str | None = None
     source: str | None = None
     question_meta: dict | None = None
@@ -31,6 +33,7 @@ class CandidateOut(BaseModel):
     progress_done: int
     progress_total: int
     last_activity_at: datetime | None = None
+    promoted_resume_id: int | None = None
 
 
 class CandidateDetailOut(CandidateOut):

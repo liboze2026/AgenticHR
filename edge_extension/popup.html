@@ -5,274 +5,378 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>招聘助手</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --primary: #00b38a;
+      --primary-dark: #00a67c;
+      --primary-light: #e6f7f2;
+      --danger: #ff4d4f;
+      --warn: #faad14;
+      --text: #222;
+      --text-muted: #666;
+      --text-faint: #999;
+      --border: #e8e8e8;
+      --bg: #f5f7fa;
+      --card: #fff;
     }
+
+    html, body { background: var(--bg); }
 
     body {
       width: 360px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-      background: #f5f7fa;
-      color: #333;
+      max-height: 600px;
+      overflow-y: auto;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.5;
     }
 
-    .header {
-      background: linear-gradient(135deg, #00b38a, #00a67c);
-      color: #fff;
-      padding: 16px 20px;
+    /* ── Top bar ────────────────────────────────────────── */
+    .topbar {
       display: flex;
       align-items: center;
       gap: 10px;
-    }
-
-    .header h1 {
-      font-size: 16px;
-      font-weight: 600;
-    }
-
-    .header .version {
-      font-size: 11px;
-      opacity: 0.8;
-      margin-left: auto;
-    }
-
-    .status-bar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 20px;
-      background: #fff;
-      border-bottom: 1px solid #e8e8e8;
-      font-size: 13px;
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #ccc;
-      flex-shrink: 0;
-    }
-
-    .status-dot.connected {
-      background: #52c41a;
-    }
-
-    .status-dot.error {
-      background: #ff4d4f;
-    }
-
-    .status-text {
-      color: #666;
-    }
-
-    .section {
-      padding: 16px 20px;
-    }
-
-    .section-title {
-      font-size: 12px;
-      color: #999;
-      margin-bottom: 8px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    .input-group {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-
-    .input-group input {
-      flex: 1;
-      padding: 8px 12px;
-      border: 1px solid #d9d9d9;
-      border-radius: 6px;
-      font-size: 13px;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .input-group input:focus {
-      border-color: #00b38a;
-    }
-
-    .btn {
-      padding: 8px 16px;
-      border: none;
-      border-radius: 6px;
-      font-size: 13px;
-      cursor: pointer;
-      transition: all 0.2s;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      white-space: nowrap;
-    }
-
-    .btn:hover {
-      opacity: 0.9;
-      transform: translateY(-1px);
-    }
-
-    .btn:active {
-      transform: translateY(0);
-    }
-
-    .btn:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-    }
-
-    .btn-primary {
-      background: #00b38a;
+      padding: 10px 14px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
       color: #fff;
-      width: 100%;
-      padding: 10px;
-      font-size: 14px;
-      margin-bottom: 8px;
     }
-
-    .btn-secondary {
-      background: #e6f7f2;
-      color: #00a67c;
-      width: 100%;
-      padding: 10px;
-      font-size: 14px;
-      margin-bottom: 8px;
+    .topbar .brand { font-size: 13px; font-weight: 600; letter-spacing: 0.3px; }
+    .topbar .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: rgba(255,255,255,0.6);
     }
+    .topbar .status-dot.connected { background: #b7eb8f; box-shadow: 0 0 6px #b7eb8f; }
+    .topbar .status-dot.error { background: #ff7875; }
+    .topbar .spacer { flex: 1; }
+    .topbar .user-pill {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 8px;
+      background: rgba(255,255,255,0.18);
+      border-radius: 10px;
+      font-size: 11px;
+      cursor: pointer;
+      max-width: 120px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .topbar .icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 24px; height: 24px; border-radius: 50%;
+      background: rgba(255,255,255,0.18);
+      color: #fff; border: 0; cursor: pointer;
+      font-size: 13px;
+    }
+    .topbar .icon-btn:hover { background: rgba(255,255,255,0.28); }
 
-    .btn-outline {
-      background: #fff;
-      color: #666;
-      border: 1px solid #d9d9d9;
+    /* ── Context strip ──────────────────────────────────── */
+    .context-strip {
+      padding: 8px 14px;
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .context-strip .pin { color: var(--primary); }
+
+    /* ── Cards ─────────────────────────────────────────── */
+    .stack { padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .card.primary-card {
+      border-color: var(--primary);
+      box-shadow: 0 2px 8px rgba(0,179,138,0.12);
+    }
+    .card.dimmed { opacity: 0.6; }
+    .card-title {
       font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 8px;
+      display: flex; align-items: center; gap: 6px;
     }
+    .card-title .tag {
+      font-size: 10px;
+      font-weight: 500;
+      padding: 1px 6px;
+      border-radius: 8px;
+      background: var(--primary-light);
+      color: var(--primary-dark);
+    }
+    .card-hint { font-size: 11px; color: var(--text-faint); margin-top: 6px; }
 
+    /* ── Form bits ─────────────────────────────────────── */
+    .row { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+    .row:last-child { margin-bottom: 0; }
+    .label { font-size: 11px; color: var(--text-muted); min-width: 36px; }
+    .field {
+      flex: 1;
+      padding: 7px 10px;
+      border: 1px solid #d9d9d9;
+      border-radius: 6px;
+      font-size: 12px;
+      outline: none;
+      background: #fff;
+    }
+    .field:focus { border-color: var(--primary); }
+    select.field { cursor: pointer; }
+
+    /* ── Buttons ───────────────────────────────────────── */
+    .btn {
+      padding: 8px 12px;
+      border: 0;
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      transition: filter 0.15s, transform 0.1s;
+      white-space: nowrap;
+      font-family: inherit;
+    }
+    .btn:hover:not(:disabled) { filter: brightness(1.05); }
+    .btn:active:not(:disabled) { transform: translateY(1px); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-danger  { background: var(--danger); color: #fff; }
+    .btn-ghost   { background: #fff; color: var(--text-muted); border: 1px solid #d9d9d9; }
+    .btn-link    { background: transparent; color: var(--primary); padding: 2px 4px; font-size: 11px; }
+    .btn.full    { width: 100%; padding: 10px; font-size: 13px; font-weight: 500; }
+
+    /* ── Usage line ────────────────────────────────────── */
+    .usage {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .usage .num { color: var(--text); font-weight: 600; }
+
+    /* ── Stats (run progress) ──────────────────────────── */
+    .stats {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 8px;
+      padding: 6px 8px;
+      background: var(--primary-light);
+      border-radius: 4px;
+      min-height: 0;
+    }
+    .stats:empty { display: none; }
+
+    /* ── Collapsibles ──────────────────────────────────── */
+    .collapsible > .head {
+      display: flex; align-items: center; justify-content: space-between;
+      cursor: pointer;
+      font-size: 12px;
+      color: var(--text-muted);
+      user-select: none;
+    }
+    .collapsible > .head .caret { transition: transform 0.2s; display: inline-block; }
+    .collapsible.open > .head .caret { transform: rotate(90deg); }
+    .collapsible > .body { display: none; margin-top: 10px; }
+    .collapsible.open > .body { display: block; }
+
+    .other-list { display: flex; flex-direction: column; gap: 8px; }
+    .other-item {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fafafa;
+    }
+    .other-item .row-top {
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 12px; color: var(--text);
+    }
+    .other-item .ctx { font-size: 10px; color: var(--text-faint); }
+
+    /* ── Result area ───────────────────────────────────── */
     .result-area {
       background: #fff;
-      border: 1px solid #e8e8e8;
+      border: 1px solid var(--border);
       border-radius: 6px;
-      padding: 12px;
-      min-height: 80px;
-      max-height: 200px;
+      padding: 10px;
+      min-height: 48px;
+      max-height: 220px;
       overflow-y: auto;
-      font-size: 12px;
-      color: #666;
+      font-size: 11px;
+      color: var(--text-muted);
       line-height: 1.6;
       white-space: pre-wrap;
       word-break: break-all;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
     }
+    .result-area.success { border-color: #b7eb8f; background: #f6ffed; color: #389e0d; }
+    .result-area.error   { border-color: #ffa39e; background: #fff2f0; color: var(--danger); }
 
-    .result-area.success {
-      border-color: #b7eb8f;
-      background: #f6ffed;
-      color: #52c41a;
+    /* ── Settings panel (slide-over) ───────────────────── */
+    .settings-panel {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      transform: translateX(100%);
+      transition: transform 0.25s ease;
+      z-index: 10;
+      display: flex; flex-direction: column;
     }
-
-    .result-area.error {
-      border-color: #ffa39e;
-      background: #fff2f0;
-      color: #ff4d4f;
+    .settings-panel.open { transform: translateX(0); }
+    .settings-header {
+      padding: 10px 14px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+      color: #fff;
+      display: flex; align-items: center; gap: 10px;
+      font-size: 13px; font-weight: 600;
     }
+    .settings-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
 
     .footer {
       text-align: center;
-      padding: 12px;
-      font-size: 11px;
-      color: #bbb;
-      border-top: 1px solid #e8e8e8;
+      padding: 8px;
+      font-size: 10px;
+      color: var(--text-faint);
+      border-top: 1px solid var(--border);
     }
+
+    /* ── Utility ───────────────────────────────────────── */
+    .hidden { display: none !important; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <h1>招聘助手 - Boss直聘</h1>
-    <span class="version">v1.0.0</span>
-  </div>
 
-  <div class="status-bar">
+  <!-- ═════ Top bar ═════ -->
+  <div class="topbar">
     <span class="status-dot" id="statusDot"></span>
-    <span class="status-text" id="statusText">未连接</span>
+    <span class="brand">招聘助手</span>
+    <span class="spacer"></span>
+    <span id="userSection" class="hidden">
+      <span class="user-pill" id="userPill" title="点击退出">
+        <span id="displayUser">用户</span>
+        <button id="btnLogout" class="btn btn-link" style="color:#fff;padding:0 2px;">退出</button>
+      </span>
+    </span>
+    <button class="icon-btn" id="btnOpenSettings" title="设置">⚙</button>
   </div>
 
-  <div class="section">
-    <div class="section-title">服务器设置</div>
-    <div class="input-group">
-      <input type="text" id="serverUrl" placeholder="http://127.0.0.1:8000">
-      <button class="btn btn-outline" id="btnTestConnection">测试连接</button>
+  <!-- ═════ Context strip ═════ -->
+  <div class="context-strip">
+    <span class="pin">📍</span>
+    <span id="contextLabel">检测中…</span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="statusText" style="font-size:10px;color:var(--text-faint);">未连接</span>
+  </div>
+
+  <!-- ═════ Main stack ═════ -->
+  <div class="stack">
+
+    <!-- F3 推荐牛人 -->
+    <div class="card" id="cardF3" data-ctx="recommend">
+      <div class="card-title">
+        <span>🎯 F3 推荐牛人自动打招呼</span>
+        <span class="tag" id="tagF3">推荐牛人页</span>
+      </div>
+      <div class="row">
+        <span class="label">岗位</span>
+        <select id="recruitJobSelect" class="field">
+          <option value="">-- 选择岗位 --</option>
+        </select>
+      </div>
+      <div class="usage">
+        今日 <span class="num" id="usageUsed">0</span> / <span class="num" id="usageCap">0</span>
+        <a href="#" id="editCap" class="btn btn-link">改配额</a>
+      </div>
+      <button class="btn btn-primary full" id="btnRecruitStart">▶ 开始自动打招呼</button>
+      <div class="stats" id="recruitStats"></div>
+      <button class="btn btn-danger full" id="btnPause" style="display:none;margin-top:8px;">⏸ 暂停</button>
+    </div>
+
+    <!-- F4 聊天候选人 -->
+    <div class="card" id="cardF4" data-ctx="chat">
+      <div class="card-title">
+        <span>💬 F4 单聊候选人采集</span>
+        <span class="tag" id="tagF4">聊天页</span>
+      </div>
+      <button class="btn btn-primary full" id="btnCollectSingleChat">采集当前聊天候选人</button>
+      <div class="card-hint">在 boss.zhipin.com 聊天页打开候选人对话后使用。LLM 抽取姓名/联系方式/意向等。</div>
+    </div>
+
+    <!-- 消息列表批量组（求简历 + 批量采集） -->
+    <div class="card" id="cardList" data-ctx="list">
+      <div class="card-title">
+        <span>📋 消息列表批量操作</span>
+        <span class="tag" id="tagList">消息列表</span>
+      </div>
+      <button class="btn btn-primary full" id="btnAutoGreet">对新招呼批量求简历</button>
+      <button class="btn btn-primary full" id="btnBatchCollect" style="margin-top:6px;background:#13a47e;">批量采集已求到简历</button>
+      <div class="card-hint">先"求简历"→对方发简历→再"批量采集"入库。</div>
+    </div>
+
+    <!-- 详情页单采 -->
+    <div class="card" id="cardDetail" data-ctx="detail">
+      <div class="card-title">
+        <span>📄 详情页单采</span>
+        <span class="tag" id="tagDetail">简历详情</span>
+      </div>
+      <button class="btn btn-primary full" id="btnCollect">采集当前页面简历</button>
+      <div class="card-hint">打开候选人简历详情页后使用。</div>
+    </div>
+
+    <!-- 日志 -->
+    <div class="card collapsible" id="logCard">
+      <div class="head">
+        <span>▸ 日志 <span id="logHint" style="color:var(--text-faint);font-size:10px;"></span></span>
+        <span class="caret">▸</span>
+      </div>
+      <div class="body">
+        <div class="result-area" id="resultArea">等待操作…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">Boss 直聘简历采集助手</div>
+
+  <!-- ═════ Settings slide-over ═════ -->
+  <div class="settings-panel" id="settingsPanel">
+    <div class="settings-header">
+      <button class="icon-btn" id="btnCloseSettings" title="返回">←</button>
+      <span>设置</span>
+    </div>
+    <div class="settings-body">
+
+      <div class="card">
+        <div class="card-title">🔗 服务器</div>
+        <div class="row">
+          <input type="text" id="serverUrl" class="field" placeholder="http://127.0.0.1:8000">
+          <button class="btn btn-ghost" id="btnTestConnection">测试</button>
+        </div>
+        <div class="card-hint"><span id="statusTextFull">未连接</span></div>
+      </div>
+
+      <div class="card" id="loginSection">
+        <div class="card-title">🔐 登录</div>
+        <div class="row">
+          <input type="text" id="loginUsername" class="field" placeholder="用户名">
+        </div>
+        <div class="row">
+          <input type="password" id="loginPassword" class="field" placeholder="密码">
+        </div>
+        <button class="btn btn-primary full" id="btnLogin">登录</button>
+      </div>
+
+      <div class="card" id="userSettingsSection" style="display:none;">
+        <div class="card-title">👤 账号</div>
+        <div class="row" style="justify-content:space-between;">
+          <span style="font-size:12px;">已登录为 <b id="displayUser2">—</b></span>
+          <button class="btn btn-ghost" id="btnLogoutFromSettings">退出登录</button>
+        </div>
+      </div>
+
     </div>
   </div>
-
-  <!-- 登录区域 -->
-  <div class="section" id="loginSection" style="display:none;">
-    <div class="section-title">登录</div>
-    <div class="input-group">
-      <input type="text" id="loginUsername" placeholder="用户名">
-    </div>
-    <div class="input-group">
-      <input type="password" id="loginPassword" placeholder="密码">
-    </div>
-    <button class="btn btn-primary" id="btnLogin">登录</button>
-  </div>
-
-  <!-- 已登录用户信息 -->
-  <div class="section" id="userSection" style="display:none; padding-bottom:0;">
-    <div style="display:flex;align-items:center;justify-content:space-between;">
-      <span style="font-size:13px;color:#333;">已登录：<b id="displayUser"></b></span>
-      <button class="btn btn-outline" id="btnLogout" style="padding:4px 10px;font-size:11px;">退出</button>
-    </div>
-  </div>
-
-  <div class="section" style="padding-top: 12px;">
-    <div class="section-title">F4 单人采集（测试）</div>
-    <button class="btn btn-primary" id="btnCollectSingleChat" style="background:#1677ff;">
-      采集当前聊天候选人
-    </button>
-    <div style="font-size:11px;color:#999;margin-top:4px;">
-      需在 boss.zhipin.com 聊天页点此按钮
-    </div>
-  </div>
-
-  <div class="section" style="padding-top: 0;">
-    <div class="section-title">F3 推荐牛人自动打招呼</div>
-    <select id="recruitJobSelect" style="width:100%;padding:8px;border:1px solid #d9d9d9;border-radius:6px;margin-bottom:8px;">
-      <option value="">-- 选择岗位 --</option>
-    </select>
-    <div style="font-size:12px;color:#666;margin-bottom:8px;">
-      今日已打: <span id="usageUsed">0</span> / <span id="usageCap">1000</span>
-      <a href="#" id="editCap" style="color:#00b38a;margin-left:8px;">修改</a>
-    </div>
-    <button class="btn btn-primary" id="btnRecruitStart" style="background:#00b38a;">开始自动打招呼</button>
-    <div id="recruitStats" style="font-size:12px;color:#666;margin-top:6px;"></div>
-  </div>
-
-  <div class="section" style="padding-top: 12px;">
-    <div class="section-title">自动打招呼</div>
-    <button class="btn btn-primary" id="btnAutoGreet" style="background: #ff9500;">自动求简历（新招呼列表）</button>
-  </div>
-
-  <div class="section" style="padding-top: 0;">
-    <div class="section-title">简历采集</div>
-    <button class="btn btn-primary" id="btnCollect">采集当前页面简历</button>
-    <button class="btn btn-secondary" id="btnBatchCollect">批量采集简历（已获取简历列表）</button>
-  </div>
-
-  <div class="section" style="padding-top: 0;">
-    <button class="btn btn-primary" id="btnPause" style="background: #ff4d4f; display: none;">暂停</button>
-  </div>
-
-  <div class="section" style="padding-top: 0;">
-    <div class="section-title">结果</div>
-    <div class="result-area" id="resultArea">等待操作...</div>
-  </div>
-
-  <div class="footer">Boss直聘简历采集助手</div>
 
   <script src="popup.js"></script>
 </body>

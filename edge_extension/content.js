@@ -60,7 +60,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true
   }
   if (message && message.type === 'INTAKE_COLLECT_CURRENT_CHAT') {
-    f5_runIntakeOrchestrator()
+    // Manual single-chat trigger: if PDF not yet received, actively click 求简历.
+    f5_runIntakeOrchestrator({ forceRequestPdfIfMissing: true })
       .then(() => sendResponse({ ok: true }))
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true;
@@ -1106,7 +1107,8 @@ function f5_waitFor(predicate, timeoutMs) {
   });
 }
 
-async function f5_runIntakeOrchestrator() {
+async function f5_runIntakeOrchestrator(opts = {}) {
+  const forceRequestPdf = !!opts.forceRequestPdfIfMissing;
   f5_showIntakeToast("正在分析聊天记录...");
 
   // If URL has id param but candidate isn't selected yet, click their row.
@@ -1171,6 +1173,21 @@ async function f5_runIntakeOrchestrator() {
       f5_showIntakeToast("简历已上传");
     } else {
       f5_showIntakeToast("简历下载失败，仍按文件名记录", "error");
+    }
+  } else if (forceRequestPdf) {
+    // Manual single-chat path: proactively click 求简历 so HR doesn't wait for
+    // backend NextAction. Idempotent at button level — if already requested,
+    // clickRequestResumeButton returns ok=false with a benign reason.
+    f5_showIntakeToast("未检测到简历，尝试求简历...");
+    try {
+      const r = await window.f5_clickRequestResumeButton();
+      if (r && r.ok) {
+        f5_showIntakeToast("已点击求简历，等候方发来后再次点击采集即可下载", "done");
+      } else {
+        f5_showIntakeToast(`求简历按钮状态: ${(r && r.reason) || "未触发"}`, "info");
+      }
+    } catch (e) {
+      f5_showIntakeToast(`求简历失败: ${e.message}`, "error");
     }
   }
 

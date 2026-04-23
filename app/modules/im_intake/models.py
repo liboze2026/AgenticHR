@@ -17,6 +17,8 @@ class IntakeSlot(Base):
     last_ask_text = Column(Text, nullable=True)
     source = Column(String(32), nullable=True)
     question_meta = Column(JSON, nullable=True)
+    msg_sent_at = Column(DateTime, nullable=True)
+    phrase_timestamps = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = Column(
         DateTime,

@@ -31,6 +31,7 @@ async def evaluate_endpoint(
         return await evaluate_and_record(
             db, user_id=user_id,
             job_id=body.job_id, candidate=body.candidate,
+            strategy=body.strategy,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

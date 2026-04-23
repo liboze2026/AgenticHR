@@ -36,8 +36,8 @@ const F3_SELECTORS = {
 
   // 打招呼按钮
   CARD_GREET_BTN: 'button.btn.btn-greet',
-  // 点完后按钮变化标志 (真机验证后细化; 目前用 disabled + 文本扫描兜底)
-  CARD_GREET_BTN_DONE: 'button.btn.btn-greet[disabled], button.btn.btn-greet.disabled',
+  // 点完后按钮变化标志: 成功后打招呼按钮消失，出现"继续沟通"按钮 (2026-04-22 live校准)
+  CARD_GREET_BTN_DONE: 'button.btn-continue, button.btn.btn-continue',
 
   // 风控告警元素 (spec §7.3) — 可能出现在 top frame 或 iframe
   RISK_CAPTCHA: '.captcha-wrap',
