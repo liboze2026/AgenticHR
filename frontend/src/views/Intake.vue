@@ -1,5 +1,16 @@
 <template>
   <div class="intake-page">
+    <el-card shadow="never" class="daily-cap-card">
+      <div class="daily-cap">
+        <span class="daily-cap-label">今日自动采集额度</span>
+        <span class="daily-cap-value">
+          <strong>{{ dailyCap.used }}</strong> / {{ dailyCap.cap }}
+          <span class="daily-cap-remaining">（剩余 {{ dailyCap.remaining }}）</span>
+        </span>
+        <el-button size="small" link @click="loadDailyCap">刷新</el-button>
+      </div>
+    </el-card>
+
     <!-- 候选人列表 -->
     <el-card shadow="never">
       <div class="filter-bar">
@@ -125,6 +136,7 @@ import {
   forceComplete,
   deleteCandidate,
   startConversation,
+  getDailyCap,
 } from '../api/intake'
 import { resumeApi } from '../api'
 
@@ -135,6 +147,15 @@ const page = ref(1)
 const size = ref(20)
 const statusFilter = ref('')
 const search = ref('')
+const dailyCap = ref({ used: 0, cap: 0, remaining: 0 })
+
+async function loadDailyCap() {
+  try {
+    dailyCap.value = await getDailyCap()
+  } catch (e) {
+    // Non-fatal; leave defaults
+  }
+}
 
 const filteredItems = computed(() => {
   const kw = (search.value || '').trim().toLowerCase()
@@ -270,6 +291,7 @@ async function doForceComplete(row) {
 
 onMounted(() => {
   loadCandidates()
+  loadDailyCap()
 })
 </script>
 
@@ -281,5 +303,25 @@ onMounted(() => {
   display: flex;
   align-items: center;
   margin-bottom: 16px;
+}
+.daily-cap-card {
+  margin-bottom: 12px;
+}
+.daily-cap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+.daily-cap-label {
+  color: #606266;
+}
+.daily-cap-value strong {
+  font-size: 18px;
+  color: #409eff;
+}
+.daily-cap-remaining {
+  color: #909399;
+  margin-left: 4px;
 }
 </style>
