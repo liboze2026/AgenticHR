@@ -255,20 +255,10 @@ async function batchCollectNew(limit, criteria, serverUrl, authToken = '') {
       log(`跳过: 不符标准`); skippedCriteria++; continue;
     }
 
-    const pdfInfo = findPdfCard();
-    const pdfTitle = pdfInfo?.card.querySelector('.message-card-top-title')?.textContent?.trim() || '';
-    let ok = false;
-
-    if (pdfInfo && pdfTitle && serverUrl) {
-      const r = await downloadPdfWithSource(detail, listName, serverUrl, authToken, 'batch_chat');
-      ok = r.ok;
-      if (ok) prevPdfTitle = pdfTitle;
-    }
-    if (!ok) {
-      const resp = await submitPageData(detail, serverUrl, authToken, 'batch_chat');
-      ok = resp.ok;
-    }
-    if (ok) { collected++; log(`采集成功 (${collected}/${limit})`); }
+    const pdfTitle = findPdfCard()?.card.querySelector('.message-card-top-title')?.textContent?.trim() || '';
+    const result = await collectSingle(serverUrl, authToken, 'batch_chat');
+    if (result.success && pdfTitle) prevPdfTitle = pdfTitle;
+    if (result.success) { collected++; log(`采集成功 (${collected}/${limit})`); }
     else { failed++; log('采集失败'); }
     await sleep(1000);
   }
@@ -325,7 +315,7 @@ async function waitForNameBox(expected, timeout) {
 // 单个采集
 // ════════════════════════════════════════════════════════════════════
 
-async function collectSingle(serverUrl, authToken = '') {
+async function collectSingle(serverUrl, authToken = '', source = 'boss_zhipin') {
   LOG.length = 0;
   if (document.querySelector('.conversation-no-data'))
     return { success: false, message: '未选中联系人' };
@@ -336,11 +326,11 @@ async function collectSingle(serverUrl, authToken = '') {
   if (!detail.name) return { success: false, message: '无法获取候选人姓名' };
 
   if (findPdfCard() && serverUrl) {
-    const result = await downloadPdf(detail, detail.name, serverUrl, authToken);
+    const result = await downloadPdf({ ...detail, source }, detail.name, serverUrl, authToken);
     if (result.ok) return { success: true, data: result.data, method: 'pdf_uploaded', log: LOG };
   }
 
-  const resp = await submitPageData(detail, serverUrl, authToken);
+  const resp = await submitPageData(detail, serverUrl, authToken, source);
   if (resp.ok) return { success: true, data: await resp.json(), method: 'page_only', log: LOG };
   return { success: true, data: detail, method: 'page_only', log: LOG };
 }
@@ -449,9 +439,6 @@ async function downloadPdf(candidateInfo, expectedName, serverUrl, authToken = '
   }
 }
 
-async function downloadPdfWithSource(candidateInfo, expectedName, serverUrl, authToken, source) {
-  return downloadPdf({ ...candidateInfo, source }, expectedName, serverUrl, authToken);
-}
 
 function extractPdfUrl(iframeSrc) {
   try { const u = new URL(iframeSrc, 'https://www.zhipin.com'); const p = u.searchParams.get('url'); if (p) return p; } catch {}
