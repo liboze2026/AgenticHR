@@ -1107,11 +1107,37 @@ function f5_waitFor(predicate, timeoutMs) {
 
 async function f5_runIntakeOrchestrator() {
   f5_showIntakeToast("正在分析聊天记录...");
+
+  // If URL has id param but candidate isn't selected yet, click their row.
+  // Boss SPA won't auto-select on fresh navigation — the user would normally
+  // click a geek-item manually; deep-link orchestrator must do it programmatically.
+  const urlBossId = f5_getQueryParam("id");
+  if (urlBossId) {
+    try {
+      await f5_waitFor(
+        () => !!document.querySelector(`.geek-item[data-id="${urlBossId}"]`),
+        12000
+      );
+    } catch {
+      f5_showIntakeToast("候选人未出现在列表（URL id 无匹配）", "error");
+      return;
+    }
+    const item = document.querySelector(`.geek-item[data-id="${urlBossId}"]`);
+    if (item && !item.classList.contains("selected")) item.click();
+  }
+
+  // Wait for right panel to sync: selected candidate matches URL id,
+  // .name-box populated, message list rendered.
   try {
-    await f5_waitFor(
-      () => document.querySelector(window.CHAT_SELECTORS.root),
-      10000
-    );
+    await f5_waitFor(() => {
+      const sel = document.querySelector(".geek-item.selected");
+      const nb = (document.querySelector(".name-box")?.textContent || "").trim();
+      const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
+      if (urlBossId) {
+        return sel?.getAttribute("data-id") === urlBossId && nb && msgs > 0;
+      }
+      return !!sel && !!nb && msgs > 0;
+    }, 15000);
   } catch {
     f5_showIntakeToast("未找到聊天窗口，请检查页面", "error");
     return;
