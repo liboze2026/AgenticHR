@@ -244,6 +244,7 @@ class ResumeService:
             raw_text=raw_text,
             pdf_path=file_path,
             user_id=user_id,
+            intake_status="complete",
         )
         self.db.add(resume)
         self.db.commit()

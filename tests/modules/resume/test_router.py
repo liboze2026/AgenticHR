@@ -153,7 +153,7 @@ def test_upload_pdf_resume(client, tmp_path):
 
 def test_upload_pdf_resume_with_boss_id(client, tmp_path):
     """上传 PDF 时若带 candidate_boss_id 表单字段，应回填 Resume.boss_id，
-    使 F5 intake promote_to_resume 的 merge-by-boss_id 能找到该行。"""
+    使 F3.1 intake promote_to_resume 的 merge-by-boss_id 能找到该行。"""
     from reportlab.pdfgen import canvas
     pdf_path = str(tmp_path / "r.pdf")
     c = canvas.Canvas(pdf_path)
