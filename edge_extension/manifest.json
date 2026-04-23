@@ -4,7 +4,11 @@
   "version": "1.0.0",
   "description": "Boss直聘简历采集助手",
   "permissions": ["activeTab", "storage", "downloads"],
-  "host_permissions": ["https://www.zhipin.com/*", "http://127.0.0.1:8000/*"],
+  "host_permissions": [
+    "https://*.zhipin.com/*",
+    "http://127.0.0.1:*/*",
+    "http://localhost:*/*"
+  ],
   "action": {
     "default_popup": "popup.html"
   },
