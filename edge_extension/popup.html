@@ -311,6 +311,16 @@
       </div>
       <button class="btn btn-primary full" id="btnAutoGreet">对新招呼批量求简历</button>
       <button class="btn btn-primary full" id="btnBatchCollect" style="margin-top:6px;background:#13a47e;">批量采集已求到简历</button>
+      <div style="margin-top:8px;border-top:1px solid #eee;padding-top:8px;">
+        <div style="font-size:11px;color:#666;margin-bottom:4px;">批量采集新候选人（按标准筛选）</div>
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+          <select id="batchNewJobSelect" style="flex:1;min-width:100px;font-size:12px;padding:2px 4px;"></select>
+          <input id="batchNewLimit" type="number" min="1" max="50" value="10"
+            style="width:52px;font-size:12px;padding:2px 4px;border:1px solid #ddd;border-radius:3px;" title="采集数量上限">
+          <button class="btn btn-primary" id="btnBatchCollectNew"
+            style="font-size:12px;padding:4px 10px;">开始采集</button>
+        </div>
+      </div>
       <div class="card-hint">先"求简历"→对方发简历→再"批量采集"入库。</div>
     </div>
 

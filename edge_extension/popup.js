@@ -9,6 +9,9 @@ const serverUrlInput = document.getElementById("serverUrl");
 const btnTestConnection = document.getElementById("btnTestConnection");
 const btnCollect = document.getElementById("btnCollect");
 const btnBatchCollect = document.getElementById("btnBatchCollect");
+const btnBatchCollectNew = document.getElementById('btnBatchCollectNew');
+const batchNewJobSelect = document.getElementById('batchNewJobSelect');
+const batchNewLimit = document.getElementById('batchNewLimit');
 const resultArea = document.getElementById("resultArea");
 const loginSection = document.getElementById("loginSection");
 const userSection = document.getElementById("userSection");
@@ -82,6 +85,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   updateAuthUI();
   // F3: load after token is available
   await loadJobs();
+  await loadBatchJobs();
   await loadDailyUsage();
 
   document.getElementById("btnLogin").addEventListener("click", doLogin);
@@ -174,6 +178,7 @@ async function doLogin() {
     updateAuthUI();
     showResult("登录成功", "success");
     await loadJobs();
+    await loadBatchJobs();
     await loadDailyUsage();
   } catch {
     showResult("无法连接服务器", "error");
@@ -409,6 +414,62 @@ async function batchCollectFromList() {
   }
 }
 
+// ── Batch collect NEW candidates from list ──────────────────────────
+
+async function batchCollectNewFromList() {
+  const url = saveServerUrl();
+  const token = getAuthToken();
+  if (!token) { showResult('请先登录', 'error'); return; }
+
+  const jobId = parseInt(batchNewJobSelect?.value, 10);
+  if (!jobId) { showResult('请选择岗位', 'error'); return; }
+
+  const limit = parseInt(batchNewLimit?.value, 10) || 10;
+  if (limit < 1 || limit > 50) { showResult('采集数量须为 1-50', 'error'); return; }
+
+  // read criteria from selected option dataset
+  let criteria = null;
+  const selOpt = batchNewJobSelect?.selectedOptions?.[0];
+  try { criteria = JSON.parse(selOpt?.dataset?.criteria || 'null'); } catch { criteria = null; }
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.url?.includes('zhipin.com')) {
+      showResult('请在Boss直聘页面使用此功能', 'error'); return;
+    }
+    let pingResp;
+    try { pingResp = await chrome.tabs.sendMessage(tab.id, { action: 'ping' }); } catch {
+      showResult('请先刷新Boss直聘页面', 'error'); return;
+    }
+    if (!pingResp?.onMessagePage) {
+      showResult('请先打开Boss直聘「消息」页面', 'error'); return;
+    }
+  } catch { showResult('请先刷新Boss直聘页面', 'error'); return; }
+
+  showResult(`开始批量采集，目标 ${limit} 人，标准: ${JSON.stringify(criteria) || '无限制'}\n请勿操作Boss直聘页面！`, '');
+  setButtonsDisabled(true);
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const response = await chrome.tabs.sendMessage(tab.id, {
+      action: 'batchCollectNew', limit, criteria, serverUrl: url, authToken: token,
+    });
+    if (!response?.success) {
+      showResult(`采集失败: ${response?.message || '无响应，请刷新页面重试'}`, 'error');
+      setButtonsDisabled(false); return;
+    }
+    const { collected, skippedDup, skippedCriteria, failed } = response;
+    showResult(
+      `✅ 采集完成\n成功入库: ${collected} 人\n跳过(已在库): ${skippedDup} 人\n跳过(不符标准): ${skippedCriteria} 人\n失败: ${failed} 人`,
+      collected > 0 ? 'success' : ''
+    );
+  } catch (e) {
+    showResult(`异常: ${e.message}`, 'error');
+  } finally {
+    setButtonsDisabled(false);
+  }
+}
+
 // ── UI Helpers ──────────────────────────────────────────────────────
 
 function setStatus(state) {
@@ -494,6 +555,7 @@ function setButtonsDisabled(disabled) {
   btnTestConnection.disabled = disabled;
   btnAutoGreet.disabled = disabled;
   btnRecruitStart.disabled = disabled;
+  if (btnBatchCollectNew) btnBatchCollectNew.disabled = disabled;
 
   if (disabled) {
     isRunning = true;
@@ -579,6 +641,7 @@ btnTestConnection.addEventListener("click", () => { saveServerUrl(); checkConnec
 btnAutoGreet.addEventListener("click", autoGreet);
 btnCollect.addEventListener("click", collectCurrentResume);
 btnBatchCollect.addEventListener("click", batchCollectFromList);
+if (btnBatchCollectNew) btnBatchCollectNew.addEventListener('click', batchCollectNewFromList);
 serverUrlInput.addEventListener("change", saveServerUrl);
 // authToken is now managed via login/logout, no manual input needed
 
@@ -634,6 +697,30 @@ async function loadJobs() {
     });
   } catch (e) {
     console.error('loadJobs fail', e);
+  }
+}
+
+async function loadBatchJobs() {
+  const url = getServerUrl();
+  const token = getAuthToken();
+  if (!token || !batchNewJobSelect) return;
+  try {
+    const r = await fetch(`${url}/api/screening/jobs?active_only=true`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    batchNewJobSelect.innerHTML = '<option value="">-- 选择岗位 --</option>';
+    const jobs = Array.isArray(data) ? data : (data.items || []);
+    jobs.forEach(j => {
+      const opt = document.createElement('option');
+      opt.value = j.id;
+      opt.dataset.criteria = JSON.stringify(j.batch_collect_criteria || null);
+      opt.textContent = j.title || `岗位${j.id}`;
+      batchNewJobSelect.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('loadBatchJobs fail', e);
   }
 }
 
