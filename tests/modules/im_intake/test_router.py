@@ -1,4 +1,4 @@
-"""F4 T13 — Intake REST API tests (F5 T11: migrated to IntakeCandidate)."""
+"""F4 T13 — Intake REST API tests (F3.1 T11: migrated to IntakeCandidate)."""
 from datetime import datetime, timezone
 
 import pytest
@@ -49,8 +49,3 @@ def test_patch_slot_value(client, db_session):
     assert s.source == "manual"
 
 
-def test_scheduler_status(client):
-    r = client.get("/api/intake/scheduler/status")
-    assert r.status_code == 200
-    body = r.json()
-    assert "daily_cap_max" in body and "running" in body

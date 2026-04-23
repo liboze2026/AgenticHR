@@ -1,4 +1,4 @@
-"""F5 T10 — POST /api/intake/candidates/{id}/ack-sent tests."""
+"""F3.1 T10 — POST /api/intake/candidates/{id}/ack-sent tests."""
 
 
 def test_ack_sent_records_asked(client, db_session):

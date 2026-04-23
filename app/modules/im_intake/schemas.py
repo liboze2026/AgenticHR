@@ -44,15 +44,7 @@ class SlotPatchIn(BaseModel):
     value: str = Field(min_length=1)
 
 
-class SchedulerStatus(BaseModel):
-    running: bool
-    next_run_at: datetime | None = None
-    daily_cap_used: int
-    daily_cap_max: int
-    last_batch_size: int
-
-
-# ---- F5 additions ----
+# ---- F3.1 additions ----
 
 class ChatMessageIn(BaseModel):
     sender_id: str

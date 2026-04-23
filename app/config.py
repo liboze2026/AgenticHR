@@ -64,16 +64,14 @@ class Settings(BaseSettings):
     f3_default_daily_cap: int = 1000
     f3_ai_parse_enabled: bool = False
 
-    # F4 IM 智能接待
-    f4_enabled: bool = False
-    f4_scan_interval_min: int = 15
-    f4_batch_cap: int = 50
+    # F4 IM 智能接待（扩展驱动，无后端 daemon；仅保留业务参数）
     f4_hard_max_asks: int = 3
     f4_pdf_timeout_hours: int = 72
     f4_soft_question_max: int = 3
+    f4_daily_cap: int = 200  # Per-user daily autoscan tick cap
     ai_model_intake: str = ""
 
-    # F5 Boss chat deep link
+    # F3.1 Boss chat deep link
     boss_chat_url_template: str = "https://www.zhipin.com/web/chat/index?id={boss_id}"
 
     # 简历存储路径

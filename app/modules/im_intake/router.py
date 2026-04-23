@@ -1,10 +1,12 @@
-"""F4 Boss IM Intake HTTP API."""
-from datetime import datetime, timezone
+"""F4 Boss IM Intake HTTP API (extension-driven; no backend Playwright daemon)."""
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.core.audit.logger import log_event
 from app.database import get_db
 from app.modules.auth.deps import get_current_user_id
 from app.modules.im_intake.candidate_model import IntakeCandidate
@@ -16,22 +18,30 @@ from app.modules.im_intake.schemas import (
     CollectChatIn,
     CollectChatOut,
     NextActionOut,
-    SchedulerStatus,
     SlotOut,
     SlotPatchIn,
     StartConversationOut,
 )
 from app.modules.im_intake.service import IntakeService
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
+from app.core.audit.models import AuditEvent
 from app.modules.screening.models import Job
 
 router = APIRouter(prefix="/api/intake", tags=["intake"])
 
+import logging as _logging
+_log = _logging.getLogger(__name__)
 
-def _scheduler():
-    """Late import to avoid circular import with app.main."""
-    from app import main as _main
-    return getattr(_main, "intake_scheduler", None)
+
+def _audit_safe(f_stage: str, action: str, entity_id: int, payload: dict | None = None,
+                reviewer_id: int | None = None) -> None:
+    try:
+        log_event(
+            f_stage=f_stage, action=action, entity_type="intake_candidate",
+            entity_id=entity_id, input_payload=payload, reviewer_id=reviewer_id,
+        )
+    except Exception as e:
+        _log.warning("audit log_event %s failed: %s", f_stage, e)
 
 
 def _build_service(db: Session, user_id: int = 0) -> IntakeService:
@@ -39,9 +49,7 @@ def _build_service(db: Session, user_id: int = 0) -> IntakeService:
     from app import main as _main
     return IntakeService(
         db=db,
-        adapter=getattr(_main, "boss_adapter", None),
         llm=getattr(_main, "llm_client", None),
-        storage_dir=getattr(_main, "intake_storage_dir", "/tmp/intake"),
         hard_max_asks=getattr(settings, "f4_hard_max_asks", 3),
         pdf_timeout_hours=getattr(settings, "f4_pdf_timeout_hours", 72),
         soft_max_n=getattr(settings, "f4_soft_question_max", 3),
@@ -144,6 +152,7 @@ def abandon(
         raise HTTPException(404, "not found")
     c.intake_status = "abandoned"
     db.commit()
+    _audit_safe("f4_abandoned", "manual_abandon", c.id, {"boss_id": c.boss_id}, reviewer_id=user_id)
     return {"ok": True}
 
 
@@ -173,43 +182,7 @@ def force_complete(
     c.intake_status = "complete"
     c.intake_completed_at = datetime.now(timezone.utc)
     db.commit()
-    return {"ok": True}
-
-
-@router.get("/scheduler/status", response_model=SchedulerStatus)
-def scheduler_status(user_id: int = Depends(get_current_user_id)):
-    sched = _scheduler()
-    used = getattr(sched.adapter, "_operations_today", 0) if sched else 0
-    return SchedulerStatus(
-        running=sched.running if sched else False,
-        next_run_at=sched.next_run_at if sched else None,
-        daily_cap_used=used,
-        daily_cap_max=settings.boss_max_operations_per_day,
-        last_batch_size=sched.last_batch_size if sched else 0,
-    )
-
-
-@router.post("/scheduler/pause")
-def scheduler_pause(user_id: int = Depends(get_current_user_id)):
-    sched = _scheduler()
-    if sched:
-        sched.pause()
-    return {"ok": True}
-
-
-@router.post("/scheduler/resume")
-def scheduler_resume(user_id: int = Depends(get_current_user_id)):
-    sched = _scheduler()
-    if sched:
-        sched.resume()
-    return {"ok": True}
-
-
-@router.post("/scheduler/tick-now")
-async def scheduler_tick(user_id: int = Depends(get_current_user_id)):
-    sched = _scheduler()
-    if sched:
-        await sched.tick_now()
+    _audit_safe("f4_completed", "manual_complete", c.id, {"boss_id": c.boss_id}, reviewer_id=user_id)
     return {"ok": True}
 
 
@@ -232,6 +205,8 @@ async def collect_chat(
         slots["pdf"].answered_at = datetime.now(timezone.utc)
         c.pdf_path = body.pdf_url
         db.commit()
+        _audit_safe("f4_pdf_received", "pdf_uploaded", c.id,
+                    {"pdf_url": body.pdf_url}, reviewer_id=user_id)
 
     action = await svc.analyze_chat(c, messages, job)
     svc.apply_terminal(c, action, user_id=user_id)
@@ -266,6 +241,83 @@ async def ack_sent(
         raise HTTPException(409, f"state mismatch: expected {action.type}, got {body.action_type}")
     svc.record_asked(c, action)
     return {"ok": True}
+
+
+@router.get("/daily-cap")
+def get_daily_cap(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Today's new-candidate usage vs. configured daily cap."""
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    used = (
+        db.query(func.count(IntakeCandidate.id))
+        .filter(IntakeCandidate.user_id == user_id)
+        .filter(IntakeCandidate.created_at >= today_start)
+        .scalar() or 0
+    )
+    cap = getattr(settings, "f4_daily_cap", 200)
+    return {"date": today_start.date().isoformat(), "used": int(used), "cap": int(cap),
+            "remaining": max(0, int(cap) - int(used))}
+
+
+@router.get("/autoscan/rank")
+def autoscan_rank(
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Rank candidates most in need of an autoscan tick.
+
+    Strategy: collecting first then awaiting_reply, oldest updated_at first.
+    """
+    rows = (
+        db.query(IntakeCandidate)
+        .filter(IntakeCandidate.user_id == user_id)
+        .filter(IntakeCandidate.intake_status.in_(["collecting", "awaiting_reply"]))
+        .order_by(
+            # collecting (0) before awaiting_reply (1)
+            case((IntakeCandidate.intake_status == "collecting", 0), else_=1),
+            IntakeCandidate.updated_at.asc(),
+        )
+        .limit(limit)
+        .all()
+    )
+    items = [
+        {"candidate_id": c.id, "boss_id": c.boss_id, "name": c.name,
+         "intake_status": c.intake_status,
+         "last_activity_at": c.updated_at.isoformat() if c.updated_at else None}
+        for c in rows
+    ]
+    return {"items": items, "limit": limit}
+
+
+@router.post("/autoscan/tick")
+def autoscan_tick(
+    body: dict = Body(default_factory=dict),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Plugin reports tick results; backend writes F4_autoscan_tick audit + returns day stats."""
+    processed = int(body.get("processed", 0))
+    skipped = int(body.get("skipped", 0))
+    total_seen = int(body.get("total", 0))
+    _audit_safe(
+        "f4_autoscan_tick", "tick", 0,
+        {"processed": processed, "skipped": skipped, "total_seen": total_seen,
+         "ts": body.get("ts")},
+        reviewer_id=user_id,
+    )
+    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    tick_count = (
+        db.query(func.count(AuditEvent.event_id))
+        .filter(AuditEvent.f_stage == "f4_autoscan_tick")
+        .filter(AuditEvent.reviewer_id == user_id)
+        .filter(AuditEvent.created_at >= today_start)
+        .scalar() or 0
+    )
+    return {"ok": True, "ticks_today": int(tick_count),
+            "processed": processed, "skipped": skipped, "total_seen": total_seen}
 
 
 @router.post("/candidates/{candidate_id}/start-conversation", response_model=StartConversationOut)

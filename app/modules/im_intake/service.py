@@ -1,7 +1,6 @@
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from app.adapters.boss.base import BossAdapter, BossCandidate
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.slot_filler import SlotFiller
@@ -12,20 +11,33 @@ from app.modules.im_intake.decision import decide_next_action, NextAction
 from app.modules.im_intake.promote import promote_to_resume
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
 from app.modules.screening.models import Job
+from app.core.audit.logger import log_event
 
 logger = logging.getLogger(__name__)
 
 
+def _audit_safe(f_stage: str, action: str, entity_id: int, payload: dict | None = None,
+                reviewer_id: int | None = None) -> None:
+    """Write an F4 audit event; swallow exceptions so audit never breaks intake flow."""
+    try:
+        log_event(
+            f_stage=f_stage, action=action, entity_type="intake_candidate",
+            entity_id=entity_id, input_payload=payload, reviewer_id=reviewer_id,
+        )
+    except Exception as e:
+        logger.warning("audit log_event %s failed: %s", f_stage, e)
+
+
 class IntakeService:
-    def __init__(self, db: Session, adapter: BossAdapter, llm,
-                 storage_dir: str, hard_max_asks: int = 3, pdf_timeout_hours: int = 72,
+    def __init__(self, db: Session, adapter=None, llm=None,
+                 storage_dir: str = "", hard_max_asks: int = 3, pdf_timeout_hours: int = 72,
                  soft_max_n: int = 3, user_id: int = 0):
         self.db = db
         self.adapter = adapter
         self.llm = llm
         self.filler = SlotFiller(llm=llm)
         self.qg = QuestionGenerator(llm=llm)
-        self.pdf = PdfCollector(adapter=adapter, storage_dir=storage_dir, timeout_hours=pdf_timeout_hours)
+        self.pdf = PdfCollector(adapter=adapter, storage_dir=storage_dir, timeout_hours=pdf_timeout_hours) if adapter else None
         self.hard_max_asks = hard_max_asks
         self.pdf_timeout_hours = pdf_timeout_hours
         self.soft_max_n = soft_max_n
@@ -50,6 +62,9 @@ class IntakeService:
                 intake_started_at=datetime.now(timezone.utc),
             )
             self.db.add(c); self.db.commit()
+            _audit_safe("f4_candidate_enter", "create", c.id,
+                        {"boss_id": boss_id, "job_id": job_id, "name": name},
+                        reviewer_id=self.user_id or None)
         elif name and not c.name:
             c.name = name; self.db.commit()
         return c
@@ -113,6 +128,9 @@ class IntakeService:
                     phrase_ts.append({"text": phrase, "sent_at": matched_at})
                 s.phrase_timestamps = phrase_ts
             self.db.commit()
+            _audit_safe("f4_extract_history", "slot_fill", candidate.id,
+                        {"filled": list(parsed.keys()), "msg_count": len(messages)},
+                        reviewer_id=self.user_id or None)
 
         candidate.chat_snapshot = {"messages": messages,
                                    "captured_at": datetime.now(timezone.utc).isoformat()}
@@ -149,10 +167,16 @@ class IntakeService:
                 by[k].asked_at = now
                 by[k].last_ask_text = action.text
             candidate.intake_status = "awaiting_reply"
+            _audit_safe("f4_question_sent", "send_hard", candidate.id,
+                        {"slot_keys": action.meta.get("slot_keys", []), "text": action.text},
+                        reviewer_id=self.user_id or None)
         elif action.type == "request_pdf":
             by["pdf"].ask_count += 1
             by["pdf"].asked_at = now
             by["pdf"].last_ask_text = "求简历按钮"
+            _audit_safe("f4_pdf_requested", "request_pdf", candidate.id,
+                        {"ask_count": by["pdf"].ask_count},
+                        reviewer_id=self.user_id or None)
         elif action.type == "send_soft":
             for i, q in enumerate(action.meta.get("questions", []), 1):
                 sk = f"soft_q_{i}"
@@ -163,6 +187,9 @@ class IntakeService:
                                    "dimension_name": q.get("dimension_name")},
                 )
                 self.db.add(s)
+            _audit_safe("f4_question_sent", "send_soft", candidate.id,
+                        {"question_count": len(action.meta.get("questions", []))},
+                        reviewer_id=self.user_id or None)
         self.db.commit()
 
     def apply_terminal(self, candidate: IntakeCandidate, action: NextAction, user_id: int = 0):
@@ -170,41 +197,21 @@ class IntakeService:
             candidate.intake_status = "abandoned"
             candidate.intake_completed_at = datetime.now(timezone.utc)
             self.db.commit()
+            _audit_safe("f4_abandoned", "auto_abandon", candidate.id,
+                        {"reason": "pdf_timeout_or_max_asks"}, reviewer_id=user_id or None)
             return None
         if action.type == "mark_pending_human":
             candidate.intake_status = "pending_human"
             candidate.intake_completed_at = datetime.now(timezone.utc)
             self.db.commit()
+            _audit_safe("f4_pending_human", "auto_mark", candidate.id,
+                        {"reason": "hard_max_asks_exhausted"}, reviewer_id=user_id or None)
             return None
         if action.type == "complete":
             resume = promote_to_resume(self.db, candidate, user_id=user_id)
             self.db.commit()
+            _audit_safe("f4_completed", "auto_complete", candidate.id,
+                        {"promoted_resume_id": getattr(candidate, "promoted_resume_id", None)},
+                        reviewer_id=user_id or None)
             return resume
         return None
-
-    async def process_one(self, boss_candidate: BossCandidate) -> None:
-        c = self.ensure_candidate(
-            boss_id=boss_candidate.boss_id, name=boss_candidate.name,
-            job_intention=boss_candidate.job_intention,
-        )
-        job = self.db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
-        try:
-            msgs = await self.adapter.get_chat_messages(c.boss_id)
-            messages = [{"sender_id": m.sender_id, "content": m.content} for m in msgs]
-        except Exception as e:
-            logger.error(f"get_chat_messages failed [{c.boss_id}]: {e}")
-            return
-
-        action = await self.analyze_chat(c, messages, job)
-        if action.type in ("send_hard", "send_soft"):
-            ok = await self.adapter.send_message(c.boss_id, action.text)
-            if ok:
-                self.record_asked(c, action)
-        elif action.type == "request_pdf":
-            try:
-                ok = await self.adapter.click_request_resume(c.boss_id)
-            except Exception:
-                ok = False
-            if ok:
-                self.record_asked(c, action)
-        self.apply_terminal(c, action)

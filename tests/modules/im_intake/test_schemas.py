@@ -1,7 +1,6 @@
 from datetime import datetime
 from app.modules.im_intake.schemas import (
-    SlotOut, CandidateOut, CandidateDetailOut, SlotPatchIn,
-    SchedulerStatus,
+    SlotOut, SlotPatchIn,
 )
 
 def test_slot_out_round_trip():
@@ -14,11 +13,3 @@ def test_slot_out_round_trip():
 def test_slot_patch_requires_value():
     p = SlotPatchIn(value="下周三")
     assert p.value == "下周三"
-
-def test_scheduler_status_fields():
-    s = SchedulerStatus(
-        running=True, next_run_at=None,
-        daily_cap_used=10, daily_cap_max=1000,
-        last_batch_size=5,
-    )
-    assert s.daily_cap_max == 1000

@@ -1,4 +1,4 @@
-"""F5 multi-tenancy: IntakeCandidate list/detail must filter by user_id."""
+"""F3.1 multi-tenancy: IntakeCandidate list/detail must filter by user_id."""
 from app.modules.im_intake.candidate_model import IntakeCandidate
 
 

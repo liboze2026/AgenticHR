@@ -1,4 +1,4 @@
-"""F5 T11 — verify list/detail endpoints source from IntakeCandidate, not Resume."""
+"""F3.1 T11 — verify list/detail endpoints source from IntakeCandidate, not Resume."""
 
 
 def test_list_returns_intake_candidates_not_resumes(client, db_session):

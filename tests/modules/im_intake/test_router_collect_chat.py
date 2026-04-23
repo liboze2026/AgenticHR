@@ -1,4 +1,4 @@
-"""F5 T8 — POST /api/intake/collect-chat tests."""
+"""F3.1 T8 — POST /api/intake/collect-chat tests."""
 from app.modules.im_intake.models import IntakeSlot
 
 

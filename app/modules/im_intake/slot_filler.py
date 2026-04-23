@@ -54,7 +54,7 @@ class SlotFiller:
                 response_format="json",
                 temperature=0.0,
                 prompt_version="parse_v2",
-                f_stage="f5_intake",
+                f_stage="intake",
                 entity_type="intake_slot",
             )
             data = json.loads(raw)
