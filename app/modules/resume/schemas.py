@@ -36,6 +36,7 @@ class ResumeCreate(BaseModel):
     project_experience: str = Field(default="", description="项目经历")
     self_evaluation: str = Field(default="", description="自我评价")
     source: str = Field(default="manual", description="来源: boss_zhipin, email, manual")
+    boss_id: str = Field(default="", description="Boss 直聘候选人 ID")
     raw_text: str = Field(default="", description="简历原始文本")
     pdf_path: str = Field(default="", description="PDF 文件路径")
 

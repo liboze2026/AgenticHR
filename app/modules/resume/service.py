@@ -157,7 +157,7 @@ class ResumeService:
         self.db.commit()
         return True
 
-    def create_from_pdf(self, file_path: str, page_info: dict | None = None, original_filename: str = "", user_id: int = 0, boss_id: str = "") -> Resume | None:
+    def create_from_pdf(self, file_path: str, page_info: dict | None = None, original_filename: str = "", user_id: int = 0, boss_id: str = "", source: str = "boss_zhipin") -> Resume | None:
         """从 PDF 文件创建简历，合并三个信息源：页面抓取 > 文件名解析 > PDF文本正则
 
         Args:
@@ -240,7 +240,7 @@ class ResumeService:
             job_intention=job_intention,
             skills=skills,
             work_experience=work_experience,
-            source="boss_zhipin",
+            source=source,
             raw_text=raw_text,
             pdf_path=file_path,
             user_id=user_id,

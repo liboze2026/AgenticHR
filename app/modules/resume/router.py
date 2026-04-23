@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -102,6 +103,7 @@ def upload_pdf_resume(
     candidate_work_years: int = Form(0),
     candidate_job: str = Form(""),
     candidate_boss_id: str = Form(""),
+    candidate_source: str = Form("boss_zhipin"),
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
@@ -137,6 +139,7 @@ def upload_pdf_resume(
         original_filename=file.filename or "",
         user_id=user_id,
         boss_id=candidate_boss_id,
+        source=candidate_source,
     )
     if not resume:
         file_path.unlink(missing_ok=True)
@@ -153,6 +156,32 @@ def get_storage_path():
     """获取当前 PDF 存储路径"""
     p = Path(settings.resume_storage_path).resolve()
     return {"path": str(p)}
+
+
+class _CheckBossIdsIn(BaseModel):
+    boss_ids: list[str]
+
+
+@router.post("/check-boss-ids")
+def check_boss_ids(
+    body: _CheckBossIdsIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """检查给定的 boss_ids 中哪些已在当前用户的简历库中"""
+    if not body.boss_ids:
+        return {"existing": []}
+    from app.modules.resume.models import Resume
+    rows = (
+        db.query(Resume.boss_id)
+        .filter(
+            Resume.boss_id.in_(body.boss_ids),
+            Resume.user_id == user_id,
+            Resume.boss_id != "",
+        )
+        .all()
+    )
+    return {"existing": [r.boss_id for r in rows]}
 
 
 @router.get("/", response_model=ResumeListResponse)
