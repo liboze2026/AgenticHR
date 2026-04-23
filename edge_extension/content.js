@@ -319,6 +319,7 @@ async function downloadPdf(candidateInfo, expectedName, serverUrl, authToken = '
     form.append('candidate_education', candidateInfo.education || '');
     form.append('candidate_work_years', String(candidateInfo.work_years || 0));
     form.append('candidate_job', candidateInfo.job_intention || '');
+    if (candidateInfo.boss_id) form.append('candidate_boss_id', candidateInfo.boss_id);
 
     const uploadHeaders = authToken ? { 'Authorization': `Bearer ${authToken}` } : {};
     const uploadResp = await fetch(`${serverUrl}/api/resumes/upload`, { method: 'POST', headers: uploadHeaders, body: form });
@@ -1152,6 +1153,27 @@ async function f5_runIntakeOrchestrator() {
 
   const pdf = await window.f5_checkPdfReceived(parsed.boss_id);
 
+  // 若 PDF 可见，复用已有 downloadPdf() 真实下载 + 上传后端（与批量采集路径一致）。
+  // 后端 /api/resumes/upload 存 PDF 到 settings.resume_storage_path 并写 Resume.pdf_path
+  // 为服务器端真实路径；之后 collect-chat 把该真实路径作为 pdf_url 传入，让
+  // intake slot 存真实 path、promote_to_resume 再 merge 到同一 Resume 行。
+  let realPdfPath = null;
+  if (pdf.present) {
+    f5_showIntakeToast("检测到简历，下载中...");
+    const serverUrl = await f5_getServerUrl();
+    const authToken = await f5_getAuthToken();
+    const detail = extractDetail();
+    detail.boss_id = parsed.boss_id;
+    supplementFromPushText(detail, document.querySelector(".geek-item.selected"));
+    const dl = await downloadPdf(detail, parsed.name, serverUrl, authToken);
+    if (dl && dl.ok && dl.data) {
+      realPdfPath = dl.data.pdf_path || null;
+      f5_showIntakeToast("简历已上传");
+    } else {
+      f5_showIntakeToast("简历下载失败，仍按文件名记录", "error");
+    }
+  }
+
   let resp;
   try {
     resp = await f5_postJSON("/api/intake/collect-chat", {
@@ -1160,7 +1182,7 @@ async function f5_runIntakeOrchestrator() {
       job_intention: parsed.job_intention,
       messages: parsed.messages,
       pdf_present: pdf.present,
-      pdf_url: pdf.url || null,
+      pdf_url: realPdfPath || pdf.url || null,
     });
   } catch (e) {
     f5_showIntakeToast(`后端返回错误: ${e.message}`, "error");

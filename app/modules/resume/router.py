@@ -101,6 +101,7 @@ def upload_pdf_resume(
     candidate_education: str = Form(""),
     candidate_work_years: int = Form(0),
     candidate_job: str = Form(""),
+    candidate_boss_id: str = Form(""),
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
@@ -139,6 +140,11 @@ def upload_pdf_resume(
     if not resume:
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="PDF 解析失败，无法提取内容")
+    # 让 intake promote_to_resume 的 boss_id merge 能找到此行，避免重复 Resume。
+    if candidate_boss_id and not resume.boss_id:
+        resume.boss_id = candidate_boss_id
+        service.db.commit()
+        service.db.refresh(resume)
     return resume
 
 

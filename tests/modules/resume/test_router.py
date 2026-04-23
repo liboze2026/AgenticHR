@@ -149,3 +149,23 @@ def test_upload_pdf_resume(client, tmp_path):
     assert response.status_code == 201
     data = response.json()
     assert data["pdf_path"] != ""
+
+
+def test_upload_pdf_resume_with_boss_id(client, tmp_path):
+    """上传 PDF 时若带 candidate_boss_id 表单字段，应回填 Resume.boss_id，
+    使 F5 intake promote_to_resume 的 merge-by-boss_id 能找到该行。"""
+    from reportlab.pdfgen import canvas
+    pdf_path = str(tmp_path / "r.pdf")
+    c = canvas.Canvas(pdf_path)
+    c.setFont("Helvetica", 12)
+    c.drawString(72, 800, "Test Name")
+    c.save()
+    with open(pdf_path, "rb") as f:
+        response = client.post(
+            "/api/resumes/upload",
+            files={"file": ("r.pdf", f, "application/pdf")},
+            data={"candidate_name": "测试候选", "candidate_boss_id": "77777-0"},
+        )
+    assert response.status_code == 201
+    data = response.json()
+    assert data.get("boss_id") == "77777-0"

@@ -102,6 +102,7 @@ class ResumeResponse(BaseModel):
     reject_reason: str
     seniority: str = ""
     intake_status: str | None = None
+    boss_id: str = ""
     created_at: datetime
     updated_at: datetime
 
