@@ -113,6 +113,42 @@
                 <el-input v-model="jobForm.jd_text" type="textarea" :rows="5"
                           placeholder="岗位描述原文（可编辑，保存后自动重新抽取能力模型）" />
               </el-form-item>
+              <el-form-item label="批量采集标准">
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                  <div>
+                    <span style="font-size:12px;color:#666;margin-right:8px;">学校层次：</span>
+                    <el-checkbox
+                      v-model="batchSchool985"
+                      @change="syncBatchCriteria"
+                    >985</el-checkbox>
+                    <el-checkbox
+                      v-model="batchSchool211"
+                      @change="syncBatchCriteria"
+                      style="margin-left:8px;"
+                    >211</el-checkbox>
+                    <el-checkbox
+                      v-model="batchSchoolFirst"
+                      @change="syncBatchCriteria"
+                      style="margin-left:8px;"
+                    >双一流</el-checkbox>
+                    <span style="font-size:11px;color:#999;margin-left:8px;">（全不选=不限学校）</span>
+                  </div>
+                  <div>
+                    <span style="font-size:12px;color:#666;margin-right:8px;">最低学历：</span>
+                    <el-select
+                      v-model="batchEduMin"
+                      @change="syncBatchCriteria"
+                      style="width:120px;"
+                    >
+                      <el-option label="不限" :value="null" />
+                      <el-option label="大专" value="大专" />
+                      <el-option label="本科" value="本科" />
+                      <el-option label="硕士" value="硕士" />
+                      <el-option label="博士" value="博士" />
+                    </el-select>
+                  </div>
+                </div>
+              </el-form-item>
             </el-form>
           </div>
         </el-tab-pane>
@@ -322,8 +358,37 @@ function competencyTagText(status) {
   return { none: '未生成', draft: '待审核', approved: '已生效', rejected: '已驳回' }[status] || '未知'
 }
 
-const defaultForm = { title: '', department: '', education_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '', jd_text: '' }
+const defaultForm = { title: '', department: '', education_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '', jd_text: '', batch_collect_criteria: null }
 const jobForm = ref({ ...defaultForm })
+
+const batchSchool985 = ref(false)
+const batchSchool211 = ref(false)
+const batchSchoolFirst = ref(false)
+const batchEduMin = ref(null)
+
+function syncBatchCriteria() {
+  const tiers = []
+  if (batchSchool985.value) tiers.push('985')
+  if (batchSchool211.value) tiers.push('211')
+  if (batchSchoolFirst.value) tiers.push('双一流')
+  if (tiers.length === 0 && !batchEduMin.value) {
+    jobForm.value.batch_collect_criteria = null
+  } else {
+    jobForm.value.batch_collect_criteria = {
+      school_tiers: tiers,
+      education_min: batchEduMin.value || null,
+    }
+  }
+}
+
+function loadBatchCriteriaFromForm() {
+  const c = jobForm.value.batch_collect_criteria
+  if (!c) { batchSchool985.value = false; batchSchool211.value = false; batchSchoolFirst.value = false; batchEduMin.value = null; return; }
+  batchSchool985.value = (c.school_tiers || []).includes('985')
+  batchSchool211.value = (c.school_tiers || []).includes('211')
+  batchSchoolFirst.value = (c.school_tiers || []).includes('双一流')
+  batchEduMin.value = c.education_min || null
+}
 
 async function loadJobs() {
   loading.value = true
@@ -344,6 +409,7 @@ function openNewJob() {
   activeTab.value = 'basic'
   jdInput.value = ''
   parseStep.value = 'input'    // 新建从第一步开始
+  loadBatchCriteriaFromForm()
   showCreateDialog.value = true
 }
 
@@ -353,6 +419,7 @@ function editJob(job) {
   currentJobId.value = job.id
   activeTab.value = 'basic'
   parseStep.value = 'review'   // 编辑直接进表单
+  loadBatchCriteriaFromForm()
   showCreateDialog.value = true
 }
 
@@ -377,7 +444,9 @@ async function parseJd() {
       soft_requirements: result.soft_requirements || '',
       greeting_templates: '',
       jd_text: jdInput.value,
+      batch_collect_criteria: { school_tiers: [], education_min: null },
     }
+    loadBatchCriteriaFromForm()
     parseStep.value = 'review'
   } catch (e) {
     ElMessage.error('解析失败：' + (e.message || e))
