@@ -944,56 +944,84 @@ function findGreetButtonInCard(card) {
 }
 
 // ---- F5: chat page automation helpers ----
-// Selectors are PLACEHOLDERS; verify on live page.
+// Selectors verified live on zhipin.com/web/chat/index 2026-04-23.
 
 async function f5_typeAndSendChatMessage(text) {
-  const input = document.querySelector(".chat-input textarea, .chat-input [contenteditable=true]");
-  if (!input) return { ok: false, reason: "输入框未找到" };
+  const input = document.getElementById("boss-chat-editor-input");
+  if (!input) return { ok: false, reason: "输入框未找到 (#boss-chat-editor-input)" };
+  const editor = document.querySelector(".conversation-editor");
+  const vm = editor && editor.__vue__;
+  const beforeSelf = document.querySelectorAll(".chat-message-list .message-item .item-myself").length;
+
   input.focus();
-  if (input.tagName === "TEXTAREA") {
-    input.value = "";
-    for (const ch of text) {
-      input.value += ch;
-      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: ch }));
-      await new Promise((r) => setTimeout(r, 20 + Math.random() * 60));
+  try { document.execCommand("selectAll", false); document.execCommand("delete", false); }
+  catch (_) { input.textContent = ""; }
+  await new Promise((r) => setTimeout(r, 120));
+
+  // Type char-by-char via execCommand so Vue v-model / draft sync
+  for (const ch of text) {
+    try { document.execCommand("insertText", false, ch); }
+    catch (_) {
+      input.textContent += ch;
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, data: ch, inputType: "insertText" }));
     }
-  } else {
-    input.textContent = text;
-    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 25 + Math.random() * 55));
   }
-  await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
-  const sendBtn = document.querySelector(
-    ".chat-input .send-btn, button[data-action=send], .chat-action-send"
-  );
-  if (!sendBtn) return { ok: false, reason: "发送按钮未找到" };
-  if (typeof simulateHumanClick === "function") {
-    await simulateHumanClick(sendBtn);
-  } else {
-    sendBtn.click();
+  await new Promise((r) => setTimeout(r, 300));
+
+  // Prefer Vue-exposed sendText() method (proven live 2026-04-23)
+  let triggered = false;
+  if (vm && typeof vm.sendText === "function") {
+    try { vm.sendText(); triggered = true; } catch (_) { /* fall through to Enter */ }
   }
-  return { ok: true };
+  if (!triggered) {
+    const opts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+    input.dispatchEvent(new KeyboardEvent("keydown", opts));
+    input.dispatchEvent(new KeyboardEvent("keypress", opts));
+    input.dispatchEvent(new KeyboardEvent("keyup", opts));
+  }
+
+  // Verify delivery by watching for new .item-myself message (not by input-cleared heuristic)
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 250));
+    const afterSelf = document.querySelectorAll(".chat-message-list .message-item .item-myself").length;
+    if (afterSelf > beforeSelf) return { ok: true };
+  }
+  return { ok: false, reason: "5s 内未见新的 .item-myself 消息，发送可能失败" };
 }
 
 async function f5_clickRequestResumeButton() {
-  const btn = Array.from(document.querySelectorAll("button, a")).find(
-    (el) => /求简历|索要简历/.test(el.textContent || "")
+  const btn = Array.from(document.querySelectorAll(".operate-btn")).find(
+    (el) => /求简历|索要简历/.test((el.textContent || "").trim())
   );
-  if (!btn) return { ok: false, reason: "求简历按钮未找到" };
-  if (typeof simulateHumanClick === "function") {
-    await simulateHumanClick(btn);
-  } else {
-    btn.click();
+  if (!btn) return { ok: false, reason: "求简历按钮未找到 (.operate-btn)" };
+  if (typeof simulateHumanClick === "function") await simulateHumanClick(btn);
+  else btn.click();
+  // Boss 弹出 "确定向牛人索取简历吗？" 确认框
+  await new Promise((r) => setTimeout(r, 800));
+  let confirm = document.querySelector(".exchange-tooltip .boss-btn-primary");
+  if (!confirm) {
+    confirm = Array.from(document.querySelectorAll(".boss-popup__btn, button, span"))
+      .find((el) => /^确定$/.test((el.textContent || "").trim()) && el.offsetParent !== null);
+  }
+  if (confirm) {
+    if (typeof simulateHumanClick === "function") await simulateHumanClick(confirm);
+    else confirm.click();
+    await new Promise((r) => setTimeout(r, 400));
   }
   return { ok: true };
 }
 
 async function f5_checkPdfReceived(bossId) {
-  const attachRows = document.querySelectorAll(".msg-row.attachment, .attachment-card");
-  for (const el of attachRows) {
-    const fromId = el.getAttribute("data-sender");
-    if (fromId === bossId) {
-      const link = el.querySelector("a[href*='.pdf'], a[download]");
-      if (link) return { present: true, url: link.href };
+  // Reuse proven findPdfCard() logic: last .message-card-wrap.boss-green
+  // with non-disabled .card-btn is the real resume PDF card.
+  const cards = document.querySelectorAll(".message-card-wrap.boss-green");
+  for (let i = cards.length - 1; i >= 0; i--) {
+    const btn = cards[i].querySelector(".card-btn:not(.disabled)");
+    if (btn) {
+      const title = cards[i].querySelector(".message-card-top-title")?.textContent?.trim() || "";
+      return { present: true, url: title || `present://${bossId || "unknown"}` };
     }
   }
   return { present: false };
