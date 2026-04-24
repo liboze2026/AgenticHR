@@ -62,7 +62,7 @@ class CollectChatIn(BaseModel):
 
 
 class NextActionOut(BaseModel):
-    type: Literal["send_hard", "request_pdf", "wait_pdf",
+    type: Literal["send_hard", "request_pdf", "wait_pdf", "wait_reply",
                   "send_soft", "complete", "mark_pending_human", "abandon"]
     text: str = ""
     slot_keys: list[str] = Field(default_factory=list)

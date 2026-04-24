@@ -1552,7 +1552,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   if (message && message.type === "intake_outbox_dispatch") {
-    (async () => {
+    // Serialize concurrent dispatches: background may send multiple items
+    // back-to-back and Chrome resolves the await before sendResponse fires,
+    // which caused characters from 3 outbox rows to interleave in the same
+    // input box. Chain onto a module-level promise to force serial execution.
+    window.__intakeDispatchQueue = (window.__intakeDispatchQueue || Promise.resolve()).then(async () => {
       const ob = message.outbox || {};
       try {
         const ok = await sendIntakeMessage({
@@ -1573,8 +1577,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           error: String(e?.message || e).slice(0, 500),
         });
       }
-    })();
-    return true;
+    });
+    return false;
   }
   return false;
 });
