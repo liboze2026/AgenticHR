@@ -19,6 +19,7 @@ from app.modules.im_intake.outbox_service import (
     generate_for_candidate, cleanup_expired, reap_stale_claims,
     ACTIVE_CANDIDATE_STATES,
 )
+from app.modules.im_intake.settings_service import is_running as _settings_is_running
 from app.modules.screening.models import Job
 from app.config import settings
 
@@ -29,26 +30,43 @@ _lock = threading.Lock()
 
 
 def scan_once(db: Session) -> dict[str, int]:
-    """扫一次 active intake，生成 outbox；运行一次过期清理。返回统计。"""
+    """扫一次 active intake，生成 outbox；运行一次过期清理。返回统计。
+
+    Per-user gate: for each distinct user_id with active candidates, skip the
+    whole user if settings.is_running is False (paused OR target reached).
+    Target/pause is the HR-facing master switch; cleanup + reap still run
+    globally because they're corrections, not emissions.
+    """
     generated = 0
     seen = 0
     hard_max = getattr(settings, "f4_hard_max_asks", 3)
     pdf_to = getattr(settings, "f4_pdf_timeout_hours", 72)
     cooldown = getattr(settings, "f4_ask_cooldown_hours", 6)
 
-    candidates = (db.query(IntakeCandidate)
-                  .filter(IntakeCandidate.intake_status.in_(ACTIVE_CANDIDATE_STATES))
-                  .all())
-    for c in candidates:
-        seen += 1
-        slots = db.query(IntakeSlot).filter_by(candidate_id=c.id).all()
-        job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
-        action = decide_next_action(c, slots, job,
-                                    hard_max=hard_max,
-                                    pdf_timeout_h=pdf_to,
-                                    ask_cooldown_h=cooldown)
-        if generate_for_candidate(db, c, action) is not None:
-            generated += 1
+    active_user_ids = [row[0] for row in (
+        db.query(IntakeCandidate.user_id)
+        .filter(IntakeCandidate.intake_status.in_(ACTIVE_CANDIDATE_STATES))
+        .distinct()
+        .all()
+    )]
+
+    for uid in active_user_ids:
+        if not _settings_is_running(db, uid):
+            continue
+        candidates = (db.query(IntakeCandidate)
+                      .filter(IntakeCandidate.user_id == uid)
+                      .filter(IntakeCandidate.intake_status.in_(ACTIVE_CANDIDATE_STATES))
+                      .all())
+        for c in candidates:
+            seen += 1
+            slots = db.query(IntakeSlot).filter_by(candidate_id=c.id).all()
+            job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
+            action = decide_next_action(c, slots, job,
+                                        hard_max=hard_max,
+                                        pdf_timeout_h=pdf_to,
+                                        ask_cooldown_h=cooldown)
+            if generate_for_candidate(db, c, action) is not None:
+                generated += 1
 
     stale_min = getattr(settings, "f4_claim_stale_minutes", 10)
     reaped = reap_stale_claims(db, stale_minutes=stale_min)

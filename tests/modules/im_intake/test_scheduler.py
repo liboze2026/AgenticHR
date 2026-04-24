@@ -12,6 +12,7 @@ from app.modules.im_intake.outbox_model import IntakeOutbox
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
 from app.modules.im_intake.scheduler import scan_once
 from app.modules.im_intake import scheduler as _sched_mod
+from app.modules.im_intake.settings_service import update as settings_update
 
 
 @_pytest.fixture(autouse=True)
@@ -47,6 +48,7 @@ def _mk_candidate_with_empty_hard_slots(db, user_id=1, boss_id="bx"):
 def test_scan_once_generates_outbox_for_collecting_candidate():
     db = _session()
     c = _mk_candidate_with_empty_hard_slots(db)
+    settings_update(db, user_id=1, enabled=True, target_count=100)
     stats = scan_once(db)
     assert stats["generated"] >= 1
     rows = db.query(IntakeOutbox).filter_by(candidate_id=c.id).all()
