@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.im_intake.models import IntakeSlot  # noqa: F401  -- re-exported for DRY access
 from app.modules.im_intake.outbox_model import IntakeOutbox
 from app.modules.im_intake.decision import NextAction
+from app.modules.im_intake.service import IntakeService
 
 SEND_ACTIONS = {"send_hard", "request_pdf", "send_soft"}
 
@@ -56,3 +58,38 @@ def claim_batch(db: Session, user_id: int, limit: int = 5) -> list[IntakeOutbox]
         r.attempts += 1
     db.commit()
     return rows
+
+
+def ack_sent(db: Session, outbox_id: int) -> IntakeOutbox | None:
+    """扩展汇报发送成功：flip row → sent；复用 IntakeService.record_asked 推进 slot+candidate 状态。"""
+    row = db.query(IntakeOutbox).filter_by(id=outbox_id).first()
+    if row is None or row.status != "claimed":
+        return row
+    candidate = db.query(IntakeCandidate).filter_by(id=row.candidate_id).first()
+    if candidate is None:
+        row.status = "sent"
+        row.sent_at = datetime.now(timezone.utc)
+        db.commit()
+        return row
+
+    svc = IntakeService(db=db, user_id=candidate.user_id)
+    action = NextAction(type=row.action_type, text=row.text or "",
+                        meta={"slot_keys": row.slot_keys or []})
+    svc.record_asked(candidate, action)
+
+    row.status = "sent"
+    row.sent_at = datetime.now(timezone.utc)
+    db.commit()
+    return row
+
+
+def ack_failed(db: Session, outbox_id: int, error: str = "") -> IntakeOutbox | None:
+    """扩展汇报发送失败：行回 pending 等下轮重试；不推进状态机。"""
+    row = db.query(IntakeOutbox).filter_by(id=outbox_id).first()
+    if row is None:
+        return None
+    row.status = "pending"   # re-queue; attempts already +1 at claim
+    row.last_error = error[:2000] if error else None
+    row.claimed_at = None
+    db.commit()
+    return row
