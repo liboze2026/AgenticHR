@@ -327,7 +327,7 @@ def autoscan_rank(
     Strategy: collecting first then awaiting_reply, oldest updated_at first.
     """
     if not _settings_is_running(db, user_id):
-        return {"items": []}
+        return {"items": [], "limit": limit}
     rows = (
         db.query(IntakeCandidate)
         .filter(IntakeCandidate.user_id == user_id)
