@@ -15,16 +15,19 @@ from app.database import SessionLocal
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.decision import decide_next_action
-from app.modules.im_intake.outbox_service import generate_for_candidate, cleanup_expired
+from app.modules.im_intake.outbox_service import (
+    generate_for_candidate, cleanup_expired, ACTIVE_CANDIDATE_STATES,
+)
 from app.modules.screening.models import Job
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 _state = {"running": False, "thread": None}
+_lock = threading.Lock()
 
 
-def scan_once(db: Session) -> dict:
+def scan_once(db: Session) -> dict[str, int]:
     """扫一次 active intake，生成 outbox；运行一次过期清理。返回统计。"""
     generated = 0
     seen = 0
@@ -33,7 +36,7 @@ def scan_once(db: Session) -> dict:
     cooldown = getattr(settings, "f4_ask_cooldown_hours", 6)
 
     candidates = (db.query(IntakeCandidate)
-                  .filter(IntakeCandidate.intake_status.in_(("collecting", "awaiting_reply")))
+                  .filter(IntakeCandidate.intake_status.in_(ACTIVE_CANDIDATE_STATES))
                   .all())
     for c in candidates:
         seen += 1
@@ -57,7 +60,10 @@ def _loop(interval_sec: int):
             db = SessionLocal()
             try:
                 stats = scan_once(db)
-                logger.info("F4 scan: %s", stats)
+                if any(stats.get(k, 0) for k in ("generated", "abandoned", "expired_outbox")):
+                    logger.info("F4 scan: %s", stats)
+                else:
+                    logger.debug("F4 scan idle: %s", stats)
             finally:
                 db.close()
         except Exception as e:
@@ -70,15 +76,21 @@ def _loop(interval_sec: int):
 
 
 def start(interval_sec: int | None = None) -> None:
-    if _state["running"]:
-        return
-    interval = int(interval_sec if interval_sec is not None
-                   else getattr(settings, "f4_scheduler_interval_sec", 300))
-    _state["running"] = True
-    t = threading.Thread(target=_loop, args=(interval,), daemon=True, name="f4-scheduler")
-    _state["thread"] = t
-    t.start()
+    with _lock:
+        if _state["running"] and _state["thread"] is not None and _state["thread"].is_alive():
+            return
+        interval = int(interval_sec if interval_sec is not None
+                       else getattr(settings, "f4_scheduler_interval_sec", 300))
+        _state["running"] = True
+        t = threading.Thread(target=_loop, args=(interval,), daemon=True, name="f4-scheduler")
+        _state["thread"] = t
+        t.start()
 
 
-def stop() -> None:
-    _state["running"] = False
+def stop(timeout: float = 5.0) -> None:
+    with _lock:
+        _state["running"] = False
+        t = _state["thread"]
+        _state["thread"] = None
+    if t is not None and t.is_alive():
+        t.join(timeout=timeout)
