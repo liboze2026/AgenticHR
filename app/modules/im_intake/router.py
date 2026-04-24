@@ -11,6 +11,12 @@ from app.database import get_db
 from app.modules.auth.deps import get_current_user_id
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
+from app.modules.im_intake.outbox_model import IntakeOutbox
+from app.modules.im_intake.outbox_service import (
+    ack_failed as _outbox_ack_failed,
+    ack_sent as _outbox_ack_sent,
+    claim_batch as _outbox_claim_batch,
+)
 from app.modules.im_intake.schemas import (
     AckSentIn,
     CandidateDetailOut,
@@ -18,6 +24,10 @@ from app.modules.im_intake.schemas import (
     CollectChatIn,
     CollectChatOut,
     NextActionOut,
+    OutboxAckIn,
+    OutboxClaimIn,
+    OutboxClaimItem,
+    OutboxClaimOut,
     SlotOut,
     SlotPatchIn,
     StartConversationOut,
@@ -338,3 +348,37 @@ def start_conversation(
     sep = "&" if "?" in base else "?"
     deep_link = f"{base}{sep}intake_candidate_id={c.id}"
     return StartConversationOut(candidate_id=c.id, boss_id=c.boss_id, deep_link=deep_link)
+
+
+# ---- F4 Task 9: outbox HTTP API ----
+
+@router.post("/outbox/claim", response_model=OutboxClaimOut)
+def outbox_claim(
+    body: OutboxClaimIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    rows = _outbox_claim_batch(db, user_id=user_id, limit=body.limit)
+    return OutboxClaimOut(items=[
+        OutboxClaimItem(
+            id=r.id, candidate_id=r.candidate_id, action_type=r.action_type,
+            text=r.text or "", slot_keys=r.slot_keys or [], attempts=r.attempts,
+        ) for r in rows
+    ])
+
+
+@router.post("/outbox/{outbox_id}/ack")
+def outbox_ack(
+    outbox_id: int,
+    body: OutboxAckIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    row = db.query(IntakeOutbox).filter_by(id=outbox_id, user_id=user_id).first()
+    if row is None:
+        raise HTTPException(404, "outbox not found")
+    if body.success:
+        _outbox_ack_sent(db, outbox_id)
+    else:
+        _outbox_ack_failed(db, outbox_id, error=body.error)
+    return {"ok": True}

@@ -83,3 +83,27 @@ class StartConversationOut(BaseModel):
     candidate_id: int
     boss_id: str
     deep_link: str
+
+
+# ---- F4 Task 9: outbox HTTP API schemas ----
+
+class OutboxClaimIn(BaseModel):
+    limit: int = Field(5, ge=1, le=50)
+
+
+class OutboxClaimItem(BaseModel):
+    id: int
+    candidate_id: int
+    action_type: str
+    text: str
+    slot_keys: list = []
+    attempts: int
+
+
+class OutboxClaimOut(BaseModel):
+    items: list[OutboxClaimItem]
+
+
+class OutboxAckIn(BaseModel):
+    success: bool
+    error: str = ""
