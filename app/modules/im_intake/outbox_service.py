@@ -52,7 +52,7 @@ def claim_batch(db: Session, user_id: int, limit: int = 1) -> list[IntakeOutbox]
     Increments ``attempts`` at claim time (not at ack), so ``ack_failed``
     just re-queues without touching the counter.
     """
-    limit = max(1, min(1, int(limit)))  # hard clamp
+    limit = 1  # hard-capped; caller's value is intentionally ignored
     now = datetime.now(timezone.utc)
     rows = (db.query(IntakeOutbox)
             .filter_by(user_id=user_id, status="pending")

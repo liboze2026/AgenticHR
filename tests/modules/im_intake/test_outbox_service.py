@@ -73,7 +73,7 @@ def test_claim_batch_transitions_pending_to_claimed():
     act = NextAction(type="send_hard", text="Q", meta={"slot_keys": ["phone"]})
     generate_for_candidate(db, c, act)
 
-    items = claim_batch(db, user_id=1, limit=5)
+    items = claim_batch(db, user_id=1, limit=1)
     assert len(items) == 1
     assert items[0].status == "claimed"
     assert items[0].claimed_at is not None
@@ -88,7 +88,7 @@ def test_claim_batch_is_user_scoped():
     generate_for_candidate(db, c1, act)
     generate_for_candidate(db, c2, act)
 
-    u1_items = claim_batch(db, user_id=1, limit=10)
+    u1_items = claim_batch(db, user_id=1, limit=1)
     assert len(u1_items) == 1
     assert u1_items[0].candidate_id == c1.id
 
@@ -102,7 +102,7 @@ def test_claim_batch_respects_limit_and_fifo():
         c = _mk_candidate(db, boss_id=f"bx{i}")
         act = NextAction(type="send_hard", text=f"Q{i}", meta={"slot_keys": ["phone"]})
         generate_for_candidate(db, c, act)
-    items = claim_batch(db, user_id=1, limit=3)
+    items = claim_batch(db, user_id=1, limit=3)  # proves hard-clamp: wide limit still returns 1
     assert len(items) == 1
     assert items[0].text == "Q0"  # earliest (FIFO) row returned
 
@@ -113,7 +113,7 @@ def test_claim_batch_skips_already_claimed():
     act = NextAction(type="send_hard", text="Q", meta={"slot_keys": ["phone"]})
     row = generate_for_candidate(db, c, act)
     row.status = "claimed"; db.commit()
-    assert claim_batch(db, user_id=1, limit=10) == []
+    assert claim_batch(db, user_id=1, limit=1) == []
 
 
 def test_ack_sent_marks_row_and_updates_candidate_slots():
