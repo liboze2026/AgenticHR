@@ -1429,6 +1429,48 @@ async function intake_runOrchestrator(opts = {}) {
 }
 
 // ────────────────────────────────────────────────────────
+// F4 Task 11: sendIntakeMessage — reusable helper for
+// (autoscan tick, outbox dispatch). Locates the chat row by
+// data-id in the geek-item list, clicks to select, waits for
+// the chat window to sync, then types + sends `text`.
+// Returns true on visible delivery, false on any visible failure.
+// ────────────────────────────────────────────────────────
+async function sendIntakeMessage({ candidate_id, text }) {
+  try {
+    if (!candidate_id || !text) return false;
+    if (!location.host.includes("zhipin.com")) return false;
+    const dataId = String(candidate_id);
+    const row = document.querySelector(`.geek-item[data-id="${dataId}"]`);
+    if (!row) {
+      log(`[sendIntakeMessage] geek-item[data-id="${dataId}"] not found`);
+      return false;
+    }
+    if (!row.classList.contains("selected")) {
+      row.click();
+    }
+    // Wait for right panel to sync to this candidate
+    try {
+      await intake_waitFor(() => {
+        const sel = document.querySelector(".geek-item.selected");
+        const nb = (document.querySelector(".name-box")?.textContent || "").trim();
+        return sel?.getAttribute("data-id") === dataId && !!nb;
+      }, 12000);
+    } catch {
+      log(`[sendIntakeMessage] chat sync timeout for ${dataId}`);
+      return false;
+    }
+    await sleep(400);
+    const r = await intake_typeAndSendChatMessage(text);
+    return !!(r && r.ok);
+  } catch (e) {
+    log(`[sendIntakeMessage] error: ${e?.message || e}`);
+    return false;
+  }
+}
+
+window.sendIntakeMessage = sendIntakeMessage;
+
+// ────────────────────────────────────────────────────────
 // F4 自动扫描 (chrome.alarms 驱动的周期 tick)
 // 每个 tick：拉取后端 collecting 候选人 → 在消息列表里按 boss_id 匹配
 // 找到的 geek-item，点击后复用 intake_runOrchestrator 抓取 + 推进状态。
@@ -1507,6 +1549,31 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     intake_autoScanTick()
       .then((r) => sendResponse(r))
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
+    return true;
+  }
+  if (message && message.type === "intake_outbox_dispatch") {
+    (async () => {
+      const ob = message.outbox || {};
+      try {
+        const ok = await sendIntakeMessage({
+          candidate_id: ob.candidate_id,
+          text: ob.text,
+        });
+        chrome.runtime.sendMessage({
+          type: "intake_outbox_ack",
+          outbox_id: ob.id,
+          success: !!ok,
+          error: ok ? "" : "send returned false",
+        });
+      } catch (e) {
+        chrome.runtime.sendMessage({
+          type: "intake_outbox_ack",
+          outbox_id: ob.id,
+          success: false,
+          error: String(e?.message || e).slice(0, 500),
+        });
+      }
+    })();
     return true;
   }
   return false;
