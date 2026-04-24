@@ -1,5 +1,30 @@
 <template>
   <div class="intake-page">
+    <el-card shadow="never" class="automation-card" style="margin-bottom: 12px">
+      <div class="automation-row">
+        <div class="automation-target">
+          <span class="label">目标候选人数</span>
+          <el-input-number v-model="settingsForm.target_count" :min="0" :max="1000" :step="5"
+                           controls-position="right" style="width: 140px" />
+          <el-button size="small" type="primary" @click="saveTarget" :loading="savingTarget">
+            保存
+          </el-button>
+        </div>
+        <div class="automation-progress">
+          <el-progress :percentage="progressPercent" :stroke-width="12"
+                       :status="progressStatus"
+                       :format="() => `${settings.complete_count} / ${settings.target_count}`" />
+        </div>
+        <div class="automation-action">
+          <el-tag :type="runningTagType" style="margin-right: 8px">{{ runningText }}</el-tag>
+          <el-button v-if="settings.enabled" type="warning" @click="toggleEnabled(false)"
+                     :loading="togglingEnabled">暂停</el-button>
+          <el-button v-else type="success" @click="toggleEnabled(true)"
+                     :loading="togglingEnabled">开始</el-button>
+        </div>
+      </div>
+    </el-card>
+
     <el-card shadow="never" class="daily-cap-card">
       <div class="daily-cap">
         <span class="daily-cap-label">今日自动采集额度</span>
@@ -138,6 +163,7 @@ import {
   startConversation,
   getDailyCap,
 } from '../api/intake'
+import { getIntakeSettings, updateIntakeSettings } from '../api/intakeSettings'
 import { resumeApi } from '../api'
 
 const loading = ref(false)
@@ -148,6 +174,75 @@ const size = ref(20)
 const statusFilter = ref('')
 const search = ref('')
 const dailyCap = ref({ used: 0, cap: 0, remaining: 0 })
+
+const settings = ref({ enabled: false, target_count: 0, complete_count: 0, is_running: false })
+const settingsForm = ref({ target_count: 0 })
+const savingTarget = ref(false)
+const togglingEnabled = ref(false)
+
+const progressPercent = computed(() => {
+  const t = settings.value.target_count
+  if (!t) return 0
+  return Math.min(100, Math.round((settings.value.complete_count / t) * 100))
+})
+const progressStatus = computed(() => {
+  if (settings.value.target_count > 0 &&
+      settings.value.complete_count >= settings.value.target_count) return 'success'
+  return ''
+})
+const runningTagType = computed(() => {
+  if (settings.value.is_running) return 'success'
+  if (settings.value.target_count > 0 &&
+      settings.value.complete_count >= settings.value.target_count) return 'info'
+  return 'warning'
+})
+const runningText = computed(() => {
+  if (settings.value.is_running) return '运行中'
+  if (settings.value.target_count > 0 &&
+      settings.value.complete_count >= settings.value.target_count) return '已达标'
+  if (!settings.value.enabled) return '已暂停'
+  return '未配置'
+})
+
+async function loadSettings() {
+  try {
+    const s = await getIntakeSettings()
+    settings.value = s
+    settingsForm.value.target_count = s.target_count
+  } catch (e) {
+    ElMessage.error('加载自动采集设置失败')
+  }
+}
+
+async function saveTarget() {
+  savingTarget.value = true
+  try {
+    const s = await updateIntakeSettings({ target_count: settingsForm.value.target_count })
+    settings.value = s
+    ElMessage.success('目标已保存')
+  } catch (e) {
+    ElMessage.error('保存失败')
+  } finally {
+    savingTarget.value = false
+  }
+}
+
+async function toggleEnabled(on) {
+  if (on && settings.value.target_count <= 0) {
+    ElMessage.warning('请先设置目标候选人数（>0）')
+    return
+  }
+  togglingEnabled.value = true
+  try {
+    const s = await updateIntakeSettings({ enabled: on })
+    settings.value = s
+    ElMessage.success(on ? '已开始自动采集' : '已暂停')
+  } catch (e) {
+    ElMessage.error('操作失败')
+  } finally {
+    togglingEnabled.value = false
+  }
+}
 
 async function loadDailyCap() {
   try {
@@ -292,6 +387,7 @@ async function doForceComplete(row) {
 onMounted(() => {
   loadCandidates()
   loadDailyCap()
+  loadSettings()
 })
 </script>
 
@@ -323,5 +419,22 @@ onMounted(() => {
 .daily-cap-remaining {
   color: #909399;
   margin-left: 4px;
+}
+.automation-card .automation-row {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.automation-card .automation-target {
+  display: flex; align-items: center; gap: 10px;
+}
+.automation-card .automation-target .label {
+  font-size: 14px; color: #606266;
+}
+.automation-card .automation-progress {
+  flex: 1;
+}
+.automation-card .automation-action {
+  display: flex; align-items: center;
 }
 </style>
