@@ -167,3 +167,92 @@ def test_cleanup_expired_abandons_old_candidates_and_expires_outbox():
     assert row.status == "expired"
     assert stats["abandoned"] == 1
     assert stats["expired_outbox"] == 1
+
+
+def test_cleanup_expired_skips_null_expires_at():
+    db = _make_session()
+    now = datetime.now(timezone.utc)
+    c = IntakeCandidate(user_id=1, boss_id="bxNull", name="N",
+                        intake_status="collecting", source="plugin",
+                        intake_started_at=now, expires_at=None)
+    db.add(c); db.commit()
+
+    stats = cleanup_expired(db, now=now)
+    db.refresh(c)
+    assert c.intake_status == "collecting"
+    assert stats == {"abandoned": 0, "expired_outbox": 0}
+
+
+def test_cleanup_expired_handles_awaiting_reply():
+    db = _make_session()
+    now = datetime.now(timezone.utc)
+    c = IntakeCandidate(user_id=1, boss_id="bxAwait", name="W",
+                        intake_status="awaiting_reply", source="plugin",
+                        intake_started_at=now - timedelta(days=20),
+                        expires_at=now - timedelta(days=1))
+    db.add(c); db.commit()
+
+    stats = cleanup_expired(db, now=now)
+    db.refresh(c)
+    assert c.intake_status == "abandoned"
+    assert stats["abandoned"] == 1
+
+
+def test_cleanup_expired_skips_already_terminal():
+    db = _make_session()
+    now = datetime.now(timezone.utc)
+    done = IntakeCandidate(user_id=1, boss_id="bxDone", name="D",
+                           intake_status="abandoned", source="plugin",
+                           intake_started_at=now - timedelta(days=20),
+                           expires_at=now - timedelta(days=1))
+    complete = IntakeCandidate(user_id=1, boss_id="bxComp", name="C",
+                               intake_status="complete", source="plugin",
+                               intake_started_at=now - timedelta(days=20),
+                               expires_at=now - timedelta(days=1))
+    db.add_all([done, complete]); db.commit()
+    # Seed outbox rows directly (bypass generate_for_candidate's status filter)
+    ob_done = IntakeOutbox(candidate_id=done.id, user_id=1, action_type="send_hard",
+                           text="Q", slot_keys=["phone"], status="pending",
+                           scheduled_for=now)
+    ob_comp = IntakeOutbox(candidate_id=complete.id, user_id=1, action_type="send_hard",
+                           text="Q", slot_keys=["phone"], status="pending",
+                           scheduled_for=now)
+    db.add_all([ob_done, ob_comp]); db.commit()
+
+    stats = cleanup_expired(db, now=now)
+    db.refresh(done); db.refresh(complete); db.refresh(ob_done); db.refresh(ob_comp)
+    assert done.intake_status == "abandoned"
+    assert complete.intake_status == "complete"
+    assert ob_done.status == "pending"
+    assert ob_comp.status == "pending"
+    assert stats == {"abandoned": 0, "expired_outbox": 0}
+
+
+def test_cleanup_expired_empty_returns_zero():
+    db = _make_session()
+    stats = cleanup_expired(db, now=datetime.now(timezone.utc))
+    assert stats == {"abandoned": 0, "expired_outbox": 0}
+
+
+def test_cleanup_expired_does_not_touch_sent_or_failed_outbox():
+    db = _make_session()
+    now = datetime.now(timezone.utc)
+    c = IntakeCandidate(user_id=1, boss_id="bxMix", name="M",
+                        intake_status="collecting", source="plugin",
+                        intake_started_at=now - timedelta(days=20),
+                        expires_at=now - timedelta(days=1))
+    db.add(c); db.commit()
+    pending = IntakeOutbox(candidate_id=c.id, user_id=1, action_type="send_hard",
+                           text="Q1", slot_keys=["phone"], status="pending",
+                           scheduled_for=now)
+    sent = IntakeOutbox(candidate_id=c.id, user_id=1, action_type="send_hard",
+                        text="Q2", slot_keys=["phone"], status="sent",
+                        scheduled_for=now, sent_at=now)
+    db.add_all([pending, sent]); db.commit()
+
+    stats = cleanup_expired(db, now=now)
+    db.refresh(c); db.refresh(pending); db.refresh(sent)
+    assert c.intake_status == "abandoned"
+    assert pending.status == "expired"
+    assert sent.status == "sent"
+    assert stats == {"abandoned": 1, "expired_outbox": 1}

@@ -12,6 +12,8 @@ from app.modules.im_intake.decision import NextAction
 from app.modules.im_intake.service import IntakeService
 
 SEND_ACTIONS = {"send_hard", "request_pdf", "send_soft"}
+ACTIVE_CANDIDATE_STATES = ("collecting", "awaiting_reply")
+LIVE_OUTBOX_STATES = ("pending", "claimed")
 _MAX_ERROR_LEN = 2000  # cap last_error payload so rogue stack traces don't bloat rows
 
 
@@ -22,7 +24,7 @@ def generate_for_candidate(db: Session, candidate: IntakeCandidate,
         return None
     existing = (db.query(IntakeOutbox)
                 .filter_by(candidate_id=candidate.id)
-                .filter(IntakeOutbox.status.in_(("pending", "claimed")))
+                .filter(IntakeOutbox.status.in_(LIVE_OUTBOX_STATES))
                 .first())
     if existing is not None:
         return None
@@ -95,15 +97,17 @@ def ack_failed(db: Session, outbox_id: int, error: str = "") -> IntakeOutbox | N
     return row
 
 
-def cleanup_expired(db: Session, now: datetime | None = None) -> dict:
+def cleanup_expired(db: Session, now: datetime | None = None) -> dict[str, int]:
     """标 expires_at < now 且仍在 collecting/awaiting_reply 的候选人为 abandoned；
     其 pending/claimed outbox → expired。返回 {'abandoned': n, 'expired_outbox': m}。
     """
     now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     to_abandon = (db.query(IntakeCandidate)
                   .filter(IntakeCandidate.expires_at.isnot(None))
                   .filter(IntakeCandidate.expires_at < now)
-                  .filter(IntakeCandidate.intake_status.in_(("collecting", "awaiting_reply")))
+                  .filter(IntakeCandidate.intake_status.in_(ACTIVE_CANDIDATE_STATES))
                   .all())
     abandoned_ids = [c.id for c in to_abandon]
     for c in to_abandon:
@@ -113,7 +117,7 @@ def cleanup_expired(db: Session, now: datetime | None = None) -> dict:
     if abandoned_ids:
         expired_cnt = (db.query(IntakeOutbox)
                        .filter(IntakeOutbox.candidate_id.in_(abandoned_ids))
-                       .filter(IntakeOutbox.status.in_(("pending", "claimed")))
+                       .filter(IntakeOutbox.status.in_(LIVE_OUTBOX_STATES))
                        .update({"status": "expired"}, synchronize_session=False))
     db.commit()
-    return {"abandoned": len(abandoned_ids), "expired_outbox": int(expired_cnt)}
+    return {"abandoned": len(abandoned_ids), "expired_outbox": expired_cnt}
