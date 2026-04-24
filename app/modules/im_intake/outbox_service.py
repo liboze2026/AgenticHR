@@ -7,12 +7,12 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.modules.im_intake.candidate_model import IntakeCandidate
-from app.modules.im_intake.models import IntakeSlot  # noqa: F401  -- re-exported for DRY access
 from app.modules.im_intake.outbox_model import IntakeOutbox
 from app.modules.im_intake.decision import NextAction
 from app.modules.im_intake.service import IntakeService
 
 SEND_ACTIONS = {"send_hard", "request_pdf", "send_soft"}
+_MAX_ERROR_LEN = 2000  # cap last_error payload so rogue stack traces don't bloat rows
 
 
 def generate_for_candidate(db: Session, candidate: IntakeCandidate,
@@ -89,7 +89,7 @@ def ack_failed(db: Session, outbox_id: int, error: str = "") -> IntakeOutbox | N
     if row is None:
         return None
     row.status = "pending"   # re-queue; attempts already +1 at claim
-    row.last_error = error[:2000] if error else None
+    row.last_error = error[:_MAX_ERROR_LEN] if error else None
     row.claimed_at = None
     db.commit()
     return row
