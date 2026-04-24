@@ -8,6 +8,16 @@ from app.core.competency.models import Skill
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 
+def _strip_embedding(d: dict | None) -> dict | None:
+    if d is None:
+        return None
+    return {k: v for k, v in d.items() if k != "embedding"}
+
+
+def _strip_many(items: list[dict]) -> list[dict]:
+    return [_strip_embedding(i) for i in items]
+
+
 class _SkillCreateBody(BaseModel):
     canonical_name: str
     category: str = "uncategorized"
@@ -36,17 +46,17 @@ def list_skills(
     lib = SkillLibrary()
     if search:
         items = lib.search(search, limit=limit)
-        return {"items": items, "total": len(items)}
+        return {"items": _strip_many(items), "total": len(items)}
     elif pending:
         items = lib.list_pending()
-        return {"items": items, "total": len(items)}
+        return {"items": _strip_many(items), "total": len(items)}
     else:
         all_items = lib.list_all()
         if category:
             all_items = [s for s in all_items if s["category"] == category]
         total = len(all_items)
         items = all_items[offset: offset + limit]
-        return {"items": items, "total": total}
+        return {"items": _strip_many(items), "total": total}
 
 
 @router.get("/categories")
@@ -62,7 +72,7 @@ def get_skill(skill_id: int):
     s = lib.find_by_id(skill_id)
     if not s:
         raise HTTPException(status_code=404, detail="skill not found")
-    return s
+    return _strip_embedding(s)
 
 
 @router.post("")
@@ -76,7 +86,7 @@ def create_skill(body: _SkillCreateBody):
         category=body.category,
         aliases=body.aliases,
     )
-    return lib.find_by_id(new_id)
+    return _strip_embedding(lib.find_by_id(new_id))
 
 
 @router.put("/{skill_id}")
@@ -96,7 +106,7 @@ def update_skill(skill_id: int, body: _SkillUpdateBody):
             s.pending_classification = body.pending_classification
         session.commit()
         SkillCache.invalidate()
-        return SkillLibrary().find_by_id(skill_id)
+        return _strip_embedding(SkillLibrary().find_by_id(skill_id))
     finally:
         session.close()
 
