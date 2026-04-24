@@ -49,6 +49,21 @@ async function ensureOutboxAlarm() {
   }
 }
 
+async function fetchIsRunning() {
+  const { serverUrl, authToken } = await chrome.storage.local.get(["serverUrl", "authToken"]);
+  if (!serverUrl || !authToken) return false;
+  try {
+    const r = await fetch(`${serverUrl}/api/intake/settings`, {
+      headers: { "Authorization": `Bearer ${authToken}` },
+    });
+    if (!r.ok) return false;
+    const s = await r.json();
+    return !!s.is_running;
+  } catch {
+    return false;
+  }
+}
+
 async function pollOutboxOnce() {
   const { serverUrl, authToken } = await chrome.storage.local.get(["serverUrl", "authToken"]);
   if (!serverUrl || !authToken) return;
@@ -114,6 +129,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === INTAKE_ALARM_NAME) {
+    if (!(await fetchIsRunning())) {
+      console.log("[intake] autoscan tick skipped: backend is_running=false");
+      return;
+    }
     try {
       const tabs = await chrome.tabs.query({ url: "https://www.zhipin.com/*" });
       if (!tabs.length) {
@@ -127,6 +146,10 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       console.warn("[intake] autoscan tick failed:", e?.message || e);
     }
   } else if (alarm.name === OUTBOX_ALARM_NAME) {
+    if (!(await fetchIsRunning())) {
+      console.log("[intake] outbox poll skipped: backend is_running=false");
+      return;
+    }
     await pollOutboxOnce();
   }
 });
