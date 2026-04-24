@@ -31,7 +31,7 @@ def _audit_safe(f_stage: str, action: str, entity_id: int, payload: dict | None 
 class IntakeService:
     def __init__(self, db: Session, adapter=None, llm=None,
                  storage_dir: str = "", hard_max_asks: int = 3, pdf_timeout_hours: int = 72,
-                 soft_max_n: int = 3, user_id: int = 0):
+                 ask_cooldown_hours: int = 6, soft_max_n: int = 3, user_id: int = 0):
         self.db = db
         self.adapter = adapter
         self.llm = llm
@@ -40,6 +40,7 @@ class IntakeService:
         self.pdf = PdfCollector(adapter=adapter, storage_dir=storage_dir, timeout_hours=pdf_timeout_hours) if adapter else None
         self.hard_max_asks = hard_max_asks
         self.pdf_timeout_hours = pdf_timeout_hours
+        self.ask_cooldown_hours = ask_cooldown_hours
         self.soft_max_n = soft_max_n
         self.user_id = user_id
 
@@ -138,7 +139,10 @@ class IntakeService:
 
         slots = list(slots_by_key.values())
         action = decide_next_action(
-            candidate, slots, job, hard_max=self.hard_max_asks, pdf_timeout_h=self.pdf_timeout_hours,
+            candidate, slots, job,
+            hard_max=self.hard_max_asks,
+            pdf_timeout_h=self.pdf_timeout_hours,
+            ask_cooldown_h=self.ask_cooldown_hours,
         )
 
         if action.type == "send_soft":

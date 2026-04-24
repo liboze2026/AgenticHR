@@ -22,6 +22,7 @@ from app.modules.im_intake.schemas import (
     SlotPatchIn,
     StartConversationOut,
 )
+from app.modules.im_intake.promote import promote_to_resume
 from app.modules.im_intake.service import IntakeService
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
 from app.core.audit.models import AuditEvent
@@ -52,6 +53,7 @@ def _build_service(db: Session, user_id: int = 0) -> IntakeService:
         llm=getattr(_main, "llm_client", None),
         hard_max_asks=getattr(settings, "f4_hard_max_asks", 3),
         pdf_timeout_hours=getattr(settings, "f4_pdf_timeout_hours", 72),
+        ask_cooldown_hours=getattr(settings, "f4_ask_cooldown_hours", 6),
         soft_max_n=getattr(settings, "f4_soft_question_max", 3),
         user_id=user_id,
     )
@@ -179,11 +181,14 @@ def force_complete(
     c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "not found")
-    c.intake_status = "complete"
-    c.intake_completed_at = datetime.now(timezone.utc)
+    resume = promote_to_resume(db, c, user_id=user_id)
     db.commit()
-    _audit_safe("f4_completed", "manual_complete", c.id, {"boss_id": c.boss_id}, reviewer_id=user_id)
-    return {"ok": True}
+    _audit_safe(
+        "f4_completed", "manual_complete", c.id,
+        {"boss_id": c.boss_id, "promoted_resume_id": resume.id if resume else None},
+        reviewer_id=user_id,
+    )
+    return {"ok": True, "promoted_resume_id": resume.id if resume else None}
 
 
 @router.post("/collect-chat", response_model=CollectChatOut)

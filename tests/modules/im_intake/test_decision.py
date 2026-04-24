@@ -68,6 +68,44 @@ def test_send_soft_when_hard_filled_and_competency_model_exists():
     assert action.type == "send_soft"
 
 
+def test_wait_reply_when_recently_asked_within_cooldown():
+    recent = datetime.now(timezone.utc) - timedelta(hours=2)
+    slots = [_slot("arrival_date", ask_count=1, asked_at=recent),
+             _slot("free_slots", ask_count=1, asked_at=recent),
+             _slot("intern_duration", ask_count=1, asked_at=recent),
+             _slot("pdf", value="p.pdf", category="pdf")]
+    action = decide_next_action(MagicMock(), slots, MagicMock(competency_model=None),
+                                hard_max=3, pdf_timeout_h=72, ask_cooldown_h=6)
+    assert action.type == "wait_reply"
+
+
+def test_send_hard_when_cooldown_passed():
+    old = datetime.now(timezone.utc) - timedelta(hours=8)
+    slots = [_slot("arrival_date", ask_count=1, asked_at=old),
+             _slot("free_slots", ask_count=1, asked_at=old),
+             _slot("intern_duration", ask_count=1, asked_at=old),
+             _slot("pdf", value="p.pdf", category="pdf")]
+    action = decide_next_action(MagicMock(name="x"), slots,
+                                MagicMock(title="t", competency_model=None),
+                                hard_max=3, pdf_timeout_h=72, ask_cooldown_h=6)
+    assert action.type == "send_hard"
+    assert set(action.meta["slot_keys"]) == {"arrival_date", "free_slots", "intern_duration"}
+
+
+def test_send_hard_mixed_cooldown_only_cooled_slots():
+    recent = datetime.now(timezone.utc) - timedelta(hours=1)
+    old = datetime.now(timezone.utc) - timedelta(hours=10)
+    slots = [_slot("arrival_date", ask_count=1, asked_at=recent),
+             _slot("free_slots", ask_count=1, asked_at=old),
+             _slot("intern_duration", ask_count=1, asked_at=old),
+             _slot("pdf", value="p.pdf", category="pdf")]
+    action = decide_next_action(MagicMock(name="x"), slots,
+                                MagicMock(title="t", competency_model=None),
+                                hard_max=3, pdf_timeout_h=72, ask_cooldown_h=6)
+    assert action.type == "send_hard"
+    assert set(action.meta["slot_keys"]) == {"free_slots", "intern_duration"}
+
+
 def test_complete_when_soft_already_sent():
     slots = [_slot("arrival_date", value="x"), _slot("free_slots", value="x"),
              _slot("intern_duration", value="x"), _slot("pdf", value="p.pdf", category="pdf"),

@@ -5,7 +5,7 @@ from app.modules.im_intake.templates import HARD_SLOT_KEYS
 from app.modules.im_intake.question_generator import QuestionGenerator
 
 ActionType = Literal[
-    "send_hard", "request_pdf", "wait_pdf",
+    "send_hard", "request_pdf", "wait_pdf", "wait_reply",
     "send_soft", "complete", "mark_pending_human", "abandon",
 ]
 
@@ -21,17 +21,32 @@ def _slots_by_key(slots):
     return {s.slot_key: s for s in slots}
 
 
-def decide_next_action(candidate, slots, job, hard_max: int = 3, pdf_timeout_h: int = 72) -> NextAction:
+def decide_next_action(
+    candidate, slots, job,
+    hard_max: int = 3, pdf_timeout_h: int = 72, ask_cooldown_h: int = 6,
+) -> NextAction:
     by = _slots_by_key(slots)
     pdf = by.get("pdf")
+    now = datetime.now(timezone.utc)
+
+    def _asked_at(s):
+        if s.asked_at is None:
+            return None
+        return s.asked_at if s.asked_at.tzinfo else s.asked_at.replace(tzinfo=timezone.utc)
 
     if pdf and not pdf.value and pdf.asked_at:
-        asked = pdf.asked_at if pdf.asked_at.tzinfo else pdf.asked_at.replace(tzinfo=timezone.utc)
-        if datetime.now(timezone.utc) - asked > timedelta(hours=pdf_timeout_h):
+        pdf_asked = _asked_at(pdf)
+        if now - pdf_asked > timedelta(hours=pdf_timeout_h):
             return NextAction(type="abandon")
 
-    pending = [k for k in HARD_SLOT_KEYS
-               if k in by and not by[k].value and by[k].ask_count < hard_max]
+    hard_unfilled = [k for k in HARD_SLOT_KEYS
+                     if k in by and not by[k].value and by[k].ask_count < hard_max]
+
+    def _cooled(k):
+        a = _asked_at(by[k])
+        return a is None or (now - a) >= timedelta(hours=ask_cooldown_h)
+
+    pending = [k for k in hard_unfilled if _cooled(k)]
     if pending:
         qg = QuestionGenerator(llm=None)
         missing = [(k, by[k].ask_count) for k in pending]
@@ -41,6 +56,10 @@ def decide_next_action(candidate, slots, job, hard_max: int = 3, pdf_timeout_h: 
             missing=missing,
         )
         return NextAction(type="send_hard", text=text, meta={"slot_keys": pending})
+
+    # 有待填槽位但都在冷却期内 — 等对方回复，先别打扰
+    if hard_unfilled:
+        return NextAction(type="wait_reply")
 
     if pdf and not pdf.value:
         if pdf.ask_count == 0:

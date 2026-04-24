@@ -633,11 +633,17 @@ async function autoGreet() {
 // ════════════════════════════════════════════════════════════════════
 
 function findPdfCard() {
-  // Find the real resume PDF card: last boss-green card with non-disabled card-btn
+  // Real PDF card: boss-green with a "预览附件" button. Filter out accept/reject
+  // prompt cards ("对方想发送附件简历给您，您是否同意") whose .card-btn are 拒绝/同意.
   const cards = document.querySelectorAll('.message-card-wrap.boss-green');
   for (let i = cards.length - 1; i >= 0; i--) {
-    const btn = cards[i].querySelector('.card-btn:not(.disabled)');
-    if (btn) return { card: cards[i], btn };
+    const title = (cards[i].querySelector('.message-card-top-title')?.textContent || '').trim();
+    if (/您是否同意|拒绝发送|拒绝同意/.test(title)) continue;
+    const btns = cards[i].querySelectorAll('.card-btn:not(.disabled)');
+    for (const btn of btns) {
+      const t = (btn.textContent || '').trim();
+      if (/预览|查看|下载/.test(t)) return { card: cards[i], btn };
+    }
   }
   return null;
 }
@@ -1187,14 +1193,17 @@ async function intake_clickRequestResumeButton() {
 }
 
 async function intake_checkPdfReceived(bossId) {
-  // Reuse proven findPdfCard() logic: last .message-card-wrap.boss-green
-  // with non-disabled .card-btn is the real resume PDF card.
+  // Skip accept/reject prompt cards; only treat 预览/查看/下载 buttons as real PDF.
   const cards = document.querySelectorAll(".message-card-wrap.boss-green");
   for (let i = cards.length - 1; i >= 0; i--) {
-    const btn = cards[i].querySelector(".card-btn:not(.disabled)");
-    if (btn) {
-      const title = cards[i].querySelector(".message-card-top-title")?.textContent?.trim() || "";
-      return { present: true, url: title || `present://${bossId || "unknown"}` };
+    const title = (cards[i].querySelector(".message-card-top-title")?.textContent || "").trim();
+    if (/您是否同意|拒绝发送|拒绝同意/.test(title)) continue;
+    const btns = cards[i].querySelectorAll(".card-btn:not(.disabled)");
+    for (const btn of btns) {
+      const t = (btn.textContent || "").trim();
+      if (/预览|查看|下载/.test(t)) {
+        return { present: true, url: title || `present://${bossId || "unknown"}` };
+      }
     }
   }
   return { present: false };
@@ -1405,6 +1414,8 @@ async function intake_runOrchestrator(opts = {}) {
       }
     } else if (action.type === "wait_pdf") {
       intake_showToast("等待候选人发送简历", "info");
+    } else if (action.type === "wait_reply") {
+      intake_showToast("冷却中 — 等对方回复后再问", "info");
     } else if (action.type === "complete") {
       intake_showToast("采集完成 → 已进入简历库", "done");
     } else if (action.type === "mark_pending_human") {
@@ -1506,18 +1517,37 @@ if (
   location.host.includes("zhipin.com") &&
   location.pathname.includes("/web/chat")
 ) {
-  const fromDeepLink = !!intake_getQueryParam("intake_candidate_id");
-  if (fromDeepLink) {
-    setTimeout(() => intake_runOrchestrator(), 1500);
+  // Dedup per candidate_id so repeated URL changes don't re-spam the same candidate.
+  // Cleared only on a new candidate_id arriving.
+  window.__intake_lastRunCandidate = null;
+  window.__intake_running = false;
+
+  async function intake_runOnceForDeepLink() {
+    const cid = intake_getQueryParam("intake_candidate_id");
+    if (!cid) return;
+    if (window.__intake_running) return;
+    if (window.__intake_lastRunCandidate === cid) return;
+    window.__intake_running = true;
+    window.__intake_lastRunCandidate = cid;
+    try {
+      await intake_runOrchestrator();
+    } finally {
+      window.__intake_running = false;
+    }
   }
 
-  // Also respond to SPA URL changes
+  if (intake_getQueryParam("intake_candidate_id")) {
+    setTimeout(intake_runOnceForDeepLink, 1500);
+  }
+
+  // Also respond to SPA URL changes (new candidate_id only)
   let lastHref = location.href;
   setInterval(() => {
     if (location.href !== lastHref) {
       lastHref = location.href;
-      if (intake_getQueryParam("intake_candidate_id")) {
-        setTimeout(() => intake_runOrchestrator(), 1500);
+      const cid = intake_getQueryParam("intake_candidate_id");
+      if (cid && cid !== window.__intake_lastRunCandidate) {
+        setTimeout(intake_runOnceForDeepLink, 1500);
       }
     }
   }, 1000);
