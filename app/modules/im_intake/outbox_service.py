@@ -93,3 +93,27 @@ def ack_failed(db: Session, outbox_id: int, error: str = "") -> IntakeOutbox | N
     row.claimed_at = None
     db.commit()
     return row
+
+
+def cleanup_expired(db: Session, now: datetime | None = None) -> dict:
+    """标 expires_at < now 且仍在 collecting/awaiting_reply 的候选人为 abandoned；
+    其 pending/claimed outbox → expired。返回 {'abandoned': n, 'expired_outbox': m}。
+    """
+    now = now or datetime.now(timezone.utc)
+    to_abandon = (db.query(IntakeCandidate)
+                  .filter(IntakeCandidate.expires_at.isnot(None))
+                  .filter(IntakeCandidate.expires_at < now)
+                  .filter(IntakeCandidate.intake_status.in_(("collecting", "awaiting_reply")))
+                  .all())
+    abandoned_ids = [c.id for c in to_abandon]
+    for c in to_abandon:
+        c.intake_status = "abandoned"
+        c.intake_completed_at = now
+    expired_cnt = 0
+    if abandoned_ids:
+        expired_cnt = (db.query(IntakeOutbox)
+                       .filter(IntakeOutbox.candidate_id.in_(abandoned_ids))
+                       .filter(IntakeOutbox.status.in_(("pending", "claimed")))
+                       .update({"status": "expired"}, synchronize_session=False))
+    db.commit()
+    return {"abandoned": len(abandoned_ids), "expired_outbox": int(expired_cnt)}

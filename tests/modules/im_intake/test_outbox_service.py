@@ -8,7 +8,7 @@ from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.outbox_model import IntakeOutbox
 from app.modules.im_intake.decision import NextAction
-from app.modules.im_intake.outbox_service import generate_for_candidate, claim_batch, ack_sent, ack_failed
+from app.modules.im_intake.outbox_service import generate_for_candidate, claim_batch, ack_sent, ack_failed, cleanup_expired
 
 
 def _make_session():
@@ -143,3 +143,27 @@ def test_ack_failed_keeps_claimed_and_records_error():
     assert row.status == "pending"
     assert row.last_error == "tab closed"
     assert c.intake_status == "collecting"  # not advanced
+
+
+def test_cleanup_expired_abandons_old_candidates_and_expires_outbox():
+    db = _make_session()
+    now = datetime.now(timezone.utc)
+    old = IntakeCandidate(user_id=1, boss_id="bxOld", name="O",
+                          intake_status="collecting", source="plugin",
+                          intake_started_at=now - timedelta(days=20),
+                          expires_at=now - timedelta(days=1))
+    fresh = IntakeCandidate(user_id=1, boss_id="bxFresh", name="F",
+                            intake_status="collecting", source="plugin",
+                            intake_started_at=now,
+                            expires_at=now + timedelta(days=10))
+    db.add_all([old, fresh]); db.commit()
+    act = NextAction(type="send_hard", text="Q", meta={"slot_keys": ["phone"]})
+    row = generate_for_candidate(db, old, act)
+
+    stats = cleanup_expired(db, now=now)
+    db.refresh(old); db.refresh(fresh); db.refresh(row)
+    assert old.intake_status == "abandoned"
+    assert fresh.intake_status == "collecting"
+    assert row.status == "expired"
+    assert stats["abandoned"] == 1
+    assert stats["expired_outbox"] == 1
