@@ -72,7 +72,7 @@ async function pollOutboxOnce() {
     resp = await fetch(`${serverUrl}/api/intake/outbox/claim`, {
       method: "POST",
       headers: { "Authorization": `Bearer ${authToken}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ limit: 5 }),
+      body: JSON.stringify({ limit: 1 }),
     });
   } catch (e) {
     console.warn("[intake] outbox claim fetch failed:", e?.message || e);
