@@ -58,3 +58,10 @@ def test_is_running_requires_enabled_and_under_target(db_session):
 def test_is_running_zero_target_means_not_running(db_session):
     update(db_session, user_id=1, enabled=True, target_count=0)
     assert is_running(db_session, user_id=1) is False  # no target set = don't auto-run
+
+
+def test_is_running_does_not_write_row_for_unknown_user(db_session):
+    from app.modules.im_intake.settings_model import IntakeUserSettings
+    assert is_running(db_session, user_id=999) is False
+    # verify no ghost row was inserted
+    assert db_session.query(IntakeUserSettings).filter_by(user_id=999).first() is None

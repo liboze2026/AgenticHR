@@ -42,8 +42,8 @@ def complete_count(db: Session, user_id: int) -> int:
 
 
 def is_running(db: Session, user_id: int) -> bool:
-    s = get_or_create(db, user_id)
-    if not s.enabled:
+    s = db.query(IntakeUserSettings).filter_by(user_id=user_id).first()
+    if s is None or not s.enabled:
         return False
     if s.target_count <= 0:
         return False
