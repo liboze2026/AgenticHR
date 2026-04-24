@@ -1,9 +1,9 @@
 """F4 outbox: 一条发件箱 = 一条待扩展代为发送的 Boss 消息。
 
-单一职责：生成 / 认领 / 回执 / 过期清理。
+单一职责：生成 / 认领 / 回执 / 过期清理 / 回收僵尸 claim。
 与现有 decision.py + service.py 解耦——只接受 NextAction，不决定状态机。
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 
 from app.modules.im_intake.candidate_model import IntakeCandidate
@@ -101,6 +101,41 @@ def ack_failed(db: Session, outbox_id: int, error: str = "") -> IntakeOutbox | N
     row.claimed_at = None
     db.commit()
     return row
+
+
+def reap_stale_claims(db: Session, stale_minutes: int = 10,
+                      now: datetime | None = None) -> int:
+    """把 claimed_at < now - stale_minutes 的 claimed 行回滚为 pending 以便下轮重试。
+
+    Why: 扩展崩溃/Chrome 被杀导致 claim 后没 ack，这行会永远锁死，候选人也因
+    幂等保护永远不再生成新 outbox。需要定期回收。attempts 不再自增——它只在
+    claim 时计数，回收只负责 re-queue。
+    """
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    cutoff = now - timedelta(minutes=stale_minutes)
+    # SQLite 存储常丢 tzinfo，改成 naive 比较避免 mixed-type 报错
+    cutoff_naive = cutoff.replace(tzinfo=None) if cutoff.tzinfo else cutoff
+    rows = (db.query(IntakeOutbox)
+            .filter(IntakeOutbox.status == "claimed")
+            .filter(IntakeOutbox.claimed_at.isnot(None))
+            .all())
+    reaped = 0
+    for r in rows:
+        ca = r.claimed_at
+        if ca is None:
+            continue
+        ca_cmp = ca if ca.tzinfo else ca.replace(tzinfo=timezone.utc)
+        if ca_cmp < cutoff:
+            r.status = "pending"
+            r.claimed_at = None
+            r.last_error = (r.last_error or "") + f"[reaped stale claim at {now.isoformat()}]"
+            r.last_error = r.last_error[:_MAX_ERROR_LEN]
+            reaped += 1
+    if reaped:
+        db.commit()
+    return reaped
 
 
 def cleanup_expired(db: Session, now: datetime | None = None) -> dict[str, int]:

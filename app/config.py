@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     f4_scheduler_enabled: bool = True
     f4_scheduler_interval_sec: int = 300
     f4_expires_days: int = 14
+    f4_claim_stale_minutes: int = 10  # reap claimed outbox older than this; extension polls 30s
 
     # F3.1 Boss chat deep link
     boss_chat_url_template: str = "https://www.zhipin.com/web/chat/index?id={boss_id}"

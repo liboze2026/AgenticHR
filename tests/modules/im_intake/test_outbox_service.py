@@ -8,7 +8,10 @@ from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.outbox_model import IntakeOutbox
 from app.modules.im_intake.decision import NextAction
-from app.modules.im_intake.outbox_service import generate_for_candidate, claim_batch, ack_sent, ack_failed, cleanup_expired
+from app.modules.im_intake.outbox_service import (
+    generate_for_candidate, claim_batch, ack_sent, ack_failed, cleanup_expired,
+    reap_stale_claims,
+)
 
 
 def _make_session():
@@ -256,3 +259,56 @@ def test_cleanup_expired_does_not_touch_sent_or_failed_outbox():
     assert pending.status == "expired"
     assert sent.status == "sent"
     assert stats == {"abandoned": 1, "expired_outbox": 1}
+
+
+def test_reap_stale_claims_reverts_old_claimed_to_pending():
+    db = _make_session()
+    c = _mk_candidate(db)
+    now = datetime.now(timezone.utc)
+    old = IntakeOutbox(candidate_id=c.id, user_id=1, action_type="send_hard",
+                       text="Q", slot_keys=["x"], status="claimed",
+                       claimed_at=now - timedelta(minutes=15),
+                       scheduled_for=now - timedelta(minutes=15), attempts=1)
+    fresh = IntakeOutbox(candidate_id=c.id, user_id=1, action_type="send_hard",
+                         text="Q2", slot_keys=["y"], status="claimed",
+                         claimed_at=now - timedelta(minutes=2),
+                         scheduled_for=now - timedelta(minutes=2), attempts=1)
+    db.add_all([old, fresh]); db.commit()
+
+    reaped = reap_stale_claims(db, stale_minutes=10, now=now)
+    db.refresh(old); db.refresh(fresh)
+    assert reaped == 1
+    assert old.status == "pending"
+    assert old.claimed_at is None
+    assert old.attempts == 1  # do not re-increment; counts at claim-time only
+    assert fresh.status == "claimed"
+
+
+def test_reap_stale_claims_ignores_non_claimed_states():
+    db = _make_session()
+    c = _mk_candidate(db)
+    now = datetime.now(timezone.utc)
+    for st in ("pending", "sent", "expired"):
+        db.add(IntakeOutbox(candidate_id=c.id, user_id=1, action_type="send_hard",
+                            text="Q", slot_keys=[], status=st,
+                            claimed_at=now - timedelta(hours=1),
+                            scheduled_for=now - timedelta(hours=1)))
+    db.commit()
+    reaped = reap_stale_claims(db, stale_minutes=10, now=now)
+    assert reaped == 0
+
+
+def test_reap_stale_claims_tz_naive_defensive():
+    """Some DBs (SQLite) strip tzinfo on roundtrip. Reaper must still compare correctly."""
+    db = _make_session()
+    c = _mk_candidate(db)
+    now = datetime.now(timezone.utc)
+    row = IntakeOutbox(candidate_id=c.id, user_id=1, action_type="send_hard",
+                       text="Q", slot_keys=[], status="claimed",
+                       claimed_at=(now - timedelta(minutes=30)).replace(tzinfo=None),
+                       scheduled_for=now - timedelta(minutes=30), attempts=1)
+    db.add(row); db.commit()
+    reaped = reap_stale_claims(db, stale_minutes=10, now=now)
+    db.refresh(row)
+    assert reaped == 1
+    assert row.status == "pending"

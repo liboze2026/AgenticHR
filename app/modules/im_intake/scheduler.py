@@ -16,7 +16,8 @@ from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.decision import decide_next_action
 from app.modules.im_intake.outbox_service import (
-    generate_for_candidate, cleanup_expired, ACTIVE_CANDIDATE_STATES,
+    generate_for_candidate, cleanup_expired, reap_stale_claims,
+    ACTIVE_CANDIDATE_STATES,
 )
 from app.modules.screening.models import Job
 from app.config import settings
@@ -49,8 +50,10 @@ def scan_once(db: Session) -> dict[str, int]:
         if generate_for_candidate(db, c, action) is not None:
             generated += 1
 
+    stale_min = getattr(settings, "f4_claim_stale_minutes", 10)
+    reaped = reap_stale_claims(db, stale_minutes=stale_min)
     cleanup = cleanup_expired(db)
-    return {"seen": seen, "generated": generated, **cleanup}
+    return {"seen": seen, "generated": generated, "reaped": reaped, **cleanup}
 
 
 def _loop(interval_sec: int):
@@ -60,7 +63,7 @@ def _loop(interval_sec: int):
             db = SessionLocal()
             try:
                 stats = scan_once(db)
-                if any(stats.get(k, 0) for k in ("generated", "abandoned", "expired_outbox")):
+                if any(stats.get(k, 0) for k in ("generated", "abandoned", "expired_outbox", "reaped")):
                     logger.info("F4 scan: %s", stats)
                 else:
                     logger.debug("F4 scan idle: %s", stats)
