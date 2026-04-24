@@ -8,7 +8,7 @@ from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.outbox_model import IntakeOutbox
 from app.modules.im_intake.decision import NextAction
-from app.modules.im_intake.outbox_service import generate_for_candidate
+from app.modules.im_intake.outbox_service import generate_for_candidate, claim_batch
 
 
 def _make_session():
@@ -64,9 +64,6 @@ def test_generate_skips_non_send_actions():
     assert db.query(IntakeOutbox).count() == 0
 
 
-from app.modules.im_intake.outbox_service import claim_batch
-
-
 def test_claim_batch_transitions_pending_to_claimed():
     db = _make_session()
     c = _mk_candidate(db)
@@ -77,6 +74,7 @@ def test_claim_batch_transitions_pending_to_claimed():
     assert len(items) == 1
     assert items[0].status == "claimed"
     assert items[0].claimed_at is not None
+    assert items[0].attempts == 1
 
 
 def test_claim_batch_is_user_scoped():

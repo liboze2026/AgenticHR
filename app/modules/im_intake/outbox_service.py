@@ -38,7 +38,11 @@ def generate_for_candidate(db: Session, candidate: IntakeCandidate,
 
 
 def claim_batch(db: Session, user_id: int, limit: int = 5) -> list[IntakeOutbox]:
-    """原子认领一批 pending outbox（→ claimed），返回给扩展去发送。"""
+    """原子认领一批 pending outbox（→ claimed），返回给扩展去发送。
+
+    Increments ``attempts`` at claim time (not at ack), so ``ack_failed`` in
+    Task 5 just re-queues without touching the counter.
+    """
     now = datetime.now(timezone.utc)
     rows = (db.query(IntakeOutbox)
             .filter_by(user_id=user_id, status="pending")
