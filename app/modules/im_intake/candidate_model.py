@@ -19,6 +19,7 @@ class IntakeCandidate(Base):
     chat_snapshot = Column(JSON, nullable=True)
     intake_started_at = Column(DateTime, nullable=True)
     intake_completed_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
     promoted_resume_id = Column(Integer, ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = Column(
@@ -34,4 +35,5 @@ class IntakeCandidate(Base):
         Index("ix_intake_candidates_user_id", "user_id"),
         Index("ix_intake_candidates_status", "intake_status"),
         Index("ix_intake_candidates_job_id", "job_id"),
+        Index("ix_intake_candidates_expires_at", "expires_at"),
     )
