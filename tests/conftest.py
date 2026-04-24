@@ -14,6 +14,7 @@ import app.modules.matching.models  # noqa: F401
 import app.core.audit.models  # noqa: F401
 import app.modules.im_intake.models  # noqa: F401
 import app.modules.im_intake.candidate_model  # noqa: F401
+import app.modules.im_intake.settings_model  # noqa: F401
 import app.modules.auth.models  # noqa: F401 — IntakeCandidate.user_id FK -> users.id
 
 # Allow test client requests to pass through the JWT auth HTTP middleware.
