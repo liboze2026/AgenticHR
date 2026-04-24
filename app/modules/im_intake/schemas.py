@@ -94,6 +94,7 @@ class OutboxClaimIn(BaseModel):
 class OutboxClaimItem(BaseModel):
     id: int
     candidate_id: int
+    boss_id: str
     action_type: str
     text: str
     slot_keys: list = []

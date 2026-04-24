@@ -31,6 +31,7 @@ def test_outbox_claim_returns_pending_items_and_marks_claimed(client, db_session
     assert items[0]["action_type"] == "send_hard"
     assert items[0]["text"] == "Q"
     assert items[0]["slot_keys"] == ["phone"]
+    assert items[0]["boss_id"] == "bxR"
 
     r2 = client.post("/api/intake/outbox/claim", json={"limit": 5})
     assert r2.json()["items"] == []

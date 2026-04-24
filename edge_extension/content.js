@@ -1435,11 +1435,11 @@ async function intake_runOrchestrator(opts = {}) {
 // the chat window to sync, then types + sends `text`.
 // Returns true on visible delivery, false on any visible failure.
 // ────────────────────────────────────────────────────────
-async function sendIntakeMessage({ candidate_id, text }) {
+async function sendIntakeMessage({ boss_id, text }) {
   try {
-    if (!candidate_id || !text) return false;
+    if (!boss_id || !text) return false;
     if (!location.host.includes("zhipin.com")) return false;
-    const dataId = String(candidate_id);
+    const dataId = String(boss_id);
     const row = document.querySelector(`.geek-item[data-id="${dataId}"]`);
     if (!row) {
       log(`[sendIntakeMessage] geek-item[data-id="${dataId}"] not found`);
@@ -1556,7 +1556,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const ob = message.outbox || {};
       try {
         const ok = await sendIntakeMessage({
-          candidate_id: ob.candidate_id,
+          boss_id: ob.boss_id,
           text: ob.text,
         });
         chrome.runtime.sendMessage({

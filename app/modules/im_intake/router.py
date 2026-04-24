@@ -359,9 +359,18 @@ def outbox_claim(
     user_id: int = Depends(get_current_user_id),
 ):
     rows = _outbox_claim_batch(db, user_id=user_id, limit=body.limit)
+    cand_ids = {r.candidate_id for r in rows}
+    boss_by_cand: dict[int, str] = {}
+    if cand_ids:
+        boss_by_cand = dict(
+            db.query(IntakeCandidate.id, IntakeCandidate.boss_id)
+            .filter(IntakeCandidate.id.in_(cand_ids)).all()
+        )
     return OutboxClaimOut(items=[
         OutboxClaimItem(
-            id=r.id, candidate_id=r.candidate_id, action_type=r.action_type,
+            id=r.id, candidate_id=r.candidate_id,
+            boss_id=boss_by_cand.get(r.candidate_id, ""),
+            action_type=r.action_type,
             text=r.text or "", slot_keys=r.slot_keys or [], attempts=r.attempts,
         ) for r in rows
     ])
