@@ -63,25 +63,31 @@ def claim_batch(db: Session, user_id: int, limit: int = 5) -> list[IntakeOutbox]
 
 
 def ack_sent(db: Session, outbox_id: int) -> IntakeOutbox | None:
-    """扩展汇报发送成功：flip row → sent；复用 IntakeService.record_asked 推进 slot+candidate 状态。"""
+    """扩展汇报发送成功：flip row → sent；复用 IntakeService.record_asked 推进 slot+candidate 状态。
+
+    Atomicity: flip row state BEFORE calling ``record_asked`` so the single
+    commit inside ``record_asked`` covers both the outbox flip and the slot
+    updates. If ``record_asked`` raises, the transaction rolls back and the row
+    stays ``claimed`` for a retry — avoiding the double-commit window where a
+    crash would leave the row ``claimed`` forever.
+    """
     row = db.query(IntakeOutbox).filter_by(id=outbox_id).first()
     if row is None or row.status != "claimed":
         return row
+    # Flip row state first so the subsequent record_asked commit covers both
+    # atomically; if record_asked fails, transaction rolls back and row stays claimed.
+    row.status = "sent"
+    row.sent_at = datetime.now(timezone.utc)
     candidate = db.query(IntakeCandidate).filter_by(id=row.candidate_id).first()
     if candidate is None:
-        row.status = "sent"
-        row.sent_at = datetime.now(timezone.utc)
+        # No candidate — still need to commit the row.status flip ourselves.
         db.commit()
         return row
 
     svc = IntakeService(db=db, user_id=candidate.user_id)
     action = NextAction(type=row.action_type, text=row.text or "",
                         meta={"slot_keys": row.slot_keys or []})
-    svc.record_asked(candidate, action)
-
-    row.status = "sent"
-    row.sent_at = datetime.now(timezone.utc)
-    db.commit()
+    svc.record_asked(candidate, action)  # commits both flip + slot updates
     return row
 
 

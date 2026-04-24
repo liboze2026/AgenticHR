@@ -1,6 +1,7 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
+from app.config import settings
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.slot_filler import SlotFiller
@@ -56,11 +57,14 @@ class IntakeService:
                 job_id = match_job_title(
                     job_intention, [{"id": j.id, "title": j.title} for j in jobs], threshold=0.7,
                 )
+            now = datetime.now(timezone.utc)
+            expires_days = getattr(settings, "f4_expires_days", 14)
             c = IntakeCandidate(
                 user_id=self.user_id,
                 boss_id=boss_id, name=name or "", job_intention=job_intention, job_id=job_id,
                 intake_status="collecting", source="plugin",
-                intake_started_at=datetime.now(timezone.utc),
+                intake_started_at=now,
+                expires_at=now + timedelta(days=expires_days),
             )
             self.db.add(c); self.db.commit()
             _audit_safe("f4_candidate_enter", "create", c.id,
