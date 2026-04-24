@@ -21,7 +21,8 @@ def test_next_action_out_accepts_wait_reply():
 
 
 def test_next_action_out_accepts_all_decision_types():
-    # ActionType literals from decision.py must all be acceptable here.
-    for t in ["send_hard", "request_pdf", "wait_pdf", "wait_reply",
-              "send_soft", "complete", "mark_pending_human", "abandon"]:
+    """NextActionOut must accept every value of decision.ActionType."""
+    from typing import get_args
+    from app.modules.im_intake.decision import ActionType
+    for t in get_args(ActionType):
         NextActionOut(type=t, text="", slot_keys=[])

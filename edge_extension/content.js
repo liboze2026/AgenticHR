@@ -1556,6 +1556,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // back-to-back and Chrome resolves the await before sendResponse fires,
     // which caused characters from 3 outbox rows to interleave in the same
     // input box. Chain onto a module-level promise to force serial execution.
+    // sendResponse({queued:true}) at task-start so background's await resolves
+    // immediately (ack path is the separate intake_outbox_ack runtime message).
     window.__intakeDispatchQueue = (window.__intakeDispatchQueue || Promise.resolve()).then(async () => {
       const ob = message.outbox || {};
       try {
@@ -1578,7 +1580,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         });
       }
     });
-    return false;
+    sendResponse({ queued: true });
+    return true;
   }
   return false;
 });
