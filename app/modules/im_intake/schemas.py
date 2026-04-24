@@ -88,7 +88,7 @@ class StartConversationOut(BaseModel):
 # ---- F4 Task 9: outbox HTTP API schemas ----
 
 class OutboxClaimIn(BaseModel):
-    limit: int = Field(5, ge=1, le=50)
+    limit: int = Field(default=1, ge=1, le=1)  # hard capped; see outbox_service.claim_batch
 
 
 class OutboxClaimItem(BaseModel):

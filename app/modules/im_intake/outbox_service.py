@@ -41,12 +41,18 @@ def generate_for_candidate(db: Session, candidate: IntakeCandidate,
     return row
 
 
-def claim_batch(db: Session, user_id: int, limit: int = 5) -> list[IntakeOutbox]:
-    """原子认领一批 pending outbox（→ claimed），返回给扩展去发送。
+def claim_batch(db: Session, user_id: int, limit: int = 1) -> list[IntakeOutbox]:
+    """原子认领 pending outbox（→ claimed），返回给扩展去发送。
 
-    Increments ``attempts`` at claim time (not at ack), so ``ack_failed`` in
-    Task 5 just re-queues without touching the counter.
+    **Hardened:** even if caller passes limit>1, we clamp to 1. Reason:
+    2026-04-24 saw 3 outbox rows dispatch concurrently to a single Boss chat
+    input, chars interleaved. Client-side mutex fixed it; this is the
+    backend depth-defense so a misbehaving client cannot regress.
+
+    Increments ``attempts`` at claim time (not at ack), so ``ack_failed``
+    just re-queues without touching the counter.
     """
+    limit = max(1, min(1, int(limit)))  # hard clamp
     now = datetime.now(timezone.utc)
     rows = (db.query(IntakeOutbox)
             .filter_by(user_id=user_id, status="pending")

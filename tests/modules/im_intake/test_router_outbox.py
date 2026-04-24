@@ -24,7 +24,7 @@ def test_outbox_claim_returns_pending_items_and_marks_claimed(client, db_session
     generate_for_candidate(db_session, c, NextAction(type="send_hard", text="Q",
                                                      meta={"slot_keys": ["phone"]}))
 
-    r = client.post("/api/intake/outbox/claim", json={"limit": 5})
+    r = client.post("/api/intake/outbox/claim", json={"limit": 1})
     assert r.status_code == 200
     items = r.json()["items"]
     assert len(items) == 1
@@ -33,7 +33,7 @@ def test_outbox_claim_returns_pending_items_and_marks_claimed(client, db_session
     assert items[0]["slot_keys"] == ["phone"]
     assert items[0]["boss_id"] == "bxR"
 
-    r2 = client.post("/api/intake/outbox/claim", json={"limit": 5})
+    r2 = client.post("/api/intake/outbox/claim", json={"limit": 1})
     assert r2.json()["items"] == []
 
 

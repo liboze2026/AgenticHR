@@ -94,15 +94,17 @@ def test_claim_batch_is_user_scoped():
 
 
 def test_claim_batch_respects_limit_and_fifo():
+    # After the 2026-04-24 hard-cap, claim_batch always returns exactly 1 row
+    # regardless of the requested limit. FIFO order is preserved: the earliest
+    # scheduled row is returned.
     db = _make_session()
     for i in range(5):
         c = _mk_candidate(db, boss_id=f"bx{i}")
         act = NextAction(type="send_hard", text=f"Q{i}", meta={"slot_keys": ["phone"]})
         generate_for_candidate(db, c, act)
     items = claim_batch(db, user_id=1, limit=3)
-    assert len(items) == 3
-    texts = [x.text for x in items]
-    assert texts == ["Q0", "Q1", "Q2"]
+    assert len(items) == 1
+    assert items[0].text == "Q0"  # earliest (FIFO) row returned
 
 
 def test_claim_batch_skips_already_claimed():
