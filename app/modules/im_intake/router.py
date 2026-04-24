@@ -326,6 +326,8 @@ def autoscan_rank(
 
     Strategy: collecting first then awaiting_reply, oldest updated_at first.
     """
+    if not _settings_is_running(db, user_id):
+        return {"items": []}
     rows = (
         db.query(IntakeCandidate)
         .filter(IntakeCandidate.user_id == user_id)
@@ -398,6 +400,8 @@ def outbox_claim(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
+    if not _settings_is_running(db, user_id):
+        return OutboxClaimOut(items=[])
     rows = _outbox_claim_batch(db, user_id=user_id, limit=body.limit)
     cand_ids = {r.candidate_id for r in rows}
     boss_by_cand: dict[int, str] = {}

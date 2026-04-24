@@ -24,6 +24,7 @@ def test_outbox_claim_returns_pending_items_and_marks_claimed(client, db_session
     generate_for_candidate(db_session, c, NextAction(type="send_hard", text="Q",
                                                      meta={"slot_keys": ["phone"]}))
 
+    client.put("/api/intake/settings", json={"enabled": True, "target_count": 100})
     r = client.post("/api/intake/outbox/claim", json={"limit": 1})
     assert r.status_code == 200
     items = r.json()["items"]
