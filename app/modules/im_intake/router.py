@@ -17,12 +17,20 @@ from app.modules.im_intake.outbox_service import (
     ack_sent as _outbox_ack_sent,
     claim_batch as _outbox_claim_batch,
 )
+from app.modules.im_intake.settings_service import (
+    get_or_create as _settings_get_or_create,
+    update as _settings_update,
+    complete_count as _settings_complete_count,
+    is_running as _settings_is_running,
+)
 from app.modules.im_intake.schemas import (
     AckSentIn,
     CandidateDetailOut,
     CandidateOut,
     CollectChatIn,
     CollectChatOut,
+    IntakeSettingsIn,
+    IntakeSettingsOut,
     NextActionOut,
     OutboxAckIn,
     OutboxClaimIn,
@@ -274,6 +282,38 @@ def get_daily_cap(
     cap = getattr(settings, "f4_daily_cap", 200)
     return {"date": today_start.date().isoformat(), "used": int(used), "cap": int(cap),
             "remaining": max(0, int(cap) - int(used))}
+
+
+# ---- F5 Task 6: settings HTTP API ----
+
+def _settings_response(db: Session, user_id: int) -> IntakeSettingsOut:
+    s = _settings_get_or_create(db, user_id)
+    return IntakeSettingsOut(
+        enabled=s.enabled,
+        target_count=s.target_count,
+        complete_count=_settings_complete_count(db, user_id),
+        is_running=_settings_is_running(db, user_id),
+    )
+
+
+@router.get("/settings", response_model=IntakeSettingsOut)
+def get_intake_settings(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    return _settings_response(db, user_id)
+
+
+@router.put("/settings", response_model=IntakeSettingsOut)
+def put_intake_settings(
+    body: IntakeSettingsIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    _settings_update(db, user_id,
+                     enabled=body.enabled,
+                     target_count=body.target_count)
+    return _settings_response(db, user_id)
 
 
 @router.get("/autoscan/rank")

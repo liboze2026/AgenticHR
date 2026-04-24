@@ -108,3 +108,17 @@ class OutboxClaimOut(BaseModel):
 class OutboxAckIn(BaseModel):
     success: bool
     error: str = ""
+
+
+# ---- F5 Task 6: settings HTTP API schemas ----
+
+class IntakeSettingsOut(BaseModel):
+    enabled: bool
+    target_count: int = Field(ge=0)
+    complete_count: int = Field(ge=0)
+    is_running: bool
+
+
+class IntakeSettingsIn(BaseModel):
+    enabled: bool | None = None
+    target_count: int | None = Field(default=None, ge=0)
