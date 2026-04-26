@@ -6,6 +6,7 @@
 from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.outbox_model import IntakeOutbox
 from app.modules.im_intake.decision import NextAction
@@ -16,6 +17,11 @@ ACTIVE_CANDIDATE_STATES = ("collecting", "awaiting_reply")
 TERMINAL_CANDIDATE_STATES = ("complete", "abandoned", "pending_human")
 LIVE_OUTBOX_STATES = ("pending", "claimed")
 _MAX_ERROR_LEN = 2000  # cap last_error payload so rogue stack traces don't bloat rows
+
+
+def _outbox_max_age_hours() -> int:
+    """Configured stale-row cap; centralized so tests can monkeypatch settings."""
+    return int(getattr(settings, "f4_outbox_max_age_hours", 24))
 
 
 def _is_terminal(candidate: IntakeCandidate | None) -> bool:
@@ -71,6 +77,16 @@ def claim_batch(db: Session, user_id: int, limit: int = 1) -> list[IntakeOutbox]
     """
     limit = 1  # hard-capped; caller's value is intentionally ignored
     now = datetime.now(timezone.utc)
+    # Stale-row cap: any pending row scheduled more than max_age_hours ago is
+    # auto-expired at claim time. Defends against the case where the scheduler
+    # ticked while the extension was offline (laptop closed, weekend, etc.) —
+    # without this, the row sits in pending for days and fires the moment the
+    # extension reconnects, asking a question whose context is long gone.
+    max_age_hours = _outbox_max_age_hours()
+    age_cutoff = now - timedelta(hours=max_age_hours)
+    # SQLite often loses tzinfo on stored datetimes — compare naive to be safe
+    age_cutoff_cmp = age_cutoff.replace(tzinfo=None)
+
     # FIFO scan; skip & auto-expire any row whose owner became terminal
     # between scheduling and claim time (zombie outbox prevention).
     candidates = (db.query(IntakeOutbox)
@@ -81,7 +97,17 @@ def claim_batch(db: Session, user_id: int, limit: int = 1) -> list[IntakeOutbox]
                   .all())
     rows: list[IntakeOutbox] = []
     expired_terminal = 0
+    expired_stale = 0
     for r in candidates:
+        sf = r.scheduled_for
+        sf_cmp = sf if (sf and sf.tzinfo is None) else (sf.replace(tzinfo=None) if sf else None)
+        if sf_cmp is not None and sf_cmp < age_cutoff_cmp:
+            r.status = "expired"
+            r.last_error = ((r.last_error or "")
+                            + f"[claim: stale row >{max_age_hours}h, scheduler "
+                              f"tick happened while ext offline]")[:_MAX_ERROR_LEN]
+            expired_stale += 1
+            continue
         owner = db.query(IntakeCandidate).filter_by(id=r.candidate_id).first()
         if _is_terminal(owner):
             r.status = "expired"
@@ -95,7 +121,7 @@ def claim_batch(db: Session, user_id: int, limit: int = 1) -> list[IntakeOutbox]
         rows.append(r)
         if len(rows) >= limit:
             break
-    if rows or expired_terminal:
+    if rows or expired_terminal or expired_stale:
         db.commit()
     return rows
 
@@ -223,7 +249,9 @@ def expire_pending_for_candidate(db: Session, candidate_id: int,
 
 def cleanup_expired(db: Session, now: datetime | None = None) -> dict[str, int]:
     """标 expires_at < now 且仍在 collecting/awaiting_reply 的候选人为 abandoned；
-    其 pending/claimed outbox → expired。返回 {'abandoned': n, 'expired_outbox': m}。
+    其 pending/claimed outbox → expired。同时清理超 ``f4_outbox_max_age_hours``
+    的 stale pending/claimed 行 (即使 owner 仍非终态)。
+    返回 {'abandoned': n, 'expired_outbox': m, 'expired_stale': k}。
     """
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
@@ -243,5 +271,27 @@ def cleanup_expired(db: Session, now: datetime | None = None) -> dict[str, int]:
                        .filter(IntakeOutbox.candidate_id.in_(abandoned_ids))
                        .filter(IntakeOutbox.status.in_(LIVE_OUTBOX_STATES))
                        .update({"status": "expired"}, synchronize_session=False))
+
+    # Stale-row sweep: any live outbox row scheduled more than
+    # ``f4_outbox_max_age_hours`` ago becomes expired regardless of owner state.
+    max_age_hours = _outbox_max_age_hours()
+    age_cutoff = now - timedelta(hours=max_age_hours)
+    age_cutoff_cmp = age_cutoff.replace(tzinfo=None)
+    stale_rows = (db.query(IntakeOutbox)
+                  .filter(IntakeOutbox.status.in_(LIVE_OUTBOX_STATES))
+                  .all())
+    expired_stale = 0
+    tag = f"[cleanup: stale row >{max_age_hours}h]"
+    for r in stale_rows:
+        sf = r.scheduled_for
+        if sf is None:
+            continue
+        sf_cmp = sf if sf.tzinfo is None else sf.replace(tzinfo=None)
+        if sf_cmp < age_cutoff_cmp:
+            r.status = "expired"
+            r.last_error = ((r.last_error or "") + tag)[:_MAX_ERROR_LEN]
+            expired_stale += 1
+
     db.commit()
-    return {"abandoned": len(abandoned_ids), "expired_outbox": expired_cnt}
+    return {"abandoned": len(abandoned_ids), "expired_outbox": expired_cnt,
+            "expired_stale": expired_stale}

@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     f4_scheduler_interval_sec: int = 300
     f4_expires_days: int = 14
     f4_claim_stale_minutes: int = 10  # reap claimed outbox older than this; extension polls 30s
+    f4_outbox_max_age_hours: int = 24  # auto-expire pending rows scheduled this many hours ago — defends against
+                                        # scheduler tick that ran while extension was offline; row stays stale-pending
+                                        # for days, then fires when extension reconnects (e.g. after weekend).
+    f4_max_chat_messages: int = 500
 
     # F3.1 Boss chat deep link
     boss_chat_url_template: str = "https://www.zhipin.com/web/chat/index?id={boss_id}"

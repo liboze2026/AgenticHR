@@ -185,7 +185,8 @@ def test_cleanup_expired_skips_null_expires_at():
     stats = cleanup_expired(db, now=now)
     db.refresh(c)
     assert c.intake_status == "collecting"
-    assert stats == {"abandoned": 0, "expired_outbox": 0}
+    assert stats["abandoned"] == 0
+    assert stats["expired_outbox"] == 0
 
 
 def test_cleanup_expired_handles_awaiting_reply():
@@ -230,13 +231,15 @@ def test_cleanup_expired_skips_already_terminal():
     assert complete.intake_status == "complete"
     assert ob_done.status == "pending"
     assert ob_comp.status == "pending"
-    assert stats == {"abandoned": 0, "expired_outbox": 0}
+    assert stats["abandoned"] == 0
+    assert stats["expired_outbox"] == 0
 
 
 def test_cleanup_expired_empty_returns_zero():
     db = _make_session()
     stats = cleanup_expired(db, now=datetime.now(timezone.utc))
-    assert stats == {"abandoned": 0, "expired_outbox": 0}
+    assert stats["abandoned"] == 0
+    assert stats["expired_outbox"] == 0
 
 
 def test_cleanup_expired_does_not_touch_sent_or_failed_outbox():
@@ -260,7 +263,8 @@ def test_cleanup_expired_does_not_touch_sent_or_failed_outbox():
     assert c.intake_status == "abandoned"
     assert pending.status == "expired"
     assert sent.status == "sent"
-    assert stats == {"abandoned": 1, "expired_outbox": 1}
+    assert stats["abandoned"] == 1
+    assert stats["expired_outbox"] == 1
 
 
 def test_reap_stale_claims_reverts_old_claimed_to_pending():

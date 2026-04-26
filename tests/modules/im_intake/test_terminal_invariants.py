@@ -352,8 +352,128 @@ def test_cleanup_expired_idempotent_on_terminal(db_session):
 
     stats1 = outbox.cleanup_expired(db_session, now=datetime.now(timezone.utc))
     stats2 = outbox.cleanup_expired(db_session, now=datetime.now(timezone.utc))
-    assert stats1 == {"abandoned": 0, "expired_outbox": 0}
-    assert stats2 == {"abandoned": 0, "expired_outbox": 0}
+    # No expires_at-driven abandonment for an already-terminal owner; stale
+    # sweep also has nothing to do here (no live outbox rows on this candidate).
+    assert stats1["abandoned"] == 0 and stats1["expired_outbox"] == 0
+    assert stats2["abandoned"] == 0 and stats2["expired_outbox"] == 0
+    assert stats1.get("expired_stale", 0) == 0
     db_session.expire_all()
     c2 = db_session.query(IntakeCandidate).filter_by(id=c.id).first()
     assert c2.intake_status == "abandoned"
+
+
+# ---------- INV-13 stale-row claim guard ----------
+def test_claim_batch_expires_row_older_than_max_age_hours(db_session, monkeypatch):
+    """A pending row scheduled more than ``f4_outbox_max_age_hours`` ago
+    must NOT be claimed — it auto-expires instead, even when owner is non-terminal.
+
+    Trigger (2026-04-26 王卓恩 incident): scheduler ticked while extension was
+    offline for 2 days. When ext came back, 21 stale rows were ready to dispatch
+    questions whose conversational context was 32-52h stale.
+    """
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "f4_outbox_max_age_hours", 24, raising=False)
+
+    now = datetime.now(timezone.utc)
+    c = IntakeCandidate(
+        user_id=1, boss_id="bxStale", name="W",
+        intake_status="awaiting_reply", source="plugin",
+        intake_started_at=now - timedelta(days=3),
+        expires_at=now + timedelta(days=14),
+    )
+    db_session.add(c); db_session.commit()
+
+    stale = IntakeOutbox(
+        candidate_id=c.id, user_id=1, action_type="send_hard",
+        text="?", slot_keys=["arrival_date"], status="pending",
+        scheduled_for=now - timedelta(hours=48),
+    )
+    fresh = IntakeOutbox(
+        candidate_id=c.id, user_id=1, action_type="send_hard",
+        text="?", slot_keys=["arrival_date"], status="pending",
+        scheduled_for=now - timedelta(minutes=5),
+    )
+    db_session.add_all([stale, fresh]); db_session.commit()
+    stale_id, fresh_id = stale.id, fresh.id
+
+    rows = outbox.claim_batch(db_session, user_id=1, limit=1)
+    db_session.expire_all()
+
+    stale_row = db_session.query(IntakeOutbox).filter_by(id=stale_id).first()
+    fresh_row = db_session.query(IntakeOutbox).filter_by(id=fresh_id).first()
+    assert stale_row.status == "expired", "stale row must auto-expire at claim"
+    assert "stale row" in (stale_row.last_error or "")
+    # The fresh row should be the one returned (claim_batch picks FIFO but skips stale)
+    assert len(rows) == 1
+    assert rows[0].id == fresh_id
+    assert fresh_row.status == "claimed"
+
+
+# ---------- INV-14 stale-row cleanup sweep ----------
+def test_cleanup_expired_sweeps_stale_rows_regardless_of_owner_state(db_session, monkeypatch):
+    """``cleanup_expired`` must sweep all stale pending/claimed rows even when
+    owner is non-terminal — defense for the case where ``claim_batch`` is
+    blocked (e.g. user paused intake) and stale rows accumulate."""
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "f4_outbox_max_age_hours", 24, raising=False)
+
+    now = datetime.now(timezone.utc)
+    c = IntakeCandidate(
+        user_id=1, boss_id="bxSweep", name="X",
+        intake_status="awaiting_reply", source="plugin",
+        intake_started_at=now - timedelta(days=3),
+        expires_at=now + timedelta(days=14),
+    )
+    db_session.add(c); db_session.commit()
+
+    stale_pending = IntakeOutbox(
+        candidate_id=c.id, user_id=1, action_type="send_hard",
+        text="?", slot_keys=[], status="pending",
+        scheduled_for=now - timedelta(hours=72),
+    )
+    stale_claimed = IntakeOutbox(
+        candidate_id=c.id, user_id=1, action_type="send_hard",
+        text="?", slot_keys=[], status="claimed",
+        scheduled_for=now - timedelta(hours=72),
+        claimed_at=now - timedelta(hours=70),
+    )
+    fresh = IntakeOutbox(
+        candidate_id=c.id, user_id=1, action_type="send_hard",
+        text="?", slot_keys=[], status="pending",
+        scheduled_for=now - timedelta(minutes=10),
+    )
+    db_session.add_all([stale_pending, stale_claimed, fresh]); db_session.commit()
+    sp, sc, fr = stale_pending.id, stale_claimed.id, fresh.id
+
+    stats = outbox.cleanup_expired(db_session, now=now)
+    assert stats["expired_stale"] == 2
+    db_session.expire_all()
+    assert db_session.query(IntakeOutbox).filter_by(id=sp).first().status == "expired"
+    assert db_session.query(IntakeOutbox).filter_by(id=sc).first().status == "expired"
+    assert db_session.query(IntakeOutbox).filter_by(id=fr).first().status == "pending"
+
+
+# ---------- INV-15 stale + terminal precedence ----------
+def test_claim_batch_stale_row_on_terminal_owner_still_expires(db_session, monkeypatch):
+    """Both 'stale' and 'terminal owner' independently expire the row; verify a
+    row that is both stale AND terminal-owned still ends up expired (no double-flip)."""
+    from app.config import settings as app_settings
+    monkeypatch.setattr(app_settings, "f4_outbox_max_age_hours", 24, raising=False)
+
+    now = datetime.now(timezone.utc)
+    c = _mk_terminal(db_session, status="complete", boss_id="bxStaleTerm")
+    row = IntakeOutbox(
+        candidate_id=c.id, user_id=c.user_id, action_type="send_hard",
+        text="?", slot_keys=[], status="pending",
+        scheduled_for=now - timedelta(hours=48),
+    )
+    db_session.add(row); db_session.commit()
+    rid = row.id
+
+    rows = outbox.claim_batch(db_session, user_id=c.user_id, limit=1)
+    db_session.expire_all()
+    assert rows == []
+    flushed = db_session.query(IntakeOutbox).filter_by(id=rid).first()
+    assert flushed.status == "expired"
+    # Stale check runs first, so error tag is the stale one (deterministic order)
+    assert "stale row" in (flushed.last_error or "")
