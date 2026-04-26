@@ -23,17 +23,23 @@ def test_ack_sent_records_asked(client, db_session):
     assert slots["arrival_date"].asked_at is not None
 
 
-def test_ack_state_mismatch_returns_409(client, db_session):
+def test_ack_state_mismatch_returns_state_drift(client, db_session):
+    """State mismatch (wrong action_type) returns 200 with state_drift=True.
+
+    Previous behaviour was 409; changed so outbox row is always expired first
+    to prevent duplicate dispatch by the 30-second poll.
+    """
     from app.modules.im_intake.candidate_model import IntakeCandidate
     c = IntakeCandidate(user_id=1, boss_id="bxMis", name="mismatch", intake_status="collecting", source="plugin")
     db_session.add(c); db_session.commit()
     client.post("/api/intake/collect-chat", json={"boss_id": "bxMis", "messages": []})
-    # decision is send_hard, not request_pdf -> mismatch
+    # decision is send_hard, not request_pdf -> state mismatch
     r = client.post(
         f"/api/intake/candidates/{c.id}/ack-sent",
         json={"action_type": "request_pdf", "delivered": True},
     )
-    assert r.status_code == 409
+    assert r.status_code == 200
+    assert r.json().get("state_drift") is True
 
 
 def test_ack_not_delivered_noop(client, db_session):

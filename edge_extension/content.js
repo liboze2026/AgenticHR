@@ -1847,11 +1847,12 @@ async function step2_enrichCandidates() {
       if (action.type === "send_hard" || action.type === "send_soft") {
         const r = await window.intake_typeAndSendChatMessage(action.text);
         if (r.ok) {
-          await fetch(`${serverUrl}/api/intake/candidates/${candidateId}/ack-sent`, {
+          const ackR = await fetch(`${serverUrl}/api/intake/candidates/${candidateId}/ack-sent`, {
             method: "POST",
             headers,
             body: JSON.stringify({ action_type: action.type, delivered: true }),
           });
+          if (!ackR.ok) log(`[step2] ack-sent HTTP ${ackR.status} for ${bossId}`);
           intake_showToast(`${parsed?.name || bossId}: 问题已发送`, "done");
         } else {
           intake_showToast(`${parsed?.name || bossId}: 发送失败 — ${r.reason}`, "error");
@@ -1859,11 +1860,12 @@ async function step2_enrichCandidates() {
       } else if (action.type === "request_pdf") {
         const r = await window.intake_clickRequestResumeButton();
         if (r.ok) {
-          await fetch(`${serverUrl}/api/intake/candidates/${candidateId}/ack-sent`, {
+          const ackR = await fetch(`${serverUrl}/api/intake/candidates/${candidateId}/ack-sent`, {
             method: "POST",
             headers,
             body: JSON.stringify({ action_type: "request_pdf", delivered: true }),
           });
+          if (!ackR.ok) log(`[step2] ack-sent HTTP ${ackR.status} for ${bossId}`);
           intake_showToast(`${parsed?.name || bossId}: 已求简历`, "done");
         }
       } else if (action.type === "complete") {

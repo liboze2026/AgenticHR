@@ -332,16 +332,17 @@ async def ack_sent(
     c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "candidate not found")
+    # Always expire the outbox row first — message already sent inline; must
+    # prevent a duplicate dispatch by the 30s outbox poll regardless of state.
+    expired = _outbox_expire_pending(db, c.id, reason="inline_ack_sent")
     svc = _build_service(db, user_id=user_id)
     job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
     action = await svc.analyze_chat(c, messages=[], job=job)
     if action.type != body.action_type:
-        raise HTTPException(409, f"state mismatch: expected {action.type}, got {body.action_type}")
+        # State drifted between collect-chat and ack. Outbox already cleared;
+        # skip record_asked to avoid double-advancing the state machine.
+        return {"ok": True, "outbox_expired": expired, "state_drift": True}
     svc.record_asked(c, action)
-    # Inline-send path supersedes any outbox row the scheduler may have queued
-    # before this ack. Without expiring leftovers, outbox poll would dispatch
-    # the same question 30s later — duplicate send.
-    expired = _outbox_expire_pending(db, c.id, reason="inline_ack_sent")
     return {"ok": True, "outbox_expired": expired}
 
 
