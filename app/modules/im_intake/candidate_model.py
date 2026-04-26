@@ -20,6 +20,7 @@ class IntakeCandidate(Base):
     intake_started_at = Column(DateTime, nullable=True)
     intake_completed_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
+    last_checked_at = Column(DateTime, nullable=True)
     promoted_resume_id = Column(Integer, ForeignKey("resumes.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
     updated_at = Column(

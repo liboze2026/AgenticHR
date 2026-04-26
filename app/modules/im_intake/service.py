@@ -7,7 +7,7 @@ from app.modules.im_intake.models import IntakeSlot
 
 # Terminal states must match outbox_service.TERMINAL_CANDIDATE_STATES.
 # Duplicated here to avoid circular import (outbox_service imports IntakeService).
-TERMINAL_CANDIDATE_STATES = ("complete", "abandoned", "pending_human")
+TERMINAL_CANDIDATE_STATES = ("complete", "abandoned", "pending_human", "timed_out")
 from app.modules.im_intake.slot_filler import SlotFiller
 from app.modules.im_intake.question_generator import QuestionGenerator
 from app.modules.im_intake.pdf_collector import PdfCollector
@@ -255,6 +255,14 @@ class IntakeService:
             expire_pending_for_candidate(self.db, candidate.id, reason="pending_human")
             _audit_safe("f4_pending_human", "auto_mark", candidate.id,
                         {"reason": "hard_max_asks_exhausted"}, reviewer_id=user_id or None)
+            return None
+        if action.type == "timed_out":
+            candidate.intake_status = "timed_out"
+            candidate.intake_completed_at = datetime.now(timezone.utc)
+            self.db.commit()
+            expire_pending_for_candidate(self.db, candidate.id, reason="timed_out")
+            _audit_safe("f4_timed_out", "auto_timed_out", candidate.id,
+                        {"reason": "no_reply_after_max_asks"}, reviewer_id=user_id or None)
             return None
         if action.type == "complete":
             resume = promote_to_resume(self.db, candidate, user_id=user_id)

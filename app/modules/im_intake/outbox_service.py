@@ -14,7 +14,7 @@ from app.modules.im_intake.service import IntakeService
 
 SEND_ACTIONS = {"send_hard", "request_pdf", "send_soft"}
 ACTIVE_CANDIDATE_STATES = ("collecting", "awaiting_reply")
-TERMINAL_CANDIDATE_STATES = ("complete", "abandoned", "pending_human")
+TERMINAL_CANDIDATE_STATES = ("complete", "abandoned", "pending_human", "timed_out")
 LIVE_OUTBOX_STATES = ("pending", "claimed")
 _MAX_ERROR_LEN = 2000  # cap last_error payload so rogue stack traces don't bloat rows
 

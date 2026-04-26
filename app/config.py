@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     ai_model_intake: str = ""
 
     # F4 backend scheduler
-    f4_scheduler_enabled: bool = True
+    f4_scheduler_enabled: bool = False
     f4_scheduler_interval_sec: int = 300
     f4_expires_days: int = 14
     f4_claim_stale_minutes: int = 10  # reap claimed outbox older than this; extension polls 30s
