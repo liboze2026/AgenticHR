@@ -1582,14 +1582,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     window.__intakeDispatchQueue = (window.__intakeDispatchQueue || Promise.resolve()).then(async () => {
       const ob = message.outbox || {};
       try {
-        const ok = await sendIntakeMessage({
-          boss_id: ob.boss_id,
-          text: ob.text,
-        });
+        let ok = false;
+        if (ob.action_type === "request_pdf") {
+          // request_pdf has no text — must click the 求简历 button
+          const r = await window.intake_clickRequestResumeButton();
+          ok = !!(r && r.ok);
+        } else {
+          const r = await sendIntakeMessage({ boss_id: ob.boss_id, text: ob.text });
+          ok = !!r;
+        }
         chrome.runtime.sendMessage({
           type: "intake_outbox_ack",
           outbox_id: ob.id,
-          success: !!ok,
+          success: ok,
           error: ok ? "" : "send returned false",
         });
       } catch (e) {
