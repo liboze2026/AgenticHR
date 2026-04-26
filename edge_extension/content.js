@@ -210,60 +210,149 @@ async function batchCollect(serverUrl, authToken = '') {
   return { success: true, data: results, summary: { total: results.length, created, updated, failed }, log: LOG };
 }
 
+function findScrollableAncestor(el) {
+  let node = el?.parentElement;
+  while (node) {
+    const s = getComputedStyle(node);
+    if (/auto|scroll/.test(s.overflowY) && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return document.scrollingElement || document.body;
+}
+
+// 多方式触发列表加载更多：容器 scrollTop + 最后项 scrollIntoView + window 兜底
+async function triggerListLoadMore(scrollable, beforeCount) {
+  if (scrollable) {
+    scrollable.scrollTop = scrollable.scrollHeight;
+  }
+  const all = document.querySelectorAll('.geek-item');
+  if (all.length) {
+    try { all[all.length - 1].scrollIntoView({ block: 'end', behavior: 'instant' }); }
+    catch { all[all.length - 1].scrollIntoView(false); }
+  }
+  try { window.scrollTo(0, document.body.scrollHeight); } catch {}
+
+  let waited = 0;
+  while (waited < 8000 && document.querySelectorAll('.geek-item').length === beforeCount) {
+    await sleep(500); waited += 500;
+  }
+  return document.querySelectorAll('.geek-item').length;
+}
+
 async function batchCollectNew(limit, criteria, serverUrl, authToken = '') {
   LOG.length = 0; _setRunning(true);
-  const items = document.querySelectorAll('.geek-item');
-  if (!items.length) { _setRunning(false); return { success: false, message: '未找到候选人列表' }; }
-
-  log(`消息列表共 ${items.length} 人，目标采集 ${limit} 人`);
-
-  // ① collect all boss_ids
-  const allIds = [...items].map(el => el.getAttribute('data-id')).filter(Boolean);
-
-  // ② check which are already in DB
-  const existingSet = await checkBossIds(allIds, serverUrl, authToken);
-  log(`已在库: ${existingSet.size} 人，将跳过`);
-
-  // ③ filter out existing
-  const candidates = [...items].filter(el => !existingSet.has(el.getAttribute('data-id')));
-  const skippedDup = allIds.length - candidates.length;
-
-  let collected = 0, skippedCriteria = 0, failed = 0;
-  let prevPdfTitle = '';
-
-  for (let i = 0; i < candidates.length && collected < limit; i++) {
-    const item = candidates[i];
-    const listName = item.querySelector('.geek-name')?.textContent?.trim() || '';
-    if (!listName) continue;
-    log(`\n── [${i+1}/${candidates.length}] ${listName} ──`);
-
-    item.click();
-    if (!await waitForNameBox(listName, 6000)) {
-      log('面板未切换，跳过'); failed++; continue;
-    }
-    await waitForChatUpdate(prevPdfTitle, 4000);
-    await sleep(500);
-
-    const detail = extractDetail();
-    detail.boss_id = item.getAttribute('data-id') || '';
-    supplementFromPushText(detail, item);
-    const schoolTier = extractSchoolTier();
-
-    log(`学历=${detail.education} 学校层次=${schoolTier}`);
-
-    if (!matchesCriteria(detail, schoolTier, criteria)) {
-      log(`跳过: 不符标准`); skippedCriteria++; continue;
-    }
-
-    const pdfTitle = findPdfCard()?.card.querySelector('.message-card-top-title')?.textContent?.trim() || '';
-    const result = await collectSingle(serverUrl, authToken, 'batch_chat');
-    if (result.success && pdfTitle) prevPdfTitle = pdfTitle;
-    if (result.success) { collected++; log(`采集成功 (${collected}/${limit})`); }
-    else { failed++; log('采集失败'); }
-    await sleep(1000);
+  window.__intakeBatchInProgress = true;  // 互斥：阻 outbox dispatch 抢 DOM
+  let items = document.querySelectorAll('.geek-item');
+  if (!items.length) {
+    _setRunning(false); window.__intakeBatchInProgress = false;
+    return { success: false, message: '未找到候选人列表' };
   }
 
-  _setRunning(false);
+  const scrollable = findScrollableAncestor(items[0]);
+  log(`消息列表当前 ${items.length} 人，目标采集 ${limit} 人 (scroller=${scrollable?.className || 'body'})`);
+
+  const processed = new Set();
+  let collected = 0, skippedCriteria = 0, skippedDup = 0, failed = 0;
+  let prevPdfTitle = '';
+
+  try {
+  outer: while (collected < limit) {
+    items = document.querySelectorAll('.geek-item');
+    const fresh = [...items].filter(el => {
+      const id = el.getAttribute('data-id');
+      return id && !processed.has(id);
+    });
+
+    if (!fresh.length) {
+      // 触底：强化滚动加载
+      const beforeCount = items.length;
+      log(`触底 (已扫 ${beforeCount}, 入 ${collected}/${limit})，加载更多...`);
+      const after = await triggerListLoadMore(scrollable, beforeCount);
+      log(`滚动后共 ${after} 人 (+${after - beforeCount})`);
+      if (after === beforeCount) {
+        log(`列表到底，无新条目`);
+        break;
+      }
+      continue;
+    }
+
+    // 批量去重
+    const ids = fresh.map(el => el.getAttribute('data-id'));
+    const existingSet = await checkBossIds(ids, serverUrl, authToken);
+
+    for (const item of fresh) {
+      if (collected >= limit) break outer;
+      const bossId = item.getAttribute('data-id') || '';
+      processed.add(bossId);
+      if (existingSet.has(bossId)) { skippedDup++; continue; }
+
+      const listName = item.querySelector('.geek-name')?.textContent?.trim() || '';
+      if (!listName) continue;
+      log(`\n── [已扫 ${processed.size}, 入 ${collected}/${limit}] ${listName} ──`);
+
+      item.click();
+      if (!await waitForNameBox(listName, 6000)) {
+        log('面板未切换，跳过'); failed++; continue;
+      }
+      await waitForChatUpdate(prevPdfTitle, 4000);
+      await sleep(500);
+
+      const detail = extractDetail();
+      detail.boss_id = bossId;
+      supplementFromPushText(detail, item);
+      const schoolTier = extractSchoolTier();
+      log(`学历=${detail.education} 学校层次=${schoolTier}`);
+
+      if (!matchesCriteria(detail, schoolTier, criteria)) {
+        log(`跳过: 不符标准`); skippedCriteria++; continue;
+      }
+
+      // PDF 检测 + 上传拿服务器真实 path
+      let realPdfPath = null;
+      const pdfCard = findPdfCard();
+      const pdfPresent = !!pdfCard;
+      const pdfTitle = pdfCard?.card.querySelector('.message-card-top-title')?.textContent?.trim() || '';
+      if (pdfPresent) {
+        const dl = await downloadPdf({ ...detail, source: 'batch_chat' }, listName, serverUrl, authToken);
+        if (dl && dl.ok && dl.data) {
+          realPdfPath = dl.data.pdf_path || null;
+          if (pdfTitle) prevPdfTitle = pdfTitle;
+        } else {
+          log('PDF 上传失败，仍按页面数据入库');
+        }
+      }
+
+      // 进 intake 流水线（让 F4/F5 scheduler 接管后续轮询发消息）
+      try {
+        const headers = { 'Content-Type': 'application/json' };
+        if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+        const resp = await fetch(`${serverUrl}/api/intake/collect-chat`, {
+          method: 'POST', headers,
+          body: JSON.stringify({
+            boss_id: bossId,
+            name: detail.name || listName,
+            job_intention: detail.job_intention || '',
+            messages: [],
+            pdf_present: pdfPresent,
+            pdf_url: realPdfPath || null,
+          }),
+        });
+        if (resp.ok) {
+          collected++;
+          log(`入 intake 成功 (${collected}/${limit})`);
+        } else {
+          failed++; log(`入库失败 HTTP ${resp.status}`);
+        }
+      } catch (e) {
+        failed++; log(`入库异常: ${e.message}`);
+      }
+      await sleep(1000);
+    }
+  }
+  } finally {
+    _setRunning(false);
+    window.__intakeBatchInProgress = false;
+  }
   return {
     success: true, collected, skippedDup, skippedCriteria, failed,
     message: `采集 ${collected}/${limit} 人完成`,
@@ -1546,12 +1635,29 @@ window.intake_autoScanTick = intake_autoScanTick;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message && message.type === "intake_autoscan_tick") {
+    // 互斥：批采正跑时跳过 autoscan，避免抢 DOM
+    if (window.__intakeBatchInProgress) {
+      sendResponse({ ok: true, skipped: "batch in progress" });
+      return true;
+    }
     intake_autoScanTick()
       .then((r) => sendResponse(r))
       .catch((e) => sendResponse({ ok: false, error: String(e) }));
     return true;
   }
   if (message && message.type === "intake_outbox_dispatch") {
+    // 互斥：批采正在跑时拒绝 dispatch，让 outbox row 走 ack_failed → 后端 reap → 下轮 pending
+    if (window.__intakeBatchInProgress) {
+      const ob = message.outbox || {};
+      chrome.runtime.sendMessage({
+        type: "intake_outbox_ack",
+        outbox_id: ob.id,
+        success: false,
+        error: "batch collect in progress, defer",
+      });
+      sendResponse({ queued: false, reason: "batch in progress" });
+      return true;
+    }
     // Serialize concurrent dispatches: background may send multiple items
     // back-to-back and Chrome resolves the await before sendResponse fires,
     // which caused characters from 3 outbox rows to interleave in the same
