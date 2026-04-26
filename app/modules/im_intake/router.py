@@ -124,6 +124,18 @@ def list_candidates(
     return {"items": items, "total": total, "page": page, "size": size}
 
 
+@router.post("/candidates/register", status_code=201)
+def register_candidate(
+    body: RegisterCandidateIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Step1: 仅注册候选人身份（boss_id+name+job_title），不做LLM分析。幂等。"""
+    svc = _build_service(db, user_id=user_id)
+    c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_title)
+    return {"candidate_id": c.id, "boss_id": c.boss_id, "status": c.intake_status}
+
+
 @router.get("/candidates/{candidate_id}", response_model=CandidateDetailOut)
 def get_candidate(
     candidate_id: int,
@@ -224,18 +236,6 @@ def force_complete(
         reviewer_id=user_id,
     )
     return {"ok": True, "promoted_resume_id": resume.id if resume else None}
-
-
-@router.post("/candidates/register", status_code=201)
-def register_candidate(
-    body: RegisterCandidateIn,
-    db: Session = Depends(get_db),
-    user_id: int = Depends(get_current_user_id),
-):
-    """Step1: 仅注册候选人身份（boss_id+name+job_title），不做LLM分析。幂等。"""
-    svc = _build_service(db, user_id=user_id)
-    c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_title)
-    return {"candidate_id": c.id, "boss_id": c.boss_id, "status": c.intake_status}
 
 
 @router.post("/candidates/{candidate_id}/mark-timed-out")
