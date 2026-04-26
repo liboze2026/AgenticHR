@@ -341,13 +341,25 @@
       <div class="card-hint">在 boss.zhipin.com 聊天页打开候选人对话后使用。LLM 抽取姓名/联系方式/意向等。</div>
       <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
         <div>
-          <div style="font-size:12px;font-weight:600;">🔁 自动扫描 (F4 auto-collect)</div>
-          <div class="card-hint" style="margin-top:2px;">开启后每 5 分钟自动抓取 collecting 候选人聊天</div>
+          <div style="font-size:12px;font-weight:600;">🔁 自动采集开关</div>
+          <div class="card-hint" style="margin-top:2px;">开启后 Step1 每小时扫列表 / Step2 每3小时分析聊天</div>
         </div>
         <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;">
           <input type="checkbox" id="intakeAutoscanToggle" />
           <span id="intakeAutoscanLabel" style="font-size:12px;color:var(--text-muted);">关</span>
         </label>
+      </div>
+      <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+        <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">手动立即触发</div>
+        <div style="display:flex;gap:6px;">
+          <button class="btn btn-ghost" id="btnStep1" style="flex:1;font-size:11px;padding:6px 4px;">
+            ⟳ 扫描新候选人
+          </button>
+          <button class="btn btn-ghost" id="btnStep2" style="flex:1;font-size:11px;padding:6px 4px;">
+            🔍 分析聊天记录
+          </button>
+        </div>
+        <div id="phaseStatus" style="font-size:10px;color:var(--text-faint);margin-top:5px;text-align:center;min-height:14px;"></div>
       </div>
     </div>
 

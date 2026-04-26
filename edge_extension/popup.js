@@ -115,21 +115,71 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (head) head.addEventListener("click", () => logCard.classList.toggle("open"));
   }
 
-  // F4 autoscan toggle
+  // F4 autoscan toggle (storage key: intake_enabled, read by background.js alarms)
   const autoscanToggle = document.getElementById("intakeAutoscanToggle");
   const autoscanLabel = document.getElementById("intakeAutoscanLabel");
   if (autoscanToggle) {
-    chrome.storage.local.get(["intake_autoscan_enabled"], (r) => {
-      const on = !!r.intake_autoscan_enabled;
+    chrome.storage.local.get(["intake_enabled"], (r) => {
+      const on = !!r.intake_enabled;
       autoscanToggle.checked = on;
       if (autoscanLabel) autoscanLabel.textContent = on ? "开" : "关";
     });
     autoscanToggle.addEventListener("change", () => {
       const on = autoscanToggle.checked;
-      chrome.storage.local.set({ intake_autoscan_enabled: on });
+      chrome.storage.local.set({ intake_enabled: on });
       if (autoscanLabel) autoscanLabel.textContent = on ? "开" : "关";
     });
   }
+
+  // Step1/Step2 manual triggers
+  const btnStep1 = document.getElementById("btnStep1");
+  const btnStep2 = document.getElementById("btnStep2");
+  const phaseStatus = document.getElementById("phaseStatus");
+
+  function refreshPhaseStatus() {
+    chrome.runtime.sendMessage({ type: "get_phase_status" }, (s) => {
+      if (chrome.runtime.lastError || !phaseStatus) return;
+      if (s?.phase_running) {
+        phaseStatus.textContent = `运行中: ${s.phase_running === "step1" ? "Step1 扫描列表" : "Step2 分析聊天"}`;
+        phaseStatus.style.color = "var(--primary-dark)";
+      } else {
+        phaseStatus.textContent = s?.intake_enabled ? "自动采集已开启，空闲中" : "自动采集已关闭";
+        phaseStatus.style.color = "var(--text-faint)";
+      }
+    });
+  }
+  refreshPhaseStatus();
+  setInterval(refreshPhaseStatus, 5000);
+
+  async function triggerStep(type) {
+    const label = type === "manual_step1" ? "Step1 扫描" : "Step2 分析";
+    showResult(`正在触发 ${label}...`, "");
+    if (btnStep1) btnStep1.disabled = true;
+    if (btnStep2) btnStep2.disabled = true;
+    try {
+      const result = await chrome.runtime.sendMessage({ type });
+      if (result?.skipped) {
+        showResult(`${label} 被跳过: ${result.skipped}`, "");
+      } else if (result?.ok === false) {
+        showResult(`${label} 失败: ${result.reason || result.error || "未知错误"}`, "error");
+      } else {
+        const r = result || {};
+        const detail = type === "manual_step1"
+          ? `注册 ${r.registered ?? "?"} 人, 扫描 ${r.scanned ?? "?"} 人`
+          : `处理 ${r.processed ?? "?"}, 无新消息 ${r.skipped_no_new ?? "?"}`;
+        showResult(`${label} 完成: ${detail}`, "success");
+      }
+    } catch (e) {
+      showResult(`${label} 异常: ${e.message}`, "error");
+    } finally {
+      if (btnStep1) btnStep1.disabled = false;
+      if (btnStep2) btnStep2.disabled = false;
+      refreshPhaseStatus();
+    }
+  }
+
+  if (btnStep1) btnStep1.addEventListener("click", () => triggerStep("manual_step1"));
+  if (btnStep2) btnStep2.addEventListener("click", () => triggerStep("manual_step2"));
 });
 
 // ── Server URL persistence ──────────────────────────────────────────

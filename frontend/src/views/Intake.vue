@@ -51,6 +51,7 @@
           <el-option label="待人工" value="pending_human" />
           <el-option label="已完成" value="complete" />
           <el-option label="已放弃" value="abandoned" />
+          <el-option label="超时未回复" value="timed_out" />
         </el-select>
         <el-input
           v-model="search"
@@ -114,14 +115,14 @@
               @click="handleStartConversation(row)"
             >开始沟通</el-button>
             <el-button
-              v-if="row.intake_status !== 'complete' && row.intake_status !== 'abandoned'"
+              v-if="!['complete', 'abandoned'].includes(row.intake_status)"
               size="small"
               type="success"
               link
               @click="doForceComplete(row)"
             >标记完成</el-button>
             <el-button
-              v-if="row.intake_status !== 'abandoned'"
+              v-if="!['abandoned', 'timed_out'].includes(row.intake_status)"
               size="small"
               type="danger"
               link
@@ -274,6 +275,7 @@ function statusTagType(s) {
     pending_human: 'danger',
     complete: 'success',
     abandoned: 'info',
+    timed_out: 'danger',
   }[s] || ''
 }
 
@@ -284,6 +286,7 @@ function statusText(s) {
     pending_human: '待人工',
     complete: '已完成',
     abandoned: '已放弃',
+    timed_out: '超时未回复',
   }[s] || s
 }
 

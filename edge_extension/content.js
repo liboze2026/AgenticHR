@@ -1689,8 +1689,296 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ queued: true });
     return true;
   }
+  if (message && message.type === "intake_step1_scan") {
+    if (window.__intakeBatchInProgress) {
+      sendResponse({ ok: true, skipped: "batch in progress" });
+      return true;
+    }
+    window.__intakeBatchInProgress = true;
+    step1_scanList()
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }))
+      .finally(() => { window.__intakeBatchInProgress = false; });
+    return true;
+  }
+  if (message && message.type === "intake_step2_enrich") {
+    if (window.__intakeBatchInProgress) {
+      sendResponse({ ok: true, skipped: "batch in progress" });
+      return true;
+    }
+    window.__intakeBatchInProgress = true;
+    step2_enrichCandidates()
+      .then((r) => sendResponse(r))
+      .catch((e) => sendResponse({ ok: false, error: String(e) }))
+      .finally(() => { window.__intakeBatchInProgress = false; });
+    return true;
+  }
   return false;
 });
+
+// ════════════════════════════════════════════════════════════════════
+// Step1: 扫描"全部"列表，批量注册新候选人（不进入聊天）
+// ════════════════════════════════════════════════════════════════════
+
+const _STEP1_SCAN_LIMIT = 300;
+
+async function step1_scanList() {
+  if (!location.host.includes("zhipin.com")) return { ok: false, reason: "not_on_zhipin" };
+  if (!/\/web\/chat/.test(location.pathname) || /recommend/.test(location.pathname)) {
+    return { ok: false, reason: "not_on_chat_list" };
+  }
+  intake_showToast("Step1: 扫描候选人列表...", "info");
+  const serverUrl = await intake_getServerUrl();
+  const authToken = await intake_getAuthToken();
+  const headers = { "Content-Type": "application/json" };
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
+  // 切换到"全部"标签（含"全部联系人"变体）
+  switchToTab("全部") || switchToTab("全部联系人");
+  await sleep(1200);
+
+  const processed = new Set();
+  let registered = 0, failed = 0;
+  let items = document.querySelectorAll(".geek-item");
+  const scrollable = items.length ? findScrollableAncestor(items[0]) : null;
+
+  outer: while (processed.size < _STEP1_SCAN_LIMIT) {
+    items = document.querySelectorAll(".geek-item");
+    const fresh = [...items].filter((el) => {
+      const id = el.getAttribute("data-id");
+      return id && !processed.has(id);
+    });
+
+    if (!fresh.length) {
+      const before = items.length;
+      const after = await triggerListLoadMore(scrollable, before);
+      if (after === before) break; // 列表已到底
+      continue;
+    }
+
+    for (const item of fresh) {
+      if (processed.size >= _STEP1_SCAN_LIMIT) break outer;
+      const bossId = item.getAttribute("data-id");
+      if (!bossId) continue;
+      processed.add(bossId);
+
+      const name = item.querySelector(".geek-name")?.textContent?.trim() || "";
+      // 岗位名：多选择器兜底，不进入聊天
+      const jobTitle =
+        item.querySelector(".source-job")?.textContent?.trim() ||
+        item.querySelector(".expect-job")?.textContent?.trim() ||
+        item.querySelector(".geek-expect")?.textContent?.trim() ||
+        item.querySelector("[class*='expect']")?.textContent?.trim() ||
+        "";
+
+      try {
+        const r = await fetch(`${serverUrl}/api/intake/candidates/register`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ boss_id: bossId, name, job_title: jobTitle || null }),
+        });
+        if (r.ok) {
+          registered++;
+        } else {
+          failed++;
+          log(`[step1] register HTTP ${r.status} boss_id=${bossId}`);
+        }
+      } catch (e) {
+        failed++;
+        log(`[step1] register error: ${e?.message || e}`);
+      }
+      await sleep(60); // 轻量节流（不进入聊天，速度快）
+    }
+  }
+
+  const msg = `Step1 完成: 注册 ${registered} 人, 失败 ${failed}, 扫描 ${processed.size} 人`;
+  intake_showToast(msg, "done");
+  log(`[step1] ${msg}`);
+  return { ok: true, registered, failed, scanned: processed.size };
+}
+
+// ════════════════════════════════════════════════════════════════════
+// Step2: 逐个打开聊天，分析新消息，推进 intake 状态机
+// ════════════════════════════════════════════════════════════════════
+
+// Session-level message count cache: boss_id → last known candidate-message count.
+// Prevents re-running LLM when no new candidate messages have arrived since last run.
+const _step2MsgCounts = new Map();
+const _STEP2_MAX_PER_RUN = 30;
+const _STEP2_INTER_DELAY_MS = 1500;
+
+async function step2_enrichCandidates() {
+  if (!location.host.includes("zhipin.com")) return { ok: false, reason: "not_on_zhipin" };
+  if (!/\/web\/chat/.test(location.pathname) || /recommend/.test(location.pathname)) {
+    return { ok: false, reason: "not_on_chat_list" };
+  }
+  intake_showToast("Step2: 分析候选人聊天...", "info");
+  const serverUrl = await intake_getServerUrl();
+  const authToken = await intake_getAuthToken();
+  const headers = { "Content-Type": "application/json" };
+  if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+  const authHeaders = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+
+  // 拉取待处理候选人（collecting + awaiting_reply 状态）
+  let candidates;
+  try {
+    const r = await fetch(
+      `${serverUrl}/api/intake/autoscan/rank?limit=${_STEP2_MAX_PER_RUN * 2}`,
+      { headers: authHeaders }
+    );
+    if (!r.ok) return { ok: false, reason: `rank_http_${r.status}` };
+    candidates = (await r.json()).items || [];
+  } catch (e) {
+    return { ok: false, reason: e?.message || e };
+  }
+
+  let processed = 0, skipped_missing = 0, skipped_no_new = 0, failed = 0;
+
+  for (const c of candidates) {
+    if (processed >= _STEP2_MAX_PER_RUN) break;
+    const bossId = c.boss_id;
+    if (!bossId) { skipped_missing++; continue; }
+
+    const geek = document.querySelector(`.geek-item[data-id="${bossId}"]`);
+    if (!geek) { skipped_missing++; continue; }
+
+    // 点击切换到该候选人聊天
+    geek.click();
+    try {
+      await intake_waitFor(() => {
+        const sel = document.querySelector(".geek-item.selected");
+        const nb = (document.querySelector(".name-box")?.textContent || "").trim();
+        return sel?.getAttribute("data-id") === bossId && !!nb;
+      }, 10000);
+    } catch {
+      log(`[step2] ${bossId} 面板同步超时`);
+      failed++;
+      continue;
+    }
+    await sleep(600);
+
+    // 抓取聊天内容
+    const chatRoot = document.querySelector(window.CHAT_SELECTORS?.root || ".chat-conversation");
+    let parsed = null;
+    try {
+      if (window.parseChatFromDOM) parsed = window.parseChatFromDOM(chatRoot);
+    } catch (e) {
+      log(`[step2] parseChatFromDOM error: ${e?.message || e}`);
+    }
+    const messages = parsed?.messages || [];
+
+    // 候选人消息数（排除自己发的 "self"）
+    const candidateMsgCount = messages.filter(
+      (m) => m.sender_id && m.sender_id !== "self"
+    ).length;
+    const prevCount = _step2MsgCounts.get(bossId);
+
+    if (prevCount !== undefined && candidateMsgCount === prevCount) {
+      // 无新候选人消息，跳过 LLM 分析；仍更新 last_checked_at 供 UI 显示
+      skipped_no_new++;
+      log(`[step2] ${bossId} 无新候选人消息 (${candidateMsgCount}条)，跳过`);
+      if (c.candidate_id) {
+        fetch(`${serverUrl}/api/intake/candidates/${c.candidate_id}/last-checked`, {
+          method: "PATCH", headers: authHeaders,
+        }).catch(() => {});
+      }
+      continue;
+    }
+    _step2MsgCounts.set(bossId, candidateMsgCount);
+
+    // ── 有新消息：PDF 检测 + collect-chat ──────────────────────
+    const pdf = await window.intake_checkPdfReceived(bossId);
+    let realPdfPath = null;
+    if (pdf.present) {
+      const detail = extractDetail();
+      detail.boss_id = bossId;
+      supplementFromPushText(detail, geek);
+      const dl = await downloadPdf(detail, parsed?.name || "", serverUrl, authToken);
+      if (dl?.ok && dl.data) realPdfPath = dl.data.pdf_path || null;
+    }
+
+    let collectResp;
+    try {
+      const r = await fetch(`${serverUrl}/api/intake/collect-chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          boss_id: bossId,
+          name: parsed?.name || "",
+          job_intention: parsed?.job_intention || "",
+          messages,
+          pdf_present: pdf.present,
+          pdf_url: realPdfPath || (pdf.present ? pdf.url : null),
+        }),
+      });
+      if (!r.ok) {
+        log(`[step2] collect-chat HTTP ${r.status}`);
+        failed++;
+        continue;
+      }
+      collectResp = await r.json();
+    } catch (e) {
+      log(`[step2] collect-chat error: ${e?.message || e}`);
+      failed++;
+      continue;
+    }
+
+    const candidateId = collectResp.candidate_id;
+    const action = collectResp.next_action;
+    log(`[step2] ${bossId} → ${action?.type}`);
+
+    // ── 执行 next_action ────────────────────────────────────────
+    try {
+      if (action.type === "send_hard" || action.type === "send_soft") {
+        const r = await window.intake_typeAndSendChatMessage(action.text);
+        if (r.ok) {
+          await fetch(`${serverUrl}/api/intake/candidates/${candidateId}/ack-sent`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ action_type: action.type, delivered: true }),
+          });
+          intake_showToast(`${parsed?.name || bossId}: 问题已发送`, "done");
+        } else {
+          intake_showToast(`${parsed?.name || bossId}: 发送失败 — ${r.reason}`, "error");
+        }
+      } else if (action.type === "request_pdf") {
+        const r = await window.intake_clickRequestResumeButton();
+        if (r.ok) {
+          await fetch(`${serverUrl}/api/intake/candidates/${candidateId}/ack-sent`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ action_type: "request_pdf", delivered: true }),
+          });
+          intake_showToast(`${parsed?.name || bossId}: 已求简历`, "done");
+        }
+      } else if (action.type === "complete") {
+        intake_showToast(`${parsed?.name || bossId}: 采集完成 → 已进入简历库`, "done");
+      } else if (action.type === "timed_out") {
+        intake_showToast(`${parsed?.name || bossId}: 超时未回复，已标记`, "error");
+      }
+    } catch (e) {
+      log(`[step2] action execution error: ${e?.message || e}`);
+    }
+
+    // 更新 last_checked_at
+    try {
+      await fetch(`${serverUrl}/api/intake/candidates/${candidateId}/last-checked`, {
+        method: "PATCH",
+        headers: authHeaders,
+      });
+    } catch (e) {
+      log(`[step2] last-checked update failed: ${e?.message || e}`);
+    }
+
+    processed++;
+    await sleep(_STEP2_INTER_DELAY_MS);
+  }
+
+  const msg = `Step2 完成: 处理 ${processed}, 列表缺失 ${skipped_missing}, 无新消息 ${skipped_no_new}, 失败 ${failed}`;
+  intake_showToast(msg, "done");
+  log(`[step2] ${msg}`);
+  return { ok: true, processed, skipped_missing, skipped_no_new, failed };
+}
 
 // Auto-trigger on URL with intake_candidate_id query param (arrived via /intake deep link)
 if (
