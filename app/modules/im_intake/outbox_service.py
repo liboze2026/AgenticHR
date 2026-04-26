@@ -13,14 +13,31 @@ from app.modules.im_intake.service import IntakeService
 
 SEND_ACTIONS = {"send_hard", "request_pdf", "send_soft"}
 ACTIVE_CANDIDATE_STATES = ("collecting", "awaiting_reply")
+TERMINAL_CANDIDATE_STATES = ("complete", "abandoned", "pending_human")
 LIVE_OUTBOX_STATES = ("pending", "claimed")
 _MAX_ERROR_LEN = 2000  # cap last_error payload so rogue stack traces don't bloat rows
 
 
+def _is_terminal(candidate: IntakeCandidate | None) -> bool:
+    """True iff the candidate is in a state where no further outbox traffic
+    should be generated, claimed, or acted upon. Defense-in-depth check used
+    by every outbox lifecycle function — a single source of truth so a new
+    terminal state added in the future automatically propagates."""
+    return candidate is not None and candidate.intake_status in TERMINAL_CANDIDATE_STATES
+
+
 def generate_for_candidate(db: Session, candidate: IntakeCandidate,
                            action: NextAction) -> IntakeOutbox | None:
-    """给候选人生成一条待发 outbox；若已有 pending/claimed 则返回 None（幂等）。"""
+    """给候选人生成一条待发 outbox；若已有 pending/claimed 则返回 None（幂等）。
+
+    Terminal-state guard: a candidate that has already been promoted, abandoned,
+    or marked pending_human must never receive a new outbox row — even if a
+    stale scheduler tick or a router miscall asks for one. Returns ``None``
+    silently so callers can blindly call without checking state.
+    """
     if action.type not in SEND_ACTIONS:
+        return None
+    if _is_terminal(candidate):
         return None
     existing = (db.query(IntakeOutbox)
                 .filter_by(candidate_id=candidate.id)
@@ -54,17 +71,32 @@ def claim_batch(db: Session, user_id: int, limit: int = 1) -> list[IntakeOutbox]
     """
     limit = 1  # hard-capped; caller's value is intentionally ignored
     now = datetime.now(timezone.utc)
-    rows = (db.query(IntakeOutbox)
-            .filter_by(user_id=user_id, status="pending")
-            .filter(IntakeOutbox.scheduled_for <= now)
-            .order_by(IntakeOutbox.scheduled_for.asc(), IntakeOutbox.id.asc())
-            .limit(limit)
-            .all())
-    for r in rows:
+    # FIFO scan; skip & auto-expire any row whose owner became terminal
+    # between scheduling and claim time (zombie outbox prevention).
+    candidates = (db.query(IntakeOutbox)
+                  .filter_by(user_id=user_id, status="pending")
+                  .filter(IntakeOutbox.scheduled_for <= now)
+                  .order_by(IntakeOutbox.scheduled_for.asc(),
+                            IntakeOutbox.id.asc())
+                  .all())
+    rows: list[IntakeOutbox] = []
+    expired_terminal = 0
+    for r in candidates:
+        owner = db.query(IntakeCandidate).filter_by(id=r.candidate_id).first()
+        if _is_terminal(owner):
+            r.status = "expired"
+            r.last_error = ((r.last_error or "")
+                            + "[claim: owner terminal]")[:_MAX_ERROR_LEN]
+            expired_terminal += 1
+            continue
         r.status = "claimed"
         r.claimed_at = now
         r.attempts += 1
-    db.commit()
+        rows.append(r)
+        if len(rows) >= limit:
+            break
+    if rows or expired_terminal:
+        db.commit()
     return rows
 
 
@@ -87,6 +119,15 @@ def ack_sent(db: Session, outbox_id: int) -> IntakeOutbox | None:
     candidate = db.query(IntakeCandidate).filter_by(id=row.candidate_id).first()
     if candidate is None:
         # No candidate — still need to commit the row.status flip ourselves.
+        db.commit()
+        return row
+
+    if _is_terminal(candidate):
+        # Late ack on a terminal candidate (e.g. promoted 2 days ago, scheduler
+        # row only just got dispatched). Mark the row sent for audit but DO NOT
+        # call record_asked — it would regress intake_status and re-touch slots.
+        row.last_error = ((row.last_error or "")
+                          + "[ack: owner terminal, skip record_asked]")[:_MAX_ERROR_LEN]
         db.commit()
         return row
 
@@ -134,10 +175,19 @@ def reap_stale_claims(db: Session, stale_minutes: int = 10,
             continue
         ca_cmp = ca if ca.tzinfo else ca.replace(tzinfo=timezone.utc)
         if ca_cmp < cutoff:
-            r.status = "pending"
-            r.claimed_at = None
-            r.last_error = (r.last_error or "") + f"[reaped stale claim at {now.isoformat()}]"
-            r.last_error = r.last_error[:_MAX_ERROR_LEN]
+            owner = db.query(IntakeCandidate).filter_by(id=r.candidate_id).first()
+            if _is_terminal(owner):
+                # Don't re-pending a row whose owner is terminal — that would
+                # just re-trigger the same zombie cycle. Expire instead.
+                r.status = "expired"
+                r.claimed_at = None
+                r.last_error = ((r.last_error or "")
+                                + f"[reap: owner terminal at {now.isoformat()}]")[:_MAX_ERROR_LEN]
+            else:
+                r.status = "pending"
+                r.claimed_at = None
+                r.last_error = ((r.last_error or "")
+                                + f"[reaped stale claim at {now.isoformat()}]")[:_MAX_ERROR_LEN]
             reaped += 1
     if reaped:
         db.commit()

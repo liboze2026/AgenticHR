@@ -4,6 +4,10 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.im_intake.models import IntakeSlot
+
+# Terminal states must match outbox_service.TERMINAL_CANDIDATE_STATES.
+# Duplicated here to avoid circular import (outbox_service imports IntakeService).
+TERMINAL_CANDIDATE_STATES = ("complete", "abandoned", "pending_human")
 from app.modules.im_intake.slot_filler import SlotFiller
 from app.modules.im_intake.question_generator import QuestionGenerator
 from app.modules.im_intake.pdf_collector import PdfCollector
@@ -137,9 +141,28 @@ class IntakeService:
                         {"filled": list(parsed.keys()), "msg_count": len(messages)},
                         reviewer_id=self.user_id or None)
 
-        candidate.chat_snapshot = {"messages": messages,
-                                   "captured_at": datetime.now(timezone.utc).isoformat()}
-        self.db.commit()
+        # Don't clobber existing chat_snapshot with an empty-messages call —
+        # the extension's collect-chat may legitimately pass [] (e.g. just
+        # opened the panel before history loaded). Only refresh when we
+        # actually have content, OR when there's no snapshot yet.
+        if messages or candidate.chat_snapshot is None:
+            candidate.chat_snapshot = {
+                "messages": messages,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.db.commit()
+
+        # Defense-in-depth: if THIS analyze_chat just filled the last unfilled
+        # hard slot, any leftover pending/claimed outbox row is now asking a
+        # question whose answer is already in. Expire residuals so the outbox
+        # poll cannot dispatch a zombie question 30s later. Local import to
+        # avoid circular dependency at module load time.
+        slots_after = self.db.query(IntakeSlot).filter_by(candidate_id=candidate.id).all()
+        slots_by = {s.slot_key: s for s in slots_after}
+        all_hard_filled = all(slots_by.get(k) and slots_by[k].value for k in HARD_SLOT_KEYS)
+        if all_hard_filled:
+            from app.modules.im_intake.outbox_service import expire_pending_for_candidate
+            expire_pending_for_candidate(self.db, candidate.id, reason="hard_slots_filled")
 
         slots = list(slots_by_key.values())
         action = decide_next_action(
@@ -166,14 +189,28 @@ class IntakeService:
         return action
 
     def record_asked(self, candidate: IntakeCandidate, action: NextAction) -> None:
+        # Terminal-state guard — a candidate that is already complete/abandoned/
+        # pending_human must NEVER be regressed to awaiting_reply by a late
+        # ack from a stale outbox row. Bail out silently so the outbox row can
+        # still be flipped to "sent" by the caller for audit purposes.
+        if candidate.intake_status in TERMINAL_CANDIDATE_STATES:
+            return
         by = {s.slot_key: s for s in
               self.db.query(IntakeSlot).filter_by(candidate_id=candidate.id).all()}
         now = datetime.now(timezone.utc)
         if action.type == "send_hard":
             for k in action.meta.get("slot_keys", []):
-                by[k].ask_count += 1
-                by[k].asked_at = now
-                by[k].last_ask_text = action.text
+                slot = by.get(k)
+                if slot is None:
+                    continue
+                # Skip slots that were filled between question scheduling and
+                # ack — incrementing ask_count for an answered slot would push
+                # the candidate toward hard_max abandonment for no reason.
+                if slot.value:
+                    continue
+                slot.ask_count += 1
+                slot.asked_at = now
+                slot.last_ask_text = action.text
             candidate.intake_status = "awaiting_reply"
             _audit_safe("f4_question_sent", "send_hard", candidate.id,
                         {"slot_keys": action.meta.get("slot_keys", []), "text": action.text},
@@ -201,10 +238,13 @@ class IntakeService:
         self.db.commit()
 
     def apply_terminal(self, candidate: IntakeCandidate, action: NextAction, user_id: int = 0):
+        # Local import to avoid circular dependency (outbox_service imports IntakeService).
+        from app.modules.im_intake.outbox_service import expire_pending_for_candidate
         if action.type == "abandon":
             candidate.intake_status = "abandoned"
             candidate.intake_completed_at = datetime.now(timezone.utc)
             self.db.commit()
+            expire_pending_for_candidate(self.db, candidate.id, reason="abandon")
             _audit_safe("f4_abandoned", "auto_abandon", candidate.id,
                         {"reason": "pdf_timeout_or_max_asks"}, reviewer_id=user_id or None)
             return None
@@ -212,12 +252,14 @@ class IntakeService:
             candidate.intake_status = "pending_human"
             candidate.intake_completed_at = datetime.now(timezone.utc)
             self.db.commit()
+            expire_pending_for_candidate(self.db, candidate.id, reason="pending_human")
             _audit_safe("f4_pending_human", "auto_mark", candidate.id,
                         {"reason": "hard_max_asks_exhausted"}, reviewer_id=user_id or None)
             return None
         if action.type == "complete":
             resume = promote_to_resume(self.db, candidate, user_id=user_id)
             self.db.commit()
+            expire_pending_for_candidate(self.db, candidate.id, reason="complete")
             _audit_safe("f4_completed", "auto_complete", candidate.id,
                         {"promoted_resume_id": getattr(candidate, "promoted_resume_id", None)},
                         reviewer_id=user_id or None)

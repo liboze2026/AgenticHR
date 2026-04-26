@@ -5,9 +5,16 @@ from app.modules.resume.models import Resume
 
 
 def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0) -> Resume:
+    # Local import to break a circular dependency: outbox_service imports
+    # IntakeService → service.py imports promote.py.
+    from app.modules.im_intake.outbox_service import expire_pending_for_candidate
+
     if candidate.promoted_resume_id:
         existing = db.query(Resume).filter_by(id=candidate.promoted_resume_id).first()
         if existing:
+            # Idempotent re-promote: still flush any zombie outbox so a stale
+            # row from before the original promotion cannot fire later.
+            expire_pending_for_candidate(db, candidate.id, reason="promote_idempotent")
             return existing
 
     # Merge semantics: if a Resume already exists with the same boss_id (e.g. from
@@ -40,6 +47,9 @@ def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0)
         candidate.promoted_resume_id = r.id
         candidate.intake_status = "complete"
         candidate.intake_completed_at = datetime.now(timezone.utc)
+        # Expire any pending/claimed outbox so a stale scheduler row can't
+        # fire after the candidate is already promoted.
+        expire_pending_for_candidate(db, candidate.id, reason="promote_merge")
         return r
 
     r = Resume(
@@ -61,4 +71,5 @@ def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0)
     candidate.promoted_resume_id = r.id
     candidate.intake_status = "complete"
     candidate.intake_completed_at = datetime.now(timezone.utc)
+    expire_pending_for_candidate(db, candidate.id, reason="promote_new")
     return r

@@ -154,6 +154,13 @@ def patch_slot(
     parent = db.query(IntakeCandidate).filter_by(id=s.candidate_id, user_id=user_id).first()
     if not parent:
         raise HTTPException(404, "slot not found")
+    # Reject patches against permanently-terminal candidates — editing a slot
+    # on a completed or abandoned candidate creates inconsistent data (the
+    # resume row is a snapshot of the slot state at promotion time).
+    # NOTE: ``pending_human`` is intentionally excluded — that state exists
+    # *for* manual intervention; locking it out would defeat its purpose.
+    if parent.intake_status in ("complete", "abandoned"):
+        raise HTTPException(409, f"candidate is {parent.intake_status}, slot is read-only")
     s.value = body.value
     s.source = "manual"
     s.answered_at = datetime.now(timezone.utc)
@@ -171,10 +178,17 @@ def abandon(
     c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "not found")
-    c.intake_status = "abandoned"
-    db.commit()
-    _audit_safe("f4_abandoned", "manual_abandon", c.id, {"boss_id": c.boss_id}, reviewer_id=user_id)
-    return {"ok": True}
+    # Idempotent: already-abandoned candidates skip the state mutation but
+    # still re-run the outbox expire (defense against historical zombies).
+    now = datetime.now(timezone.utc)
+    if c.intake_status != "abandoned":
+        c.intake_status = "abandoned"
+        c.intake_completed_at = now
+        db.commit()
+    expired = _outbox_expire_pending(db, c.id, reason="manual_abandon")
+    _audit_safe("f4_abandoned", "manual_abandon", c.id,
+                {"boss_id": c.boss_id, "outbox_expired": expired}, reviewer_id=user_id)
+    return {"ok": True, "outbox_expired": expired}
 
 
 @router.delete("/candidates/{candidate_id}", status_code=204)
@@ -220,7 +234,14 @@ async def collect_chat(
     c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_intention)
     job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
 
-    messages = [m.model_dump() for m in body.messages]
+    # Clamp message list — extension might be looping or user pasted a giant
+    # transcript. Persisting 50k messages into chat_snapshot bloats the row,
+    # slows extraction, and feeds noise to the LLM. Keep the most recent N.
+    max_msgs = getattr(settings, "f4_max_chat_messages", 500)
+    raw = list(body.messages)
+    if len(raw) > max_msgs:
+        raw = raw[-max_msgs:]
+    messages = [m.model_dump() for m in raw]
 
     if body.pdf_present and body.pdf_url and not c.pdf_path:
         slots = svc.ensure_slot_rows(c.id)
@@ -315,9 +336,32 @@ def put_intake_settings(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
+    """Update HR-facing master switch.
+
+    Defense-in-depth: when the new settings make ``is_running`` False
+    (paused, or target_count lowered below complete_count), expire all
+    pending+claimed outbox rows for this user. Without this, dormant rows
+    sit until the user re-enables the intake — at which point a 2-day-old
+    "ask arrival_date" question can suddenly fire against a candidate who
+    has long since answered manually or been promoted by another flow.
+    """
+    was_running = _settings_is_running(db, user_id)
     _settings_update(db, user_id,
                      enabled=body.enabled,
                      target_count=body.target_count)
+    is_now_running = _settings_is_running(db, user_id)
+    if was_running and not is_now_running:
+        # Bulk-expire user's live outbox to prevent stale replay on resume.
+        rows = (db.query(IntakeOutbox)
+                .filter(IntakeOutbox.user_id == user_id)
+                .filter(IntakeOutbox.status.in_(("pending", "claimed")))
+                .all())
+        for r in rows:
+            r.status = "expired"
+            r.last_error = ((r.last_error or "")
+                            + "[expired: intake paused/target reached]")[:2000]
+        if rows:
+            db.commit()
     return _settings_response(db, user_id)
 
 
