@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 SlotKey = str
 SlotCategory = Literal["hard", "pdf", "soft"]
-IntakeStatus = Literal["collecting", "awaiting_reply", "pending_human", "complete", "abandoned"]
+IntakeStatus = Literal["collecting", "awaiting_reply", "pending_human", "complete", "abandoned", "timed_out"]
 
 
 class SlotOut(BaseModel):
@@ -33,6 +33,7 @@ class CandidateOut(BaseModel):
     progress_done: int
     progress_total: int
     last_activity_at: datetime | None = None
+    last_checked_at: datetime | None = None
     promoted_resume_id: int | None = None
 
 
@@ -52,6 +53,12 @@ class ChatMessageIn(BaseModel):
     sent_at: str | None = None
 
 
+class RegisterCandidateIn(BaseModel):
+    boss_id: str = Field(min_length=1)
+    name: str = ""
+    job_title: str | None = None
+
+
 class CollectChatIn(BaseModel):
     boss_id: str = Field(min_length=1)
     name: str = ""
@@ -63,7 +70,7 @@ class CollectChatIn(BaseModel):
 
 class NextActionOut(BaseModel):
     type: Literal["send_hard", "request_pdf", "wait_pdf", "wait_reply",
-                  "send_soft", "complete", "mark_pending_human", "abandon"]
+                  "send_soft", "complete", "mark_pending_human", "abandon", "timed_out"]
     text: str = ""
     slot_keys: list[str] = Field(default_factory=list)
 

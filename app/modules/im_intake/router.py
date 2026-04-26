@@ -37,6 +37,7 @@ from app.modules.im_intake.schemas import (
     OutboxClaimIn,
     OutboxClaimItem,
     OutboxClaimOut,
+    RegisterCandidateIn,
     SlotOut,
     SlotPatchIn,
     StartConversationOut,
@@ -94,6 +95,7 @@ def _candidate_summary(c: IntakeCandidate, slots: list[IntakeSlot], job_title: s
         progress_done=done,
         progress_total=len(expected),
         last_activity_at=last,
+        last_checked_at=getattr(c, "last_checked_at", None),
         promoted_resume_id=getattr(c, "promoted_resume_id", None),
     )
 
@@ -224,6 +226,53 @@ def force_complete(
     return {"ok": True, "promoted_resume_id": resume.id if resume else None}
 
 
+@router.post("/candidates/register", status_code=201)
+def register_candidate(
+    body: RegisterCandidateIn,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Step1: 仅注册候选人身份（boss_id+name+job_title），不做LLM分析。幂等。"""
+    svc = _build_service(db, user_id=user_id)
+    c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_title)
+    return {"candidate_id": c.id, "boss_id": c.boss_id, "status": c.intake_status}
+
+
+@router.post("/candidates/{candidate_id}/mark-timed-out")
+def mark_timed_out(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Step2: 候选人超过最大问询次数无回应，标记超时未回复。"""
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
+    if not c:
+        raise HTTPException(404, "candidate not found")
+    if c.intake_status in ("complete", "abandoned", "timed_out"):
+        return {"ok": True, "noop": True, "status": c.intake_status}
+    c.intake_status = "timed_out"
+    c.intake_completed_at = datetime.now(timezone.utc)
+    db.commit()
+    _outbox_expire_pending(db, c.id, reason="timed_out")
+    _audit_safe("f4_timed_out", "manual_timed_out", c.id, {}, reviewer_id=user_id)
+    return {"ok": True, "status": "timed_out"}
+
+
+@router.patch("/candidates/{candidate_id}/last-checked")
+def update_last_checked(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """Step2: 记录本次检查时间，下次比较用于判断有无新候选人消息。"""
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
+    if not c:
+        raise HTTPException(404, "candidate not found")
+    c.last_checked_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"ok": True, "last_checked_at": c.last_checked_at.isoformat()}
+
+
 @router.post("/collect-chat", response_model=CollectChatOut)
 async def collect_chat(
     body: CollectChatIn,
@@ -255,6 +304,10 @@ async def collect_chat(
 
     action = await svc.analyze_chat(c, messages, job)
     svc.apply_terminal(c, action, user_id=user_id)
+    # 非终态动作：内联生成 outbox（替代已禁用的后台 scheduler）
+    from app.modules.im_intake.outbox_service import generate_for_candidate as _gen_outbox
+    if action.type in ("send_hard", "request_pdf", "send_soft"):
+        _gen_outbox(db, c, action)
     db.refresh(c)
     return CollectChatOut(
         candidate_id=c.id,
