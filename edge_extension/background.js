@@ -148,12 +148,12 @@ async function reportAck(outboxId, success, error = "") {
 
 // ── Step1 / Step2 运行器 ──────────────────────────────────────
 async function runStep1() {
-  if (!(await acquirePhase("step1"))) return;
+  if (!(await acquirePhase("step1"))) return { skipped: "mutex" };
   try {
     const tab = await getBossTab();
     if (!tab) {
       console.log("[step1] 无 BOSS 标签页，跳过");
-      return;
+      return { ok: false, reason: "no_boss_tab" };
     }
     console.log("[step1] 发送 intake_step1_scan → tab", tab.id);
     try {
@@ -161,8 +161,10 @@ async function runStep1() {
         type: "intake_step1_scan",
       });
       console.log("[step1] 完成:", result);
+      return result;
     } catch (e) {
       console.warn("[step1] sendMessage 失败:", e?.message || e);
+      return { ok: false, reason: e?.message || String(e) };
     }
   } finally {
     await releasePhase();
@@ -170,12 +172,12 @@ async function runStep1() {
 }
 
 async function runStep2() {
-  if (!(await acquirePhase("step2"))) return;
+  if (!(await acquirePhase("step2"))) return { skipped: "mutex" };
   try {
     const tab = await getBossTab();
     if (!tab) {
       console.log("[step2] 无 BOSS 标签页，跳过");
-      return;
+      return { ok: false, reason: "no_boss_tab" };
     }
     console.log("[step2] 发送 intake_step2_enrich → tab", tab.id);
     try {
@@ -183,8 +185,10 @@ async function runStep2() {
         type: "intake_step2_enrich",
       });
       console.log("[step2] 完成:", result);
+      return result;
     } catch (e) {
       console.warn("[step2] sendMessage 失败:", e?.message || e);
+      return { ok: false, reason: e?.message || String(e) };
     }
   } finally {
     await releasePhase();
@@ -218,13 +222,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   // 手动触发 Step1（来自 popup 或前端）
   if (msg?.type === "manual_step1") {
-    runStep1().then(() => sendResponse({ ok: true }));
+    runStep1().then((r) => sendResponse(r || { ok: true }));
     return true;
   }
 
   // 手动触发 Step2（来自 popup 或前端）
   if (msg?.type === "manual_step2") {
-    runStep2().then(() => sendResponse({ ok: true }));
+    runStep2().then((r) => sendResponse(r || { ok: true }));
     return true;
   }
 
