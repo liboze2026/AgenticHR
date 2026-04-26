@@ -1584,9 +1584,22 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         let ok = false;
         if (ob.action_type === "request_pdf") {
-          // request_pdf has no text — must click the 求简历 button
-          const r = await window.intake_clickRequestResumeButton();
-          ok = !!(r && r.ok);
+          // request_pdf has no text — switch to candidate first, then click 求简历
+          const row = document.querySelector(`.geek-item[data-id="${ob.boss_id}"]`);
+          if (!row) {
+            ok = false;
+          } else {
+            if (!row.classList.contains("selected")) row.click();
+            try {
+              await intake_waitFor(() => {
+                const sel = document.querySelector(".geek-item.selected");
+                return sel?.getAttribute("data-id") === String(ob.boss_id);
+              }, 10000);
+              await sleep(500);
+            } catch (_) { /* timeout — still try */ }
+            const r = await window.intake_clickRequestResumeButton();
+            ok = !!(r && r.ok);
+          }
         } else {
           const r = await sendIntakeMessage({ boss_id: ob.boss_id, text: ob.text });
           ok = !!r;
