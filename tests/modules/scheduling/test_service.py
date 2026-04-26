@@ -23,7 +23,7 @@ def _create_resume(db_session) -> Resume:
 def test_create_and_list_interviewers(db_session):
     service = SchedulingService(db_session)
     iv1 = service.create_interviewer(InterviewerCreate(name="张面试官", email="zhang@test.com"))
-    iv2 = service.create_interviewer(InterviewerCreate(name="李面试官", department="技术部"))
+    iv2 = service.create_interviewer(InterviewerCreate(name="李面试官", department="技术部", email="li@test.com"))
     assert iv1.id is not None
     assert iv2.id is not None
 
@@ -34,7 +34,7 @@ def test_create_and_list_interviewers(db_session):
 
 def test_add_and_get_availability(db_session):
     service = SchedulingService(db_session)
-    iv = service.create_interviewer(InterviewerCreate(name="王面试官"))
+    iv = service.create_interviewer(InterviewerCreate(name="王面试官", email="wang@test.com"))
 
     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
     start = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -53,7 +53,7 @@ def test_add_and_get_availability(db_session):
 
 def test_match_slots(db_session):
     service = SchedulingService(db_session)
-    iv = service.create_interviewer(InterviewerCreate(name="赵面试官"))
+    iv = service.create_interviewer(InterviewerCreate(name="赵面试官", email="zhao@test.com"))
 
     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
     iv_start = tomorrow.replace(hour=9, minute=0, second=0, microsecond=0)
@@ -81,7 +81,7 @@ def test_match_slots(db_session):
 
 def test_match_slots_with_existing_interview(db_session):
     service = SchedulingService(db_session)
-    iv = service.create_interviewer(InterviewerCreate(name="钱面试官"))
+    iv = service.create_interviewer(InterviewerCreate(name="钱面试官", email="qian@test.com"))
     resume = _create_resume(db_session)
 
     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -117,7 +117,7 @@ def test_match_slots_with_existing_interview(db_session):
 
 def test_create_interview(db_session):
     service = SchedulingService(db_session)
-    iv = service.create_interviewer(InterviewerCreate(name="孙面试官"))
+    iv = service.create_interviewer(InterviewerCreate(name="孙面试官", email="sun@test.com"))
     resume = _create_resume(db_session)
 
     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -137,7 +137,7 @@ def test_create_interview(db_session):
 
 def test_create_interview_conflict(db_session):
     service = SchedulingService(db_session)
-    iv = service.create_interviewer(InterviewerCreate(name="周面试官"))
+    iv = service.create_interviewer(InterviewerCreate(name="周面试官", email="zhou@test.com"))
     resume = _create_resume(db_session)
 
     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)
@@ -159,7 +159,7 @@ def test_create_interview_conflict(db_session):
 
 def test_cancel_interview(db_session):
     service = SchedulingService(db_session)
-    iv = service.create_interviewer(InterviewerCreate(name="吴面试官"))
+    iv = service.create_interviewer(InterviewerCreate(name="吴面试官", email="wu@test.com"))
     resume = _create_resume(db_session)
 
     tomorrow = datetime.now(timezone.utc) + timedelta(days=1)

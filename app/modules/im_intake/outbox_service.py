@@ -144,6 +144,33 @@ def reap_stale_claims(db: Session, stale_minutes: int = 10,
     return reaped
 
 
+def expire_pending_for_candidate(db: Session, candidate_id: int,
+                                 reason: str = "superseded") -> int:
+    """Mark all pending/claimed outbox rows for ``candidate_id`` as expired.
+
+    Used by the inline-send path (router.ack_sent): when the extension's
+    autoscan has already directly sent the message and acked, any leftover
+    outbox row from a prior scheduler tick must be invalidated, otherwise
+    outbox poll will dispatch the same question again 30s later.
+
+    Returns the number of rows transitioned. Caller is responsible for
+    committing — this function uses its own commit so callers may safely
+    invoke after their own commit.
+    """
+    rows = (db.query(IntakeOutbox)
+            .filter(IntakeOutbox.candidate_id == candidate_id)
+            .filter(IntakeOutbox.status.in_(LIVE_OUTBOX_STATES))
+            .all())
+    if not rows:
+        return 0
+    tag = f"[expired: {reason}]"
+    for r in rows:
+        r.status = "expired"
+        r.last_error = ((r.last_error or "") + tag)[:_MAX_ERROR_LEN]
+    db.commit()
+    return len(rows)
+
+
 def cleanup_expired(db: Session, now: datetime | None = None) -> dict[str, int]:
     """标 expires_at < now 且仍在 collecting/awaiting_reply 的候选人为 abandoned；
     其 pending/claimed outbox → expired。返回 {'abandoned': n, 'expired_outbox': m}。

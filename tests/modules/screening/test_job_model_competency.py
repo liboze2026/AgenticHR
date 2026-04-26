@@ -20,6 +20,17 @@ def session(tmp_path, monkeypatch):
     # resumes for migration 0007 ALTER TABLE resumes ADD COLUMN seniority
     import sqlite3
     conn = sqlite3.connect(str(db))
+    # users table required by migration 0010 (ALTER users ADD COLUMN daily_cap)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username VARCHAR(50) UNIQUE NOT NULL,
+            password_hash VARCHAR(200) NOT NULL,
+            display_name VARCHAR(100) DEFAULT '',
+            is_active BOOLEAN DEFAULT 1,
+            created_at DATETIME
+        )
+    """)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

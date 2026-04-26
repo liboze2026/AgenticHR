@@ -144,7 +144,10 @@ def db(tmp_path, monkeypatch):
     cfg.set_main_option("script_location", "migrations")
     cfg.set_main_option("sqlalchemy.url", url)
     command.stamp(cfg, "0009")
-    command.upgrade(cfg, "0011")
+    # Upgrade to head so any subsequent schema additions (e.g. 0016
+    # jobs.batch_collect_criteria) are applied. Otherwise tests that
+    # SELECT a column added after 0011 fail with OperationalError.
+    command.upgrade(cfg, "head")
     engine = sa.create_engine(url, connect_args={"check_same_thread": False})
     factory = sessionmaker(bind=engine)
     monkeypatch.setattr("app.database.engine", engine)

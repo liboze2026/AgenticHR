@@ -16,6 +16,7 @@ from app.modules.im_intake.outbox_service import (
     ack_failed as _outbox_ack_failed,
     ack_sent as _outbox_ack_sent,
     claim_batch as _outbox_claim_batch,
+    expire_pending_for_candidate as _outbox_expire_pending,
 )
 from app.modules.im_intake.settings_service import (
     get_or_create as _settings_get_or_create,
@@ -263,7 +264,11 @@ async def ack_sent(
     if action.type != body.action_type:
         raise HTTPException(409, f"state mismatch: expected {action.type}, got {body.action_type}")
     svc.record_asked(c, action)
-    return {"ok": True}
+    # Inline-send path supersedes any outbox row the scheduler may have queued
+    # before this ack. Without expiring leftovers, outbox poll would dispatch
+    # the same question 30s later — duplicate send.
+    expired = _outbox_expire_pending(db, c.id, reason="inline_ack_sent")
+    return {"ok": True, "outbox_expired": expired}
 
 
 @router.get("/daily-cap")
