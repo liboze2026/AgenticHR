@@ -82,7 +82,7 @@ class NotificationService:
                         results.append({"channel": "feishu_pdf", "recipient": interviewer_name, "status": pdf_status})
 
         # 创建飞书日程（先删旧的，再建新的）
-        if interviewer and interviewer.feishu_user_id:
+        if send_feishu and interviewer and interviewer.feishu_user_id:
             from datetime import timedelta
 
             # 删除旧日程
