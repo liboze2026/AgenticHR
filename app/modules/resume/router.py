@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -56,11 +56,20 @@ def clear_all_resumes(
             pass
     else:
         notification_count = 0
+    # Collect this user's PDF paths before deletion
+    user_pdf_paths = [r.pdf_path for r in db.query(Resume.pdf_path).filter(
+        Resume.user_id == user_id, Resume.pdf_path != None, Resume.pdf_path != ""
+    ).all() if r.pdf_path]
+
     count = db.query(Resume).filter(Resume.user_id == user_id).count()
     db.query(Resume).filter(Resume.user_id == user_id).delete(synchronize_session=False)
     db.commit()
-    for f in glob.glob(os.path.join(settings.resume_storage_path, "*.pdf")):
-        os.remove(f)
+    for path in user_pdf_paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
     return {"deleted_resumes": count, "deleted_interviews": interview_count, "deleted_notifications": notification_count}
 
 
@@ -158,7 +167,7 @@ def get_storage_path():
 
 
 class _CheckBossIdsIn(BaseModel):
-    boss_ids: list[str]
+    boss_ids: list[str] = Field(max_length=1000)
 
 
 @router.post("/check-boss-ids")

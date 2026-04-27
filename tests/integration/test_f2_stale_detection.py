@@ -10,10 +10,10 @@ async def test_stale_after_competency_change(db_session, client):
     cm_v1 = {"hard_skills": [], "experience": {"years_min": 0},
              "education": {}, "job_level": "中级"}
     j = Job(title="J", is_active=True, required_skills="",
-            competency_model=cm_v1, competency_model_status="approved")
+            competency_model=cm_v1, competency_model_status="approved", user_id=1)
     db_session.add(j); db_session.commit()
     r = Resume(name="R", phone="", skills="Python", work_years=3,
-               education="本科", ai_parsed="yes", source="manual", seniority="中级")
+               education="本科", ai_parsed="yes", source="manual", seniority="中级", user_id=1)
     db_session.add(r); db_session.commit()
 
     with patch("app.modules.matching.service.enhance_evidence_with_llm",

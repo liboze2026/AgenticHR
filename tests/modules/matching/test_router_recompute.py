@@ -8,12 +8,12 @@ def _seed(session, n_resumes=3):
     cm = {"hard_skills": [], "experience": {"years_min": 0},
           "education": {}, "job_level": "中级"}
     job = Job(title="后端", is_active=True, required_skills="",
-              competency_model=cm, competency_model_status="approved")
+              competency_model=cm, competency_model_status="approved", user_id=1)
     session.add(job); session.commit()
 
     for i in range(n_resumes):
         r = Resume(name=f"R{i}", phone="", skills="Python", work_years=2,
-                   education="本科", ai_parsed="yes", source="manual", seniority="中级")
+                   education="本科", ai_parsed="yes", source="manual", seniority="中级", user_id=1)
         session.add(r); session.commit()
     return job
 

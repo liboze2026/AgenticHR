@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.modules.auth.deps import get_current_user_id
 from app.modules.matching.hashing import compute_competency_hash, compute_weights_hash
 from app.modules.matching.weights import get_effective_weights
 from app.modules.matching.models import MatchingResult
@@ -31,8 +32,14 @@ def _require_matching_enabled():
 
 
 @router.post("/score", response_model=MatchingResultResponse)
-async def score_pair(req: ScoreRequest, db: Session = Depends(get_db)):
+async def score_pair(req: ScoreRequest, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     _require_matching_enabled()
+    resume = db.query(Resume).filter_by(id=req.resume_id).first()
+    job = db.query(Job).filter_by(id=req.job_id).first()
+    if not resume or resume.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问该简历")
+    if not job or job.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问该岗位")
     service = MatchingService(db)
     try:
         return await service.score_pair(req.resume_id, req.job_id, triggered_by="T4")
@@ -48,6 +55,7 @@ def list_results(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     _require_matching_enabled()
     if not job_id and not resume_id:
@@ -55,8 +63,14 @@ def list_results(
 
     q = db.query(MatchingResult)
     if job_id:
+        job = db.query(Job).filter_by(id=job_id).first()
+        if not job or job.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权访问该岗位")
         q = q.filter_by(job_id=job_id).order_by(MatchingResult.total_score.desc())
     if resume_id:
+        resume = db.query(Resume).filter_by(id=resume_id).first()
+        if not resume or resume.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权访问该简历")
         q = q.filter_by(resume_id=resume_id).order_by(MatchingResult.total_score.desc())
 
     raw_rows = q.all()
@@ -139,11 +153,15 @@ class _ActionBody(_PydanticBaseModel):
 
 
 @router.patch("/results/{result_id}/action")
-def set_action(result_id: int, body: _ActionBody, db: Session = Depends(get_db)):
+def set_action(result_id: int, body: _ActionBody, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     _require_matching_enabled()
     row = db.query(MatchingResult).filter_by(id=result_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="matching result not found")
+    # Verify ownership via resume
+    owner_resume = db.query(Resume).filter_by(id=row.resume_id).first()
+    if not owner_resume or owner_resume.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权修改该匹配结果")
     if body.action not in (None, "passed", "rejected"):
         raise HTTPException(status_code=400, detail="action must be passed/rejected/null")
     row.job_action = body.action
@@ -152,8 +170,11 @@ def set_action(result_id: int, body: _ActionBody, db: Session = Depends(get_db))
 
 
 @router.get("/passed-resumes/{job_id}")
-def list_passed_for_job(job_id: int, db: Session = Depends(get_db)):
+def list_passed_for_job(job_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     _require_matching_enabled()
+    job = db.query(Job).filter_by(id=job_id).first()
+    if not job or job.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问该岗位")
     rows = db.query(MatchingResult).filter_by(job_id=job_id, job_action="passed").all()
     resume_ids = [r.resume_id for r in rows]
     resumes = db.query(Resume).filter(Resume.id.in_(resume_ids)).all() if resume_ids else []
@@ -168,6 +189,7 @@ async def post_recompute(
     req: RecomputeRequest,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
 ):
     _require_matching_enabled()
     _prune_stale_tasks()
@@ -175,9 +197,9 @@ async def post_recompute(
         raise HTTPException(status_code=400, detail="need job_id or resume_id")
 
     if req.job_id:
-        total = db.query(Resume).filter_by(ai_parsed="yes").count()
+        total = db.query(Resume).filter(Resume.ai_parsed == "yes", Resume.user_id == user_id).count()
         task_id = _new_task(total)
-        background.add_task(recompute_job_with_fresh_session, req.job_id, task_id)
+        background.add_task(recompute_job_with_fresh_session, req.job_id, task_id, user_id)
         return {"task_id": task_id, "total": total}
 
     total = db.query(Job).filter(

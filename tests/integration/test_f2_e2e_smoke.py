@@ -27,7 +27,7 @@ async def test_e2e_smoke(db_session, db_engine, client, monkeypatch):
         "job_level": "高级",
     }
     job = Job(title="后端工程师", is_active=True, required_skills="",
-              competency_model=cm, competency_model_status="approved")
+              competency_model=cm, competency_model_status="approved", user_id=1)
     db_session.add(job); db_session.commit()
 
     # 2. 模拟简历入库（已解析完成）
@@ -36,7 +36,7 @@ async def test_e2e_smoke(db_session, db_engine, client, monkeypatch):
         skills="Python, Go, FastAPI",
         work_experience="在某互联网公司担任后端 5 年",
         work_years=5, education="本科", seniority="高级",
-        ai_parsed="yes", source="manual",
+        ai_parsed="yes", source="manual", user_id=1,
     )
     db_session.add(resume); db_session.commit()
 

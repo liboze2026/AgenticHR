@@ -8,13 +8,13 @@ def _seed_data(session, count: int = 3):
     cm = {"hard_skills": [], "experience": {"years_min": 0},
           "education": {}, "job_level": "中级"}
     job = Job(title="后端", is_active=True, required_skills="",
-              competency_model=cm, competency_model_status="approved")
+              competency_model=cm, competency_model_status="approved", user_id=1)
     session.add(job); session.commit()
 
     for i in range(count):
         r = Resume(name=f"候选人{i}", phone="13900000000",
                    skills="Python", work_years=3, education="本科",
-                   ai_parsed="yes", source="manual", seniority="中级")
+                   ai_parsed="yes", source="manual", seniority="中级", user_id=1)
         session.add(r); session.commit()
         session.add(MatchingResult(
             resume_id=r.id, job_id=job.id,

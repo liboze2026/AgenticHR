@@ -18,7 +18,7 @@ def _mk_resume(session, **kw):
     defaults = dict(
         name="候选人", phone="", skills="Python",
         work_years=3, education="本科", seniority="中级",
-        ai_parsed="yes", source="manual",
+        ai_parsed="yes", source="manual", user_id=1,
     )
     defaults.update(kw)
     r = Resume(**defaults)
@@ -37,6 +37,7 @@ def _mk_job(session, **kw):
             "job_level": "中级",
         },
         competency_model_status="approved",
+        user_id=1,
     )
     defaults.update(kw)
     j = Job(**defaults)
@@ -45,13 +46,10 @@ def _mk_job(session, **kw):
     return j
 
 
-def test_results_nonexistent_job_returns_empty(client):
-    """/results?job_id=999999 → {total: 0, items: []} 而非 404."""
+def test_results_nonexistent_job_returns_403(client):
+    """/results?job_id=999999 → 403，不能访问不属于自己或不存在的岗位."""
     resp = client.get("/api/matching/results?job_id=999999")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["total"] == 0
-    assert data["items"] == []
+    assert resp.status_code == 403
 
 
 def test_results_no_filter_returns_400(client, db_session):
@@ -106,21 +104,22 @@ def test_results_page_zero_returns_422(client, db_session):
     assert resp.status_code == 422
 
 
-def test_score_missing_resume_returns_404(client, db_session):
-    """/score 简历 ID 不存在 → 404."""
+def test_score_missing_resume_returns_403(client, db_session):
+    """/score 简历 ID 不存在 → 403（不泄露存在性）."""
     job = _mk_job(db_session)
     resp = client.post("/api/matching/score", json={"resume_id": 999999, "job_id": job.id})
-    assert resp.status_code == 404
+    assert resp.status_code == 403
 
 
 def test_score_job_no_competency_returns_404(client, db_session):
     """/score 岗位无 competency_model → 404 (ValueError path)."""
     resume = _mk_resume(db_session)
-    # 岗位没有 competency_model
+    # 岗位没有 competency_model，但属于同一用户
     j = Job(
         title="无模型岗位", is_active=True, required_skills="",
         competency_model=None,
         competency_model_status="approved",
+        user_id=1,
     )
     db_session.add(j)
     db_session.commit()
