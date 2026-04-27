@@ -154,8 +154,7 @@ def upload_pdf_resume(
 @router.get("/settings/storage-path")
 def get_storage_path():
     """获取当前 PDF 存储路径"""
-    p = Path(settings.resume_storage_path).resolve()
-    return {"path": str(p)}
+    return {"path": settings.resume_storage_path}
 
 
 class _CheckBossIdsIn(BaseModel):
@@ -451,7 +450,10 @@ def get_resume_pdf(
     if not resume.pdf_path:
         raise HTTPException(status_code=404, detail="该候选人没有 PDF 简历")
 
-    pdf_file = Path(resume.pdf_path)
+    pdf_file = Path(resume.pdf_path).resolve()
+    storage_root = Path(settings.resume_storage_path).resolve()
+    if not str(pdf_file).startswith(str(storage_root)):
+        raise HTTPException(status_code=403, detail="非法文件路径")
     if not pdf_file.exists():
         raise HTTPException(status_code=404, detail="PDF 文件不存在")
 

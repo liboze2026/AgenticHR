@@ -68,7 +68,12 @@ class NotificationService:
             # 发送 PDF 简历附件
             if success and resume and resume.pdf_path:
                 import os
-                if os.path.exists(resume.pdf_path):
+                from pathlib import Path as _Path
+                from app.config import settings as _svc_settings
+                _pdf_path = _Path(resume.pdf_path).resolve()
+                _storage_root = _Path(_svc_settings.resume_storage_path).resolve()
+                _is_safe = str(_pdf_path).startswith(str(_storage_root))
+                if _is_safe and os.path.exists(resume.pdf_path):
                     file_key = await self.feishu.upload_file(resume.pdf_path, f"{candidate_name}_简历.pdf")
                     if file_key:
                         pdf_sent = await self.feishu.send_file(interviewer.feishu_user_id, file_key)
