@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.modules.auth import service as auth_service
+from app.modules.auth.deps import get_current_user_id
 
 router = APIRouter()
 
@@ -83,7 +84,13 @@ def login(req: LoginRequest, request: Request, db: Session = Depends(get_db)):
 
 
 @router.get("/me")
-def get_me(db: Session = Depends(get_db)):
-    """验证当前token是否有效（前端用来检查登录状态）"""
-    # 这个端点由中间件保护，能到达这里说明token有效
-    return {"status": "ok"}
+def get_me(
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """返回当前登录用户信息（BUG-015: 原先只返回 {"status": "ok"} 且 db 未使用）"""
+    from app.modules.auth.models import User
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="用户不存在")
+    return {"id": user.id, "username": user.username, "display_name": user.display_name}

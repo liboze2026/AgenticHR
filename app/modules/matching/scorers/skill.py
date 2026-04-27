@@ -34,8 +34,32 @@ def _lookup_resume_canonicals(resume_skill_names: list[str], db_session=None) ->
         return set()
 
 
-def _max_vector_similarity(skill_name: str, resume_skill_names: list[str], db_session=None) -> float:
-    """技能名对所有简历侧技能名的最大 cosine. 默认走 skills 表 embedding 列."""
+def _fetch_resume_embeddings(resume_skill_names: list[str], db_session) -> dict[str, bytes]:
+    """BUG-025: 批量查询简历侧所有技能的 embedding，1 条 SQL 替代 N 条.
+    返回 {skill_name: raw_embedding_bytes} 字典."""
+    if not resume_skill_names or not db_session:
+        return {}
+    from sqlalchemy import text
+    placeholders = ",".join(":n" + str(i) for i in range(len(resume_skill_names)))
+    params = {f"n{i}": n for i, n in enumerate(resume_skill_names)}
+    try:
+        rows = db_session.execute(
+            text(f"SELECT name, embedding FROM skills WHERE name IN ({placeholders}) AND embedding IS NOT NULL"),
+            params,
+        ).fetchall()
+        return {r[0]: r[1] for r in rows if r[1]}
+    except Exception as e:
+        logger.warning(f"batch fetch resume embeddings failed: {e}")
+        return {}
+
+
+def _max_vector_similarity(skill_name: str, resume_skill_names: list[str], db_session=None,
+                           _resume_emb_cache: dict | None = None) -> float:
+    """技能名对所有简历侧技能名的最大 cosine. 默认走 skills 表 embedding 列.
+
+    _resume_emb_cache: 预取的 {skill_name: raw_bytes} 字典（BUG-025 优化路径）；
+                       为 None 时回退到逐条查询（向后兼容）。
+    """
     if not resume_skill_names or not db_session:
         return 0.0
     from sqlalchemy import text
@@ -49,15 +73,25 @@ def _max_vector_similarity(skill_name: str, resume_skill_names: list[str], db_se
         hs_vec = unpack_vector(row[0])
 
         best = 0.0
-        for rn in resume_skill_names:
-            r = db_session.execute(
-                text("SELECT embedding FROM skills WHERE name = :n LIMIT 1"),
-                {"n": rn},
-            ).fetchone()
-            if r and r[0]:
-                sim = cosine_similarity(hs_vec, unpack_vector(r[0]))
-                if sim > best:
-                    best = sim
+        if _resume_emb_cache is not None:
+            # 批量预取路径：直接用缓存，零额外查询
+            for rn in resume_skill_names:
+                raw = _resume_emb_cache.get(rn)
+                if raw:
+                    sim = cosine_similarity(hs_vec, unpack_vector(raw))
+                    if sim > best:
+                        best = sim
+        else:
+            # 兜底路径（未传缓存）：逐条查询（原有行为）
+            for rn in resume_skill_names:
+                r = db_session.execute(
+                    text("SELECT embedding FROM skills WHERE name = :n LIMIT 1"),
+                    {"n": rn},
+                ).fetchone()
+                if r and r[0]:
+                    sim = cosine_similarity(hs_vec, unpack_vector(r[0]))
+                    if sim > best:
+                        best = sim
         return best
     except Exception as e:
         logger.warning(f"vector similarity failed for {skill_name}: {e}")
@@ -81,6 +115,8 @@ def score_skill(
 
     resume_skill_names = _parse_resume_skills(resume_skills_text)
     resume_canonicals = _lookup_resume_canonicals(resume_skill_names, db_session)
+    # BUG-025: 预取所有简历侧 embedding，避免 score_skill 内 O(N×M) 条查询
+    resume_emb_cache = _fetch_resume_embeddings(resume_skill_names, db_session)
 
     total_weight = 0
     weighted_coverage = 0.0
@@ -95,7 +131,8 @@ def score_skill(
         if cid is not None and cid in resume_canonicals:
             coverage = 1.0
         else:
-            sim = _max_vector_similarity(hs["name"], resume_skill_names, db_session)
+            sim = _max_vector_similarity(hs["name"], resume_skill_names, db_session,
+                                         _resume_emb_cache=resume_emb_cache)
             if sim >= _EXACT_THRESHOLD:
                 coverage = sim
             elif sim >= _EDGE_THRESHOLD:

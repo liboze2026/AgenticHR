@@ -256,14 +256,8 @@ class IntakeService:
             _audit_safe("f4_pending_human", "auto_mark", candidate.id,
                         {"reason": "hard_max_asks_exhausted"}, reviewer_id=user_id or None)
             return None
-        if action.type == "timed_out":
-            candidate.intake_status = "timed_out"
-            candidate.intake_completed_at = datetime.now(timezone.utc)
-            self.db.commit()
-            expire_pending_for_candidate(self.db, candidate.id, reason="timed_out")
-            _audit_safe("f4_timed_out", "auto_timed_out", candidate.id,
-                        {"reason": "no_reply_after_max_asks"}, reviewer_id=user_id or None)
-            return None
+        # BUG-013: 移除 timed_out 死分支 —— decide_next_action 从不产生该动作，此分支永远不可达
+        # 真正的超时通过 HTTP endpoint POST /candidates/{id}/mark-timed-out 手动触发
         if action.type == "complete":
             resume = promote_to_resume(self.db, candidate, user_id=user_id)
             self.db.commit()

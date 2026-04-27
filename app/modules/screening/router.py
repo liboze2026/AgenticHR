@@ -148,20 +148,13 @@ def update_job(
         raise HTTPException(status_code=403, detail="无权修改该岗位")
 
     # 防御：JD 文本变了 → 旧能力模型已过时，重置 status 强制重抽
+    # BUG-011: 在同一 db session 中完成重置，不开新 SessionLocal（避免两 session 竞态覆盖）
     new_jd = getattr(data, "jd_text", None)
     if new_jd is not None and new_jd.strip() and (job.jd_text or "").strip() != new_jd.strip():
         if job.competency_model_status in ("draft", "approved"):
-            from app.database import SessionLocal as _SL
-            from app.modules.screening.models import Job as _J
-            _db = _SL()
-            try:
-                _job = _db.query(_J).filter(_J.id == job_id).first()
-                if _job:
-                    _job.competency_model_status = "none"
-                    _job.competency_model = None
-                    _db.commit()
-            finally:
-                _db.close()
+            job.competency_model_status = "none"
+            job.competency_model = None
+            service.db.flush()
 
     updated = service.update_job(job_id, data)
     return updated

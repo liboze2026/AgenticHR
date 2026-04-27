@@ -1,10 +1,20 @@
+import logging
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from app.modules.im_intake.candidate_model import IntakeCandidate
 from app.modules.resume.models import Resume
 
+_log = logging.getLogger(__name__)
+
 
 def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0) -> Resume:
+    # BUG-016: user_id=0 会创建孤儿 Resume（无法被任何用户的 resume 端点查到）
+    if user_id == 0:
+        _log.warning(
+            "promote_to_resume called with user_id=0 for candidate %s (boss_id=%s); "
+            "resulting Resume will be orphaned (user_id=0 matches no real user).",
+            candidate.id, candidate.boss_id,
+        )
     # Local import to break a circular dependency: outbox_service imports
     # IntakeService → service.py imports promote.py.
     from app.modules.im_intake.outbox_service import expire_pending_for_candidate

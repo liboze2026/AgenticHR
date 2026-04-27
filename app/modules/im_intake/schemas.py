@@ -70,8 +70,9 @@ class CollectChatIn(BaseModel):
 
 
 class NextActionOut(BaseModel):
+    # BUG-013: 移除 timed_out —— decide_next_action 从不产生该动作，schema 与实现不一致
     type: Literal["send_hard", "request_pdf", "wait_pdf", "wait_reply",
-                  "send_soft", "complete", "mark_pending_human", "abandon", "timed_out"]
+                  "send_soft", "complete", "mark_pending_human", "abandon"]
     text: str = ""
     slot_keys: list[str] = Field(default_factory=list)
 
