@@ -47,7 +47,8 @@ class SlotFiller:
             lines.append(f"{role}: {content}")
         conversation = "\n".join(lines)
 
-        prompt = PROMPT_PARSE.format(conversation=conversation, pending_keys=pending_slot_keys)
+        safe_conversation = conversation.replace("{", "{{").replace("}", "}}")
+        prompt = PROMPT_PARSE.format(conversation=safe_conversation, pending_keys=pending_slot_keys)
         try:
             raw = await self.llm.complete(
                 messages=[{"role": "user", "content": prompt}],

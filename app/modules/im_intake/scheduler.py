@@ -53,7 +53,7 @@ def _chat_snapshot_is_fresh(candidate: IntakeCandidate, freshness_sec: int) -> b
     if captured.tzinfo is None:
         captured = captured.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - captured).total_seconds()
-    return 0 <= age <= freshness_sec
+    return age <= freshness_sec
 
 
 def scan_once(db: Session) -> dict[str, int]:

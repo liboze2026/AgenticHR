@@ -22,8 +22,7 @@ def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0)
     existing_by_boss = None
     if candidate.boss_id:
         q = db.query(Resume).filter(Resume.boss_id == candidate.boss_id)
-        if user_id:
-            q = q.filter(Resume.user_id == user_id)
+        q = q.filter(Resume.user_id == user_id)
         existing_by_boss = q.first()
 
     if existing_by_boss is not None:
