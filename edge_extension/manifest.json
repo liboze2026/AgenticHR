@@ -20,6 +20,15 @@
       ],
       "js": ["chat_scrape.js", "f3_selectors.js", "content.js"],
       "css": ["styles.css"]
+    },
+    {
+      "matches": [
+        "https://www.zhipin.com/*",
+        "https://www.zhipin.com/web/chat/*"
+      ],
+      "js": ["main_world_bridge.js"],
+      "world": "MAIN",
+      "run_at": "document_idle"
     }
   ],
   "background": {

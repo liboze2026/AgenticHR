@@ -164,7 +164,7 @@ class IntakeService:
             from app.modules.im_intake.outbox_service import expire_pending_for_candidate
             expire_pending_for_candidate(self.db, candidate.id, reason="hard_slots_filled")
 
-        slots = list(slots_by_key.values())
+        slots = list(slots_by.values())  # use fresh re-query, not stale slots_by_key
         action = decide_next_action(
             candidate, slots, job,
             hard_max=self.hard_max_asks,

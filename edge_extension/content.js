@@ -745,6 +745,25 @@ function switchToTab(n) {
   return false;
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Bridge to MAIN world (main_world_bridge.js) — needed to access page-side
+// Vue internals (el.__vue__) which are invisible from isolated content-script world.
+function _bridgeCall(cmd, extras = {}) {
+  return new Promise((resolve) => {
+    const id = `br_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const handler = (e) => {
+      if (e.source !== window || !e.data?.__intakeBridgeReply || e.data.id !== id) return;
+      window.removeEventListener("message", handler);
+      resolve(e.data);
+    };
+    window.addEventListener("message", handler);
+    window.postMessage({ __intakeBridge: true, cmd, id, ...extras }, "*");
+    // get_datasources scrolls full list (can take ~15s); other commands are fast
+    const timeoutMs = cmd === "get_datasources" ? 30000 : 3000;
+    setTimeout(() => { window.removeEventListener("message", handler); resolve(null); }, timeoutMs);
+  });
+}
+
 function waitForSel(sel, timeout = 3000) {
   return new Promise(resolve => {
     if (document.querySelector(sel)) { resolve(true); return; }
@@ -1217,8 +1236,6 @@ function findGreetButtonInCard(card) {
 async function intake_typeAndSendChatMessage(text) {
   const input = document.getElementById("boss-chat-editor-input");
   if (!input) return { ok: false, reason: "输入框未找到 (#boss-chat-editor-input)" };
-  const editor = document.querySelector(".conversation-editor");
-  const vm = editor && editor.__vue__;
   const beforeSelf = document.querySelectorAll(".chat-message-list .message-item .item-myself").length;
 
   input.focus();
@@ -1237,10 +1254,11 @@ async function intake_typeAndSendChatMessage(text) {
   }
   await new Promise((r) => setTimeout(r, 300));
 
-  // Prefer Vue-exposed sendText() method (proven live 2026-04-23)
+  // Prefer Vue-exposed sendText() via MAIN world bridge (proven live 2026-04-23)
   let triggered = false;
-  if (vm && typeof vm.sendText === "function") {
-    try { vm.sendText(); triggered = true; } catch (_) { /* fall through to Enter */ }
+  const sendRes = await _bridgeCall("send_text");
+  if (sendRes?.ok) {
+    triggered = true;
   }
   if (!triggered) {
     const opts = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
@@ -1518,6 +1536,22 @@ async function intake_runOrchestrator(opts = {}) {
 }
 
 // ────────────────────────────────────────────────────────
+// Virtual-list scroll helper — works across sendIntakeMessage
+// and outbox dispatch. Scrolls the virtual list to bring the
+// target geek-item into the DOM viewport before returning it.
+// ────────────────────────────────────────────────────────
+async function _scrollToGeekItem(bossId) {
+  const dataId = String(bossId);
+  let el = document.querySelector(`.geek-item[data-id="${dataId}"]`);
+  if (el) return el;
+  // Item not in DOM viewport — ask MAIN world bridge to scroll virtual list
+  const res = await _bridgeCall("scroll_to_geek", { bossId: dataId });
+  if (!res || res.idx === -1) return null;
+  await sleep(500);
+  return document.querySelector(`.geek-item[data-id="${dataId}"]`);
+}
+
+// ────────────────────────────────────────────────────────
 // F4 Task 11: sendIntakeMessage — reusable helper for
 // (autoscan tick, outbox dispatch). Locates the chat row by
 // data-id in the geek-item list, clicks to select, waits for
@@ -1529,9 +1563,9 @@ async function sendIntakeMessage({ boss_id, text }) {
     if (!boss_id || !text) return false;
     if (!location.host.includes("zhipin.com")) return false;
     const dataId = String(boss_id);
-    const row = document.querySelector(`.geek-item[data-id="${dataId}"]`);
+    const row = await _scrollToGeekItem(dataId);
     if (!row) {
-      log(`[sendIntakeMessage] geek-item[data-id="${dataId}"] not found`);
+      log(`[sendIntakeMessage] geek-item[data-id="${dataId}"] not found (virtual list)`);
       return false;
     }
     if (!row.classList.contains("selected")) {
@@ -1585,7 +1619,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         let ok = false;
         if (ob.action_type === "request_pdf") {
           // request_pdf has no text — switch to candidate first, then click 求简历
-          const row = document.querySelector(`.geek-item[data-id="${ob.boss_id}"]`);
+          const row = await _scrollToGeekItem(ob.boss_id);
           if (!row) {
             ok = false;
           } else {
@@ -1660,7 +1694,7 @@ async function step1_scanList() {
   if (!/\/web\/chat/.test(location.pathname) || /recommend/.test(location.pathname)) {
     return { ok: false, reason: "not_on_chat_list" };
   }
-  intake_showToast("Step1: 扫描候选人列表...", "info");
+  intake_showToast("Step1: 加载联系人列表...", "info");
   const serverUrl = await intake_getServerUrl();
   const authToken = await intake_getAuthToken();
   const headers = { "Content-Type": "application/json" };
@@ -1674,12 +1708,14 @@ async function step1_scanList() {
   let registered = 0, failed = 0;
 
   // BOSS直聘使用虚拟列表，DOM 只渲染可见窗口（~40条）
-  // 直接读 Vue 组件的 dataSources prop，获取全量数据，无需滚动
-  const ulEl = document.querySelector('.user-list');
-  const dataSources = ulEl?.__vue__?.$props?.dataSources;
+  // 通过 MAIN world 桥接滚动加载全量数据（多页懒加载，最多等待 20s）
+  intake_showToast("Step1: 滚动加载全部联系人...", "info");
+  const bridgeResult = await _bridgeCall("get_datasources");
+  const dataSources = bridgeResult?.data;
 
   if (dataSources && dataSources.length > 0) {
     log(`[step1] 虚拟列表读取: 共 ${dataSources.length} 条候选人`);
+    intake_showToast(`Step1: 共 ${dataSources.length} 人，注册中...`, "info");
     const toProcess = dataSources.slice(0, _STEP1_SCAN_LIMIT);
     for (const item of toProcess) {
       const bossId = item.uniqueId;  // e.g. "70177414-0"
@@ -1773,20 +1809,6 @@ async function step2_enrichCandidates() {
     return { ok: false, reason: e?.message || e };
   }
 
-  // 虚拟列表辅助：按 boss_id 滚动到对应条目并返回 DOM 元素
-  const _ulVue = document.querySelector('.user-list')?.__vue__;
-  const _ds = _ulVue?.$props?.dataSources || [];
-
-  async function _scrollToGeekItem(bossId) {
-    let el = document.querySelector(`.geek-item[data-id="${bossId}"]`);
-    if (el) return el;
-    const idx = _ds.findIndex(d => d.uniqueId === bossId);
-    if (idx === -1) return null;
-    _ulVue.scrollToIndex(idx);
-    await sleep(500);
-    return document.querySelector(`.geek-item[data-id="${bossId}"]`);
-  }
-
   let processed = 0, skipped_missing = 0, skipped_no_new = 0, failed = 0;
 
   for (const c of candidates) {
@@ -1800,17 +1822,20 @@ async function step2_enrichCandidates() {
     // 点击切换到该候选人聊天
     geek.click();
     try {
+      // 等候选人面板同步：selected 匹配 + name-box 填充 + 至少1条消息渲染
       await intake_waitFor(() => {
         const sel = document.querySelector(".geek-item.selected");
         const nb = (document.querySelector(".name-box")?.textContent || "").trim();
-        return sel?.getAttribute("data-id") === bossId && !!nb;
-      }, 10000);
+        const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
+        const noData = !!document.querySelector(".conversation-no-data");
+        return sel?.getAttribute("data-id") === bossId && !!nb && (msgs > 0 || noData);
+      }, 12000);
     } catch {
-      log(`[step2] ${bossId} 面板同步超时`);
+      log(`[step2] ${bossId} 面板同步超时（含消息加载）`);
       failed++;
       continue;
     }
-    await sleep(600);
+    await sleep(300);
 
     // 抓取聊天内容
     const chatRoot = document.querySelector(window.CHAT_SELECTORS?.root || ".chat-conversation");
