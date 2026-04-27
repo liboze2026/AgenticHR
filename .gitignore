@@ -51,3 +51,4 @@ test_school_only.py
 # Dev seed 脚本（含本地 JWT，不入库）
 scripts/seed_40_candidates.py
 scripts/seed_map.json
+.worktrees/
