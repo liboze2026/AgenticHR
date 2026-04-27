@@ -1,6 +1,6 @@
 """面试安排 API 路由"""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -138,6 +138,7 @@ async def _ensure_feishu_id(data: InterviewerCreate) -> InterviewerCreate:
 async def create_interviewer(
     data: InterviewerCreate,
     service: SchedulingService = Depends(get_scheduling_service),
+    user_id: int = Depends(get_current_user_id),
 ):
     # 防呆：手机号去重
     from app.modules.scheduling.models import Interviewer
@@ -146,14 +147,21 @@ async def create_interviewer(
         if dup:
             raise HTTPException(status_code=409, detail=f"手机号 {data.phone} 已被面试官「{dup.name}」使用")
     data = await _ensure_feishu_id(data)
-    return service.create_interviewer(data)
+    interviewer = service.create_interviewer(data)
+    interviewer.user_id = user_id
+    service.db.commit()
+    service.db.refresh(interviewer)
+    return interviewer
 
 
 @router.get("/interviewers", response_model=InterviewerListResponse)
 def list_interviewers(
     service: SchedulingService = Depends(get_scheduling_service),
+    user_id: int = Depends(get_current_user_id),
 ):
-    return service.list_interviewers()
+    from app.modules.scheduling.models import Interviewer as _IVWModel
+    rows = service.db.query(_IVWModel).filter(_IVWModel.user_id == user_id).order_by(_IVWModel.id).all()
+    return InterviewerListResponse(total=len(rows), items=rows)
 
 
 @router.patch("/interviewers/{interviewer_id}", response_model=InterviewerResponse)
@@ -161,11 +169,14 @@ async def update_interviewer(
     interviewer_id: int,
     data: InterviewerCreate,
     service: SchedulingService = Depends(get_scheduling_service),
+    user_id: int = Depends(get_current_user_id),
 ):
     from app.modules.scheduling.models import Interviewer
     interviewer = service.db.query(Interviewer).filter(Interviewer.id == interviewer_id).first()
     if not interviewer:
         raise HTTPException(status_code=404, detail="面试官不存在")
+    if interviewer.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权修改该面试官")
     data = await _ensure_feishu_id(data)
     for key, val in data.model_dump().items():
         if val is not None:
@@ -179,9 +190,15 @@ async def update_interviewer(
 def delete_interviewer(
     interviewer_id: int,
     service: SchedulingService = Depends(get_scheduling_service),
+    user_id: int = Depends(get_current_user_id),
 ):
     # 防呆：检查关联面试
     from app.modules.scheduling.models import Interview, Interviewer
+    interviewer = service.db.query(Interviewer).filter(Interviewer.id == interviewer_id).first()
+    if not interviewer:
+        raise HTTPException(status_code=404, detail="面试官不存在")
+    if interviewer.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权删除该面试官")
     linked = service.db.query(Interview).filter(
         Interview.interviewer_id == interviewer_id,
         Interview.status != "cancelled",
@@ -314,7 +331,7 @@ def create_interview(
     from app.modules.scheduling.models import Interview
 
     # 防呆：不能安排过去的时间
-    if data.start_time.replace(tzinfo=None) < datetime.utcnow():
+    if data.start_time.astimezone(timezone.utc).replace(tzinfo=None) < datetime.utcnow():
         raise HTTPException(status_code=400, detail="面试时间不能早于当前时间")
 
     # 防呆：同一候选人是否已有待面试安排
@@ -327,6 +344,14 @@ def create_interview(
             status_code=409,
             detail=f"该候选人已有待面试安排（面试ID: {existing_for_candidate.id}），请先取消旧面试或编辑现有面试"
         )
+
+    # Verify resume belongs to this user
+    from app.modules.resume.models import Resume as _ResumeModel
+    resume = service.db.query(_ResumeModel).filter(_ResumeModel.id == data.resume_id).first()
+    if not resume:
+        raise HTTPException(status_code=404, detail="简历不存在")
+    if resume.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权为该候选人安排面试")
 
     interview = service.create_interview(data, user_id=user_id)
     if interview is None:
@@ -351,10 +376,13 @@ def list_interviews(
 def get_interview(
     interview_id: int,
     service: SchedulingService = Depends(get_scheduling_service),
+    user_id: int = Depends(get_current_user_id),
 ):
     interview = service.get_interview(interview_id)
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
+    if interview.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权访问该面试")
     return interview
 
 

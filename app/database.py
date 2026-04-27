@@ -98,6 +98,13 @@ def _migrate(engine):
                     )
             conn.commit()
 
+        # Add user_id to interviewers if missing
+        if "interviewers" in insp.get_table_names():
+            interviewer_cols = [c["name"] for c in insp.get_columns("interviewers")]
+            if "user_id" not in interviewer_cols:
+                conn.execute(text("ALTER TABLE interviewers ADD COLUMN user_id INTEGER DEFAULT 0"))
+                conn.commit()
+
         # 数据迁移：user_id=0 的旧数据自动归属到第一个用户
         if "users" in insp.get_table_names():
             first_user = conn.execute(text("SELECT id FROM users ORDER BY id LIMIT 1")).fetchone()

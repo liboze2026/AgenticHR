@@ -13,6 +13,7 @@ class Interviewer(Base):
     feishu_user_id = Column(String(100), default="")
     email = Column(String(200), default="")
     department = Column(String(100), default="")
+    user_id = Column(Integer, default=0, index=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
 
 
