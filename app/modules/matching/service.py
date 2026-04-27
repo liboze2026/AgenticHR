@@ -258,6 +258,8 @@ async def recompute_job(db: Session, job_id: int, task_id: str, user_id: int = 0
     finally:
         task["running"] = False
         task["current"] = ""
+        log_event(db, "recompute_job_done", "matching", job_id,
+                  extra={"task_id": task_id, "completed": task["completed"], "failed": task["failed"]})
 
 
 async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
@@ -283,6 +285,8 @@ async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
     finally:
         task["running"] = False
         task["current"] = ""
+        log_event(db, "recompute_resume_done", "matching", resume_id,
+                  extra={"task_id": task_id, "completed": task["completed"], "failed": task["failed"]})
 
 
 async def recompute_job_with_fresh_session(job_id: int, task_id: str, user_id: int = 0) -> None:
