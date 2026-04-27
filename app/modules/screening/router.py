@@ -224,7 +224,7 @@ class _ExtractBody(BaseModel):
 
 
 @router.post("/jobs/{job_id}/competency/extract")
-async def extract_job_competency(job_id: int, body: _ExtractBody = _ExtractBody()):
+async def extract_job_competency(job_id: int, body: _ExtractBody = _ExtractBody(), user_id: int = Depends(get_current_user_id)):
     """触发 LLM 抽取能力模型. 成功 → draft + HITL; 失败 → 降级扁平表单."""
     from app.database import SessionLocal
     from app.modules.screening.models import Job
@@ -234,6 +234,8 @@ async def extract_job_competency(job_id: int, body: _ExtractBody = _ExtractBody(
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
+        if job.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权访问该岗位")
         # 若前端传入 jd_text，更新到 DB 覆盖旧值
         if body.jd_text and body.jd_text.strip():
             job.jd_text = body.jd_text.strip()
@@ -287,7 +289,7 @@ async def extract_job_competency(job_id: int, body: _ExtractBody = _ExtractBody(
 
 
 @router.get("/jobs/{job_id}/competency")
-def get_job_competency(job_id: int):
+def get_job_competency(job_id: int, user_id: int = Depends(get_current_user_id)):
     from app.database import SessionLocal
     from app.modules.screening.models import Job
     from app.core.hitl.models import HitlTask
@@ -296,6 +298,8 @@ def get_job_competency(job_id: int):
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
+        if job.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权访问该岗位")
         pending_task = (
             db.query(HitlTask)
             .filter(
@@ -321,8 +325,21 @@ def get_job_competency(job_id: int):
 
 
 @router.post("/jobs/{job_id}/competency/manual")
-def manual_competency(job_id: int, body: _ManualBody):
+def manual_competency(job_id: int, body: _ManualBody, user_id: int = Depends(get_current_user_id)):
     """LLM 失败后 HR 手填扁平字段, 服务端翻译为最简 CompetencyModel, 直接 approved."""
+    # Ownership check
+    from app.database import SessionLocal as _sl_manual
+    from app.modules.screening.models import Job as _Job_manual
+    _db_check = _sl_manual()
+    try:
+        _job_check = _db_check.query(_Job_manual).filter(_Job_manual.id == job_id).first()
+        if not _job_check:
+            raise HTTPException(status_code=404, detail="job not found")
+        if _job_check.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权访问该岗位")
+    finally:
+        _db_check.close()
+
     f = body.flat_fields
     skills_csv = f.get("required_skills", "") or ""
     hard_skills = [
@@ -370,7 +387,7 @@ class _SaveBody(BaseModel):
 
 
 @router.put("/jobs/{job_id}/competency/save")
-def save_competency_draft(job_id: int, body: _SaveBody):
+def save_competency_draft(job_id: int, body: _SaveBody, user_id: int = Depends(get_current_user_id)):
     """HR 保存草稿：写入 DB，status=draft。若有 pending HITL 任务则同步更新 payload。"""
     from app.database import SessionLocal
     from app.modules.screening.models import Job
@@ -380,6 +397,8 @@ def save_competency_draft(job_id: int, body: _SaveBody):
         job = db.query(Job).filter(Job.id == job_id).first()
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
+        if job.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权访问该岗位")
         job.competency_model = body.competency_model
         job.competency_model_status = "draft"
         pending_task = (
@@ -485,12 +504,23 @@ async def _t2_trigger_with_fresh_session(job_id: int) -> None:
 
 
 @router.post("/jobs/{job_id}/competency/approve")
-def approve_competency(job_id: int, body: _SaveBody, background_tasks: BackgroundTasks):
+def approve_competency(job_id: int, body: _SaveBody, background_tasks: BackgroundTasks, user_id: int = Depends(get_current_user_id)):
     """HR 通过发布：保存模型 + 状态置为 approved + 回填扁平字段。若有 pending HITL 任务则一并关闭。"""
     from app.database import SessionLocal
     from app.modules.screening.models import Job
     from app.core.hitl.models import HitlTask
     from datetime import datetime, timezone
+
+    # Ownership check
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="job not found")
+        if job.user_id != user_id:
+            raise HTTPException(status_code=403, detail="无权访问该岗位")
+    finally:
+        db.close()
 
     apply_competency_to_job(job_id, body.competency_model)
 
