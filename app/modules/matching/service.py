@@ -235,11 +235,14 @@ def _prune_stale_tasks(hours: int = 24) -> None:
         _RECOMPUTE_TASKS.pop(k, None)
 
 
-async def recompute_job(db: Session, job_id: int, task_id: str) -> None:
+async def recompute_job(db: Session, job_id: int, task_id: str, user_id: int = 0) -> None:
     """后台任务：对 job 的所有 ai_parsed='yes' 简历打分."""
     task = _RECOMPUTE_TASKS[task_id]
     try:
-        resume_ids = [r.id for r in db.query(Resume).filter_by(ai_parsed="yes").all()]
+        resume_ids = [r.id for r in db.query(Resume).filter(
+            Resume.ai_parsed == "yes",
+            Resume.user_id == user_id,
+        ).all()]
         # total is pre-set by the endpoint via _new_task; only update if not yet set
         if not task["total"]:
             task["total"] = len(resume_ids)
@@ -255,6 +258,8 @@ async def recompute_job(db: Session, job_id: int, task_id: str) -> None:
     finally:
         task["running"] = False
         task["current"] = ""
+        log_event(db, "recompute_job_done", "matching", job_id,
+                  extra={"task_id": task_id, "completed": task["completed"], "failed": task["failed"]})
 
 
 async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
@@ -280,14 +285,16 @@ async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
     finally:
         task["running"] = False
         task["current"] = ""
+        log_event(db, "recompute_resume_done", "matching", resume_id,
+                  extra={"task_id": task_id, "completed": task["completed"], "failed": task["failed"]})
 
 
-async def recompute_job_with_fresh_session(job_id: int, task_id: str) -> None:
+async def recompute_job_with_fresh_session(job_id: int, task_id: str, user_id: int = 0) -> None:
     """Wrapper for recompute_job that opens its own DB session so it outlives the HTTP response."""
     from app.database import SessionLocal
     db = SessionLocal()
     try:
-        await recompute_job(db, job_id, task_id)
+        await recompute_job(db, job_id, task_id, user_id=user_id)
     finally:
         db.close()
 

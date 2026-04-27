@@ -1,8 +1,9 @@
 """HITL HTTP API."""
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 
 from app.core.hitl.service import HitlService, InvalidHitlStateError, HitlCallbackError
+from app.modules.auth.deps import get_current_user_id
 
 router = APIRouter(prefix="/api/hitl", tags=["hitl"])
 
@@ -37,9 +38,9 @@ def get_task(task_id: int) -> dict:
 
 
 @router.post("/tasks/{task_id}/approve")
-def approve(task_id: int, body: _ApproveBody) -> dict:
+def approve(task_id: int, body: _ApproveBody, user_id: int = Depends(get_current_user_id)) -> dict:
     try:
-        HitlService().approve(task_id, note=body.note)
+        HitlService().approve(task_id, reviewer_id=user_id, note=body.note)
     except InvalidHitlStateError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -50,9 +51,9 @@ def approve(task_id: int, body: _ApproveBody) -> dict:
 
 
 @router.post("/tasks/{task_id}/reject")
-def reject(task_id: int, body: _RejectBody) -> dict:
+def reject(task_id: int, body: _RejectBody, user_id: int = Depends(get_current_user_id)) -> dict:
     try:
-        HitlService().reject(task_id, note=body.note)
+        HitlService().reject(task_id, reviewer_id=user_id, note=body.note)
     except InvalidHitlStateError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
@@ -61,9 +62,9 @@ def reject(task_id: int, body: _RejectBody) -> dict:
 
 
 @router.post("/tasks/{task_id}/edit")
-def edit(task_id: int, body: _EditBody) -> dict:
+def edit(task_id: int, body: _EditBody, user_id: int = Depends(get_current_user_id)) -> dict:
     try:
-        HitlService().edit(task_id, edited_payload=body.edited_payload, note=body.note)
+        HitlService().edit(task_id, reviewer_id=user_id, edited_payload=body.edited_payload, note=body.note)
     except InvalidHitlStateError as e:
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:

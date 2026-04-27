@@ -52,6 +52,7 @@ class BossAutomationService:
         job_id: str = "",
         message: str = "",
         max_count: int = 10,
+        user_id: int | None = None,  # BUG-042: 支持用户隔离
     ) -> AutoGreetResponse:
         """自动打招呼"""
         if self.adapter is None:
@@ -97,7 +98,7 @@ class BossAutomationService:
             message=f"成功打招呼 {count} 人",
         )
 
-    async def collect_resumes(self) -> CollectResumesResponse:
+    async def collect_resumes(self, user_id: int | None = None) -> CollectResumesResponse:  # BUG-042
         """收集简历"""
         if self.adapter is None:
             return CollectResumesResponse(message="Boss 适配器未配置")
@@ -137,7 +138,7 @@ class BossAutomationService:
             message=f"收集到 {len(collected)} 份简历信息",
         )
 
-    async def get_status(self) -> BossStatusResponse:
+    async def get_status(self, user_id: int | None = None) -> BossStatusResponse:  # BUG-042
         """获取 Boss 适配器状态"""
         if self.adapter is None:
             return BossStatusResponse(

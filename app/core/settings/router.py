@@ -2,8 +2,9 @@
 import json
 import os
 from pathlib import Path
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
+from app.modules.auth.deps import get_current_user_id
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -56,7 +57,10 @@ def get_scoring_weights():
 
 
 @router.put("/scoring-weights", response_model=ScoringWeights)
-def update_scoring_weights(body: ScoringWeights):
+def update_scoring_weights(
+    body: ScoringWeights,
+    _user_id: int = Depends(get_current_user_id),  # BUG-041: 要求已认证用户
+):
     if body.total() != 100:
         raise HTTPException(status_code=422, detail=f"各维度权重之和必须为 100，当前为 {body.total()}")
     data = body.model_dump()

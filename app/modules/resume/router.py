@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -56,11 +56,20 @@ def clear_all_resumes(
             pass
     else:
         notification_count = 0
+    # Collect this user's PDF paths before deletion
+    user_pdf_paths = [r.pdf_path for r in db.query(Resume.pdf_path).filter(
+        Resume.user_id == user_id, Resume.pdf_path != None, Resume.pdf_path != ""
+    ).all() if r.pdf_path]
+
     count = db.query(Resume).filter(Resume.user_id == user_id).count()
     db.query(Resume).filter(Resume.user_id == user_id).delete(synchronize_session=False)
     db.commit()
-    for f in glob.glob(os.path.join(settings.resume_storage_path, "*.pdf")):
-        os.remove(f)
+    for path in user_pdf_paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
     return {"deleted_resumes": count, "deleted_interviews": interview_count, "deleted_notifications": notification_count}
 
 
@@ -154,12 +163,11 @@ def upload_pdf_resume(
 @router.get("/settings/storage-path")
 def get_storage_path():
     """获取当前 PDF 存储路径"""
-    p = Path(settings.resume_storage_path).resolve()
-    return {"path": str(p)}
+    return {"path": settings.resume_storage_path}
 
 
 class _CheckBossIdsIn(BaseModel):
-    boss_ids: list[str]
+    boss_ids: list[str] = Field(max_length=1000)
 
 
 @router.post("/check-boss-ids")
@@ -451,7 +459,10 @@ def get_resume_pdf(
     if not resume.pdf_path:
         raise HTTPException(status_code=404, detail="该候选人没有 PDF 简历")
 
-    pdf_file = Path(resume.pdf_path)
+    pdf_file = Path(resume.pdf_path).resolve()
+    storage_root = Path(settings.resume_storage_path).resolve()
+    if not str(pdf_file).startswith(str(storage_root)):
+        raise HTTPException(status_code=403, detail="非法文件路径")
     if not pdf_file.exists():
         raise HTTPException(status_code=404, detail="PDF 文件不存在")
 

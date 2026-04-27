@@ -21,6 +21,8 @@ async def send_notifications(request: SendNotificationRequest, service: Notifica
     interview = db.query(Interview).filter(Interview.id == request.interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
+    if interview.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权发送该面试通知")
     if not interview.meeting_link:
         raise HTTPException(status_code=400, detail="请先创建腾讯会议后再发送面试通知")
 

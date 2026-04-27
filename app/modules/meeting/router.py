@@ -5,12 +5,13 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.modules.meeting.account_pool import pick_available_account
+from app.modules.auth.deps import get_current_user_id
 
 router = APIRouter()
 
 
 @router.post("/auto-create")
-async def auto_create_meeting(interview_id: int, db: Session = Depends(get_db)):
+async def auto_create_meeting(interview_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     """用 Playwright 自动在腾讯会议网页上创建会议，并回填到面试安排。
 
     多账号池调度：根据面试时段和已有面试占用情况，从 settings.tencent_meeting_accounts
@@ -22,6 +23,8 @@ async def auto_create_meeting(interview_id: int, db: Session = Depends(get_db)):
     interview = db.query(Interview).filter(Interview.id == interview_id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
+    if interview.user_id != user_id:
+        raise HTTPException(status_code=403, detail="无权操作该面试")
 
     # 挑一个可用的腾讯会议账号（全忙会直接抛 409 由前端提示）
     # exclude 当前 interview 是为了"重建会议"场景：它自己之前占用的账号应该被重新纳入候选

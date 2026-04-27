@@ -12,7 +12,7 @@ def _mk_resume(session, **kw):
     defaults = dict(
         name="张三", phone="", email="", skills="Python, Go, FastAPI",
         work_experience="在互联网公司做后端 5 年", work_years=5, education="本科",
-        seniority="高级", ai_parsed="yes", source="manual",
+        seniority="高级", ai_parsed="yes", source="manual", user_id=1,
     )
     defaults.update(kw)
     r = Resume(**defaults)
@@ -33,6 +33,7 @@ def _mk_job(session, cm=None, **kw):
         title="Job", is_active=True, required_skills="",
         competency_model=cm,
         competency_model_status="approved",
+        user_id=1,
     )
     defaults.update(kw)
     j = Job(**defaults)

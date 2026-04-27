@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from app.modules.auth.models import User
 
-SECRET_KEY = "agentichr-jwt-secret-change-in-production"
+from app.config import settings as _auth_settings
+SECRET_KEY = _auth_settings.jwt_secret
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_DAYS = 30
 

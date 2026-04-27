@@ -102,14 +102,16 @@ class ResumeService:
         if source:
             query = query.filter(Resume.source == source)
         if keyword:
-            pattern = f"%{keyword}%"
+            # Escape LIKE wildcards to prevent injection
+            _kw = keyword.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{_kw}%"
             query = query.filter(
                 or_(
-                    Resume.name.like(pattern),
-                    Resume.skills.like(pattern),
-                    Resume.job_intention.like(pattern),
-                    Resume.work_experience.like(pattern),
-                    Resume.raw_text.like(pattern),
+                    Resume.name.like(pattern, escape="\\"),
+                    Resume.skills.like(pattern, escape="\\"),
+                    Resume.job_intention.like(pattern, escape="\\"),
+                    Resume.work_experience.like(pattern, escape="\\"),
+                    Resume.raw_text.like(pattern, escape="\\"),
                 )
             )
 

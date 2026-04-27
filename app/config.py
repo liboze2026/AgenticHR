@@ -71,6 +71,8 @@ class Settings(BaseSettings):
     f4_soft_question_max: int = 3
     f4_daily_cap: int = 200  # Per-user daily autoscan tick cap
     ai_model_intake: str = ""
+    jwt_secret: str = "agentichr-jwt-secret-change-in-production"
+    cors_origins: str = "http://localhost:5173,http://localhost:8000,http://127.0.0.1:5173,http://127.0.0.1:8000"
 
     # F4 backend scheduler
     f4_scheduler_enabled: bool = False

@@ -182,16 +182,15 @@ async def auto_classify_pending():
 
     # 更新每条技能
     session = _session_factory()
-    hitl_svc = HitlService()
     classified = 0
     try:
+        task_ids_to_approve = []
         for s in pending:
             cat = llm_map.get(s["canonical_name"]) or _keyword_classify(s["canonical_name"])
             skill_row = session.query(Skill).filter(Skill.id == s["id"]).first()
             if skill_row:
                 skill_row.category = cat
                 skill_row.pending_classification = False
-            # 找到对应 HITL 任务并自动通过
             task = (
                 session.query(HitlTask)
                 .filter(
@@ -203,11 +202,16 @@ async def auto_classify_pending():
                 .first()
             )
             if task:
-                task.status = "approved"
-                task.comment = f"自动归类: {cat}"
+                task_ids_to_approve.append((task.id, cat))
             classified += 1
         session.commit()
         SkillCache.invalidate()
+        # Now approve via HitlService so callbacks run
+        for task_id, cat in task_ids_to_approve:
+            try:
+                HitlService().approve(task_id, reviewer_id=None, note=f"自动归类: {cat}")
+            except Exception:
+                pass  # Non-fatal: skill already classified
     finally:
         session.close()
 

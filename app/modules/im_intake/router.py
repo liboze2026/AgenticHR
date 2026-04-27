@@ -503,8 +503,9 @@ def autoscan_tick(
     processed = int(body.get("processed", 0))
     skipped = int(body.get("skipped", 0))
     total_seen = int(body.get("total", 0))
+    # BUG-017: entity_id 从硬编码 0 改为 user_id，使审计记录可区分不同用户的 tick
     _audit_safe(
-        "f4_autoscan_tick", "tick", 0,
+        "f4_autoscan_tick", "tick", user_id,
         {"processed": processed, "skipped": skipped, "total_seen": total_seen,
          "ts": body.get("ts")},
         reviewer_id=user_id,

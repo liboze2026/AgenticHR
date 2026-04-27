@@ -169,6 +169,8 @@ def ack_failed(db: Session, outbox_id: int, error: str = "") -> IntakeOutbox | N
     row = db.query(IntakeOutbox).filter_by(id=outbox_id).first()
     if row is None:
         return None
+    if row.status != "claimed":
+        return row
     row.status = "pending"   # re-queue; attempts already +1 at claim
     row.last_error = error[:_MAX_ERROR_LEN] if error else None
     row.claimed_at = None

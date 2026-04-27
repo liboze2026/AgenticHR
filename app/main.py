@@ -57,9 +57,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -75,7 +76,8 @@ async def auth_middleware(request: Request, call_next):
     if request.method == "OPTIONS":
         from starlette.responses import Response
         response = Response(status_code=200)
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        origin = request.headers.get("origin", "")
+        response.headers["Access-Control-Allow-Origin"] = origin if origin in _cors_origins else ""
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
         return response
@@ -92,9 +94,7 @@ async def auth_middleware(request: Request, call_next):
         token = ""
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
-        # 资源端点（图片/PDF）支持 URL query 传 token（因为 img/iframe 无法带 header）
-        if not token:
-            token = request.query_params.get("token", "")
+        # URL query param token removed (BUG-037: leaks JWT in server logs / browser history)
         if not token:
             return JSONResponse(status_code=401, content={"detail": "未登录，请先登录"})
         from app.modules.auth.service import decode_token
@@ -223,7 +223,8 @@ if _frontend_dir:
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """SPA fallback: serve index.html for all non-API routes"""
-        file_path = _frontend_dir / full_path
-        if file_path.exists() and file_path.is_file():
+        resolved_root = _frontend_dir.resolve()
+        file_path = (_frontend_dir / full_path).resolve()
+        if str(file_path).startswith(str(resolved_root)) and file_path.is_file():
             return FileResponse(str(file_path))
         return FileResponse(str(_frontend_dir / "index.html"))

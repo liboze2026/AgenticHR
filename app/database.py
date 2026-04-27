@@ -98,12 +98,33 @@ def _migrate(engine):
                     )
             conn.commit()
 
-        # 数据迁移：user_id=0 的旧数据自动归属到第一个用户
-        if "users" in insp.get_table_names():
-            first_user = conn.execute(text("SELECT id FROM users ORDER BY id LIMIT 1")).fetchone()
-            if first_user:
-                uid = first_user[0]
-                for t in ("resumes", "jobs", "interviews", "notification_logs"):
-                    if t in insp.get_table_names():
-                        conn.execute(text(f"UPDATE {t} SET user_id=:uid WHERE user_id=0"), {"uid": uid})
+        # Add user_id to interviewers if missing
+        if "interviewers" in insp.get_table_names():
+            interviewer_cols = [c["name"] for c in insp.get_columns("interviewers")]
+            if "user_id" not in interviewer_cols:
+                conn.execute(text("ALTER TABLE interviewers ADD COLUMN user_id INTEGER DEFAULT 0"))
                 conn.commit()
+
+        # 数据迁移：user_id=0 的旧数据自动归属到第一个用户
+        # BUG-036: 用标记表防止重复执行 —— 每次重启都跑会静默污染新的 user_id=0 孤儿数据
+        if "users" in insp.get_table_names():
+            already_ran = conn.execute(
+                text("SELECT 1 FROM _migration_flags WHERE flag='user_id_backfill' LIMIT 1")
+            ).fetchone() if "_migration_flags" in insp.get_table_names() else None
+            if not already_ran:
+                first_user = conn.execute(text("SELECT id FROM users ORDER BY id LIMIT 1")).fetchone()
+                if first_user:
+                    uid = first_user[0]
+                    for t in ("resumes", "jobs", "interviews", "notification_logs"):
+                        if t in insp.get_table_names():
+                            conn.execute(text(f"UPDATE {t} SET user_id=:uid WHERE user_id=0"), {"uid": uid})
+                    # 确保标记表存在并记录已执行
+                    conn.execute(text(
+                        "CREATE TABLE IF NOT EXISTS _migration_flags "
+                        "(flag TEXT PRIMARY KEY, ran_at TEXT)"
+                    ))
+                    conn.execute(text(
+                        "INSERT OR IGNORE INTO _migration_flags (flag, ran_at) "
+                        "VALUES ('user_id_backfill', datetime('now'))"
+                    ))
+                    conn.commit()

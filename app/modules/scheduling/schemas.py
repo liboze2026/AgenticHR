@@ -85,7 +85,7 @@ class TimeSlot(BaseModel):
 class MatchSlotsRequest(BaseModel):
     interviewer_id: int
     candidate_slots: list[CandidateAvailability]
-    duration_minutes: int = Field(default=60, ge=15)
+    duration_minutes: int = Field(default=60, ge=15, le=480)
 
 
 class MatchSlotsResponse(BaseModel):
