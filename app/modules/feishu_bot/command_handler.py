@@ -21,8 +21,9 @@ COMMANDS = {
 
 
 class CommandHandler:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, user_id: int | None = None):
         self.db = db
+        self.user_id = user_id
         self.resume_service = ResumeService(db)
         self.screening_service = ScreeningService(db)
         self.scheduling_service = SchedulingService(db)
@@ -59,10 +60,17 @@ class CommandHandler:
         from app.modules.resume.models import Resume
         from app.modules.scheduling.models import Interview
 
-        total_resumes = self.db.query(Resume).count()
-        pending = self.db.query(Resume).filter(Resume.status == "pending").count()
-        passed = self.db.query(Resume).filter(Resume.status == "passed").count()
-        today_interviews = self.db.query(Interview).filter(Interview.status == "scheduled").count()
+        # BUG-039: 按 user_id 过滤，避免返回全库统计数据
+        resume_q = self.db.query(Resume)
+        interview_q = self.db.query(Interview)
+        if self.user_id is not None:
+            resume_q = resume_q.filter(Resume.user_id == self.user_id)
+            interview_q = interview_q.filter(Interview.user_id == self.user_id)
+
+        total_resumes = resume_q.count()
+        pending = resume_q.filter(Resume.status == "pending").count()
+        passed = resume_q.filter(Resume.status == "passed").count()
+        today_interviews = interview_q.filter(Interview.status == "scheduled").count()
 
         return f"""📊 招聘概览
 
