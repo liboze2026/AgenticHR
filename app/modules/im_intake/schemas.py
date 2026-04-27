@@ -66,6 +66,7 @@ class CollectChatIn(BaseModel):
     messages: list[ChatMessageIn] = Field(default_factory=list)
     pdf_present: bool = False
     pdf_url: str | None = None
+    skip_outbox: bool = False
 
 
 class NextActionOut(BaseModel):

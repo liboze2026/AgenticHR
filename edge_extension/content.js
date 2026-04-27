@@ -1547,7 +1547,8 @@ async function _scrollToGeekItem(bossId) {
   // Item not in DOM viewport — ask MAIN world bridge to scroll virtual list
   const res = await _bridgeCall("scroll_to_geek", { bossId: dataId });
   if (!res || res.idx === -1) return null;
-  await sleep(500);
+  // Condition-based wait: virtual list re-render can take >500ms on slow pages
+  await waitForSel(`.geek-item[data-id="${dataId}"]`, 1500);
   return document.querySelector(`.geek-item[data-id="${dataId}"]`);
 }
 
@@ -1778,9 +1779,9 @@ async function step1_scanList() {
 // Step2: 逐个打开聊天，分析新消息，推进 intake 状态机
 // ════════════════════════════════════════════════════════════════════
 
-// Session-level message count cache: boss_id → last known candidate-message count.
-// Prevents re-running LLM when no new candidate messages have arrived since last run.
-const _step2MsgCounts = new Map();
+// Message count cache lives in chrome.storage.session (survives content-script
+// re-injection within a browser session; cleared on browser close).
+// Loaded into a local object at the start of each step2_enrichCandidates run.
 const _STEP2_MAX_PER_RUN = 30;
 const _STEP2_INTER_DELAY_MS = 1500;
 
@@ -1795,6 +1796,15 @@ async function step2_enrichCandidates() {
   const headers = { "Content-Type": "application/json" };
   if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
   const authHeaders = authToken ? { Authorization: `Bearer ${authToken}` } : {};
+
+  // Load persisted caches from chrome.storage.session (survives re-injection)
+  let _msgCounts = {};
+  let _missCounts = {};
+  try {
+    const stored = await chrome.storage.session.get(["intake_msg_counts", "intake_miss_counts"]);
+    _msgCounts = stored.intake_msg_counts || {};
+    _missCounts = stored.intake_miss_counts || {};
+  } catch (_) {}
 
   // 拉取待处理候选人（collecting + awaiting_reply 状态）
   let candidates;
@@ -1817,7 +1827,20 @@ async function step2_enrichCandidates() {
     if (!bossId) { skipped_missing++; continue; }
 
     const geek = await _scrollToGeekItem(bossId);
-    if (!geek) { skipped_missing++; log(`[step2] ${bossId} 不在列表`); continue; }
+    if (!geek) {
+      skipped_missing++;
+      log(`[step2] ${bossId} 不在列表`);
+      _missCounts[bossId] = (_missCounts[bossId] || 0) + 1;
+      chrome.storage.session.set({ intake_miss_counts: _missCounts }).catch(() => {});
+      if (_missCounts[bossId] >= 3 && c.candidate_id) {
+        fetch(`${serverUrl}/api/intake/candidates/${c.candidate_id}/status`, {
+          method: "PATCH", headers,
+          body: JSON.stringify({ status: "abandoned" }),
+        }).catch(() => {});
+        log(`[step2] ${bossId} 连续3次不在列表，自动放弃`);
+      }
+      continue;
+    }
 
     // 点击切换到该候选人聊天
     geek.click();
@@ -1851,7 +1874,7 @@ async function step2_enrichCandidates() {
     const candidateMsgCount = messages.filter(
       (m) => m.sender_id && m.sender_id !== "self"
     ).length;
-    const prevCount = _step2MsgCounts.get(bossId);
+    const prevCount = _msgCounts[bossId];
 
     if (prevCount !== undefined && candidateMsgCount === prevCount) {
       // 无新候选人消息，跳过 LLM 分析；仍更新 last_checked_at 供 UI 显示
@@ -1864,7 +1887,7 @@ async function step2_enrichCandidates() {
       }
       continue;
     }
-    _step2MsgCounts.set(bossId, candidateMsgCount);
+    // _msgCounts written only after successful collect-chat (prevents cache-on-failure bug)
 
     // ── 有新消息：PDF 检测 + collect-chat ──────────────────────
     const pdf = await window.intake_checkPdfReceived(bossId);
@@ -1889,6 +1912,7 @@ async function step2_enrichCandidates() {
           messages,
           pdf_present: pdf.present,
           pdf_url: realPdfPath || (pdf.present ? pdf.url : null),
+          skip_outbox: true,
         }),
       });
       if (!r.ok) {
@@ -1897,6 +1921,9 @@ async function step2_enrichCandidates() {
         continue;
       }
       collectResp = await r.json();
+      // Cache count only on success — prevents candidate being stuck if backend returns 500
+      _msgCounts[bossId] = candidateMsgCount;
+      chrome.storage.session.set({ intake_msg_counts: _msgCounts }).catch(() => {});
     } catch (e) {
       log(`[step2] collect-chat error: ${e?.message || e}`);
       failed++;
@@ -1950,6 +1977,12 @@ async function step2_enrichCandidates() {
       });
     } catch (e) {
       log(`[step2] last-checked update failed: ${e?.message || e}`);
+    }
+
+    // Clear ghost-candidate miss counter on successful process
+    if (_missCounts[bossId]) {
+      delete _missCounts[bossId];
+      chrome.storage.session.set({ intake_miss_counts: _missCounts }).catch(() => {});
     }
 
     processed++;

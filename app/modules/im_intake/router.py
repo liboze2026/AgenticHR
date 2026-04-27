@@ -347,8 +347,9 @@ async def collect_chat(
     action = await svc.analyze_chat(c, messages, job)
     svc.apply_terminal(c, action, user_id=user_id)
     # 非终态动作：内联生成 outbox（替代已禁用的后台 scheduler）
+    # skip_outbox=True 时（如 Step2 inline 发送）不生成 outbox，防止 outbox alarm 重复发送
     from app.modules.im_intake.outbox_service import generate_for_candidate as _gen_outbox
-    if action.type in ("send_hard", "request_pdf", "send_soft"):
+    if not body.skip_outbox and action.type in ("send_hard", "request_pdf", "send_soft"):
         _gen_outbox(db, c, action)
     db.refresh(c)
     return CollectChatOut(
