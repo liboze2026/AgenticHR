@@ -56,18 +56,30 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // ── 互斥锁 ────────────────────────────────────────────────────
+const PHASE_LOCK_TIMEOUT_MS = 30 * 60 * 1000; // SW 崩溃后 30 分钟自动失效
+
 async function acquirePhase(phase) {
-  const { phase_running } = await chrome.storage.local.get(["phase_running"]);
-  if (phase_running && phase_running !== phase) {
+  const { phase_running, phase_started_at } = await chrome.storage.local.get([
+    "phase_running",
+    "phase_started_at",
+  ]);
+  const stale =
+    phase_running &&
+    phase_started_at &&
+    Date.now() - phase_started_at > PHASE_LOCK_TIMEOUT_MS;
+  if (stale) {
+    console.warn(`[mutex] ${phase_running} 锁超时（${Math.round((Date.now() - phase_started_at) / 60000)}min），强制清锁`);
+  }
+  if (phase_running && phase_running !== phase && !stale) {
     console.log(`[mutex] ${phase} 被 ${phase_running} 阻塞`);
     return false;
   }
-  await chrome.storage.local.set({ phase_running: phase });
+  await chrome.storage.local.set({ phase_running: phase, phase_started_at: Date.now() });
   return true;
 }
 
 async function releasePhase() {
-  await chrome.storage.local.remove("phase_running");
+  await chrome.storage.local.remove(["phase_running", "phase_started_at"]);
 }
 
 // ── BOSS tab 查找 ─────────────────────────────────────────────
