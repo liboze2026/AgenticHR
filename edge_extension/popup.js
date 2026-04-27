@@ -165,8 +165,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       } else {
         const r = result || {};
         const detail = type === "manual_step1"
-          ? `注册 ${r.registered ?? "?"} 人, 扫描 ${r.scanned ?? "?"} 人`
-          : `处理 ${r.processed ?? "?"}, 无新消息 ${r.skipped_no_new ?? "?"}`;
+          ? (r.registered != null
+              ? `注册 ${r.registered} 人, 失败 ${r.failed ?? 0}, 扫描 ${r.scanned} 人`
+              : "完成（刷新候选人页查看结果）")
+          : (r.processed != null
+              ? `处理 ${r.processed}, 无新消息 ${r.skipped_no_new ?? 0}`
+              : "完成（刷新候选人页查看结果）");
         showResult(`${label} 完成: ${detail}`, "success");
       }
     } catch (e) {

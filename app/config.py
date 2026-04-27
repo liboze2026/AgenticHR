@@ -67,7 +67,7 @@ class Settings(BaseSettings):
     # F4 IM 智能接待（后端调度器 + 扩展发件箱消费）
     f4_hard_max_asks: int = 3
     f4_pdf_timeout_hours: int = 72
-    f4_ask_cooldown_hours: int = 6  # hard 槽位冷却期：上次问后 N 小时内不重问
+    f4_ask_cooldown_hours: int = 24  # hard 槽位冷却期：上次问后 N 小时内不重问
     f4_soft_question_max: int = 3
     f4_daily_cap: int = 200  # Per-user daily autoscan tick cap
     ai_model_intake: str = ""

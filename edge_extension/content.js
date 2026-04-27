@@ -1672,55 +1672,63 @@ async function step1_scanList() {
 
   const processed = new Set();
   let registered = 0, failed = 0;
-  let items = document.querySelectorAll(".geek-item");
-  const scrollable = items.length ? findScrollableAncestor(items[0]) : null;
 
-  outer: while (processed.size < _STEP1_SCAN_LIMIT) {
-    items = document.querySelectorAll(".geek-item");
-    const fresh = [...items].filter((el) => {
-      const id = el.getAttribute("data-id");
-      return id && !processed.has(id);
-    });
+  // BOSS直聘使用虚拟列表，DOM 只渲染可见窗口（~40条）
+  // 直接读 Vue 组件的 dataSources prop，获取全量数据，无需滚动
+  const ulEl = document.querySelector('.user-list');
+  const dataSources = ulEl?.__vue__?.$props?.dataSources;
 
-    if (!fresh.length) {
-      const before = items.length;
-      const after = await triggerListLoadMore(scrollable, before);
-      if (after === before) break; // 列表已到底
-      continue;
-    }
-
-    for (const item of fresh) {
-      if (processed.size >= _STEP1_SCAN_LIMIT) break outer;
-      const bossId = item.getAttribute("data-id");
+  if (dataSources && dataSources.length > 0) {
+    log(`[step1] 虚拟列表读取: 共 ${dataSources.length} 条候选人`);
+    const toProcess = dataSources.slice(0, _STEP1_SCAN_LIMIT);
+    for (const item of toProcess) {
+      const bossId = item.uniqueId;  // e.g. "70177414-0"
       if (!bossId) continue;
       processed.add(bossId);
-
-      const name = item.querySelector(".geek-name")?.textContent?.trim() || "";
-      // 岗位名：多选择器兜底，不进入聊天
-      const jobTitle =
-        item.querySelector(".source-job")?.textContent?.trim() ||
-        item.querySelector(".expect-job")?.textContent?.trim() ||
-        item.querySelector(".geek-expect")?.textContent?.trim() ||
-        item.querySelector("[class*='expect']")?.textContent?.trim() ||
-        "";
-
+      const name = item.name || "";
+      const jobTitle = item.jobName || "";
       try {
         const r = await fetch(`${serverUrl}/api/intake/candidates/register`, {
           method: "POST",
           headers,
           body: JSON.stringify({ boss_id: bossId, name, job_title: jobTitle || null }),
         });
-        if (r.ok) {
-          registered++;
-        } else {
-          failed++;
-          log(`[step1] register HTTP ${r.status} boss_id=${bossId}`);
-        }
+        if (r.ok) registered++;
+        else { failed++; log(`[step1] register HTTP ${r.status} boss_id=${bossId}`); }
       } catch (e) {
         failed++;
         log(`[step1] register error: ${e?.message || e}`);
       }
-      await sleep(60); // 轻量节流（不进入聊天，速度快）
+      await sleep(30); // 本地 API，轻量节流
+    }
+  } else {
+    // 兜底：DOM 扫描（虚拟列表不可用时）
+    log("[step1] dataSources 不可用，回退到 DOM 扫描");
+    let items = document.querySelectorAll(".geek-item");
+    for (const item of items) {
+      if (processed.size >= _STEP1_SCAN_LIMIT) break;
+      const bossId = item.getAttribute("data-id");
+      if (!bossId || processed.has(bossId)) continue;
+      processed.add(bossId);
+      const name = item.querySelector(".geek-name")?.textContent?.trim() || "";
+      const jobTitle =
+        item.querySelector(".source-job")?.textContent?.trim() ||
+        item.querySelector(".expect-job")?.textContent?.trim() ||
+        item.querySelector(".geek-expect")?.textContent?.trim() ||
+        item.querySelector("[class*='expect']")?.textContent?.trim() || "";
+      try {
+        const r = await fetch(`${serverUrl}/api/intake/candidates/register`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ boss_id: bossId, name, job_title: jobTitle || null }),
+        });
+        if (r.ok) registered++;
+        else { failed++; log(`[step1] register HTTP ${r.status} boss_id=${bossId}`); }
+      } catch (e) {
+        failed++;
+        log(`[step1] register error: ${e?.message || e}`);
+      }
+      await sleep(60);
     }
   }
 
