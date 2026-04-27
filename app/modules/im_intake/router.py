@@ -84,7 +84,10 @@ def _candidate_summary(c: IntakeCandidate, slots: list[IntakeSlot], job_title: s
     soft_keys = [s.slot_key for s in slots if s.slot_category == "soft"]
     expected += soft_keys
     done = sum(1 for s in slots if s.value)
-    last = max((s.updated_at for s in slots if getattr(s, "updated_at", None)), default=c.intake_started_at)
+    candidate_ts = c.updated_at or c.intake_started_at
+    last = max((s.updated_at for s in slots if getattr(s, "updated_at", None)), default=candidate_ts)
+    if candidate_ts and last and candidate_ts > last:
+        last = candidate_ts
     return CandidateOut(
         resume_id=c.id,  # NOTE: field kept as resume_id for frontend compat; semantically = candidate_id
         boss_id=c.boss_id,
@@ -256,6 +259,45 @@ def mark_timed_out(
     _outbox_expire_pending(db, c.id, reason="timed_out")
     _audit_safe("f4_timed_out", "manual_timed_out", c.id, {}, reviewer_id=user_id)
     return {"ok": True, "status": "timed_out"}
+
+
+_MANUAL_ALLOWED_STATUSES = frozenset(
+    ["collecting", "awaiting_reply", "pending_human", "complete", "abandoned", "timed_out"]
+)
+_TERMINAL_STATUSES = frozenset(["complete", "abandoned", "pending_human", "timed_out"])
+
+
+@router.patch("/candidates/{candidate_id}/status")
+def update_status(
+    candidate_id: int,
+    body: dict = Body(...),
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """HR 手动调整候选人状态；终态同步记录 intake_completed_at。"""
+    new_status = (body.get("status") or "").strip()
+    if new_status not in _MANUAL_ALLOWED_STATUSES:
+        raise HTTPException(400, f"invalid status: {new_status!r}")
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
+    if not c:
+        raise HTTPException(404, "not found")
+    old_status = c.intake_status
+    now = datetime.now(timezone.utc)
+    c.intake_status = new_status
+    c.last_checked_at = now
+    if new_status in _TERMINAL_STATUSES:
+        c.intake_completed_at = now
+        _outbox_expire_pending(db, c.id, reason=f"manual_status_{new_status}")
+        if new_status == "complete" and not c.promoted_resume_id:
+            promote_to_resume(db, c, user_id=user_id)
+    else:
+        c.intake_completed_at = None
+    db.commit()
+    _audit_safe(
+        "f4_status_changed", "manual_status", c.id,
+        {"from": old_status, "to": new_status}, reviewer_id=user_id,
+    )
+    return {"ok": True, "status": new_status, "intake_completed_at": c.intake_completed_at}
 
 
 @router.patch("/candidates/{candidate_id}/last-checked")

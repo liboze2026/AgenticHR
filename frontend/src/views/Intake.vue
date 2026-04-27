@@ -86,11 +86,22 @@
             <span v-else style="color: #c0c4cc">未匹配</span>
           </template>
         </el-table-column>
-        <el-table-column label="状态" width="120">
+        <el-table-column label="状态" width="150">
           <template #default="{ row }">
-            <el-tag :type="statusTagType(row.intake_status)">
-              {{ statusText(row.intake_status) }}
-            </el-tag>
+            <el-select
+              :model-value="row.intake_status"
+              size="small"
+              style="width: 130px"
+              :loading="statusUpdating === row.resume_id"
+              @change="(val) => doUpdateStatus(row, val)"
+            >
+              <el-option
+                v-for="opt in STATUS_OPTIONS"
+                :key="opt.value"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
           </template>
         </el-table-column>
         <el-table-column label="进度" width="160">
@@ -158,6 +169,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import SlotsPanel from './SlotsPanel.vue'
 import {
   listIntakeCandidates,
+  updateStatus,
   abandonCandidate,
   forceComplete,
   deleteCandidate,
@@ -167,7 +179,17 @@ import {
 import { getIntakeSettings, updateIntakeSettings } from '../api/intakeSettings'
 import { resumeApi } from '../api'
 
+const STATUS_OPTIONS = [
+  { value: 'collecting', label: '收集中' },
+  { value: 'awaiting_reply', label: '等待回复' },
+  { value: 'pending_human', label: '待人工' },
+  { value: 'complete', label: '已完成' },
+  { value: 'abandoned', label: '已放弃' },
+  { value: 'timed_out', label: '超时未回复' },
+]
+
 const loading = ref(false)
+const statusUpdating = ref(null)
 const items = ref([])
 const total = ref(0)
 const page = ref(1)
@@ -369,6 +391,20 @@ async function doDelete(row) {
   } catch (e) {
     const detail = e.response?.data?.detail || e.message || String(e)
     ElMessage.error(`删除失败: ${detail}`)
+  }
+}
+
+async function doUpdateStatus(row, newStatus) {
+  if (newStatus === row.intake_status) return
+  statusUpdating.value = row.resume_id
+  try {
+    await updateStatus(row.resume_id, newStatus)
+    ElMessage.success(`${row.name} 状态已更新为「${STATUS_OPTIONS.find(o => o.value === newStatus)?.label || newStatus}」`)
+    loadCandidates()
+  } catch (e) {
+    ElMessage.error(`状态更新失败: ${e.response?.data?.detail || e.message || e}`)
+  } finally {
+    statusUpdating.value = null
   }
 }
 
