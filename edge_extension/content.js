@@ -1773,6 +1773,20 @@ async function step2_enrichCandidates() {
     return { ok: false, reason: e?.message || e };
   }
 
+  // 虚拟列表辅助：按 boss_id 滚动到对应条目并返回 DOM 元素
+  const _ulVue = document.querySelector('.user-list')?.__vue__;
+  const _ds = _ulVue?.$props?.dataSources || [];
+
+  async function _scrollToGeekItem(bossId) {
+    let el = document.querySelector(`.geek-item[data-id="${bossId}"]`);
+    if (el) return el;
+    const idx = _ds.findIndex(d => d.uniqueId === bossId);
+    if (idx === -1) return null;
+    _ulVue.scrollToIndex(idx);
+    await sleep(500);
+    return document.querySelector(`.geek-item[data-id="${bossId}"]`);
+  }
+
   let processed = 0, skipped_missing = 0, skipped_no_new = 0, failed = 0;
 
   for (const c of candidates) {
@@ -1780,8 +1794,8 @@ async function step2_enrichCandidates() {
     const bossId = c.boss_id;
     if (!bossId) { skipped_missing++; continue; }
 
-    const geek = document.querySelector(`.geek-item[data-id="${bossId}"]`);
-    if (!geek) { skipped_missing++; continue; }
+    const geek = await _scrollToGeekItem(bossId);
+    if (!geek) { skipped_missing++; log(`[step2] ${bossId} 不在列表`); continue; }
 
     // 点击切换到该候选人聊天
     geek.click();
