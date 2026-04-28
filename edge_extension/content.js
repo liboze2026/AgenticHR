@@ -1536,12 +1536,33 @@ async function intake_runOrchestrator(opts = {}) {
     }
   }
 
+  // Force the latest candidate replies into the rendered DOM before parsing.
+  // Boss's chat-message-list is a virtualized scroller — newer messages
+  // (especially those that arrived after we mounted the panel) may sit
+  // below the viewport until the list scrolls to its bottom. Without this,
+  // we risk parsing only the top history and missing the candidate's most
+  // recent answer, which then makes the slot extractor report empty.
+  const msgListEl = document.querySelector(".chat-message-list");
+  if (msgListEl) {
+    try { msgListEl.scrollTop = msgListEl.scrollHeight; } catch {}
+    await new Promise((r) => setTimeout(r, 600));
+  }
+
   const root = document.querySelector(window.CHAT_SELECTORS.root);
   const parsed = window.parseChatFromDOM(root);
+  // Diagnostic: surface the parse outcome so the user can see in F12 whether
+  // the extension actually saw the candidate's reply or only old messages.
+  console.log("[intake] parseChatFromDOM →", {
+    boss_id: parsed?.boss_id,
+    name: parsed?.name,
+    msg_count: parsed?.messages?.length,
+    last_3: parsed?.messages?.slice(-3),
+  });
   if (!parsed || !parsed.boss_id) {
     intake_showToast("抓取聊天信息失败（boss_id 未识别）", "error");
     return;
   }
+  intake_showToast(`抓到 ${parsed.messages?.length || 0} 条消息`);
 
   const pdf = await window.intake_checkPdfReceived(parsed.boss_id);
 

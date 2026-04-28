@@ -95,10 +95,29 @@ class IntakeService:
                            messages: list[dict], job: Job | None) -> NextAction:
         slots_by_key = self.ensure_slot_rows(candidate.id)
 
+        # Merge any cached snapshot messages with the freshly-scraped batch
+        # so a buggy / truncated DOM scrape doesn't make us regress on what
+        # we already knew. Dedupe by (sender_id, content) — Boss messages
+        # don't carry stable IDs, but content is enough for our purposes
+        # since the candidate doesn't paste identical sentences twice in a
+        # short window.
+        snapshot_msgs = []
+        if candidate.chat_snapshot and isinstance(candidate.chat_snapshot, dict):
+            snapshot_msgs = candidate.chat_snapshot.get("messages") or []
+        merged_messages = list(messages or [])
+        if snapshot_msgs:
+            seen = {(m.get("sender_id"), (m.get("content") or "").strip())
+                    for m in merged_messages}
+            for m in snapshot_msgs:
+                key = (m.get("sender_id"), (m.get("content") or "").strip())
+                if key not in seen:
+                    merged_messages.append(m)
+                    seen.add(key)
+
         pending_hard = [k for k in HARD_SLOT_KEYS if not slots_by_key[k].value]
-        if messages and pending_hard:
+        if merged_messages and pending_hard:
             latest_candidate_msg_at = None
-            for m in messages:
+            for m in merged_messages:
                 if m.get("sender_id") == candidate.boss_id and m.get("sent_at"):
                     try:
                         ts = datetime.fromisoformat(str(m["sent_at"]).replace("Z", "+00:00"))
@@ -109,12 +128,12 @@ class IntakeService:
 
             candidate_msgs = [
                 (m.get("sent_at"), (m.get("content") or "").strip())
-                for m in messages
+                for m in merged_messages
                 if m.get("sender_id") == candidate.boss_id
             ]
 
             parsed = await self.filler.parse_conversation(
-                messages, candidate.boss_id, pending_hard,
+                merged_messages, candidate.boss_id, pending_hard,
             )
             now = datetime.now(timezone.utc)
             for key, (val, source) in parsed.items():
@@ -143,11 +162,21 @@ class IntakeService:
 
         # Don't clobber existing chat_snapshot with an empty-messages call —
         # the extension's collect-chat may legitimately pass [] (e.g. just
-        # opened the panel before history loaded). Only refresh when we
-        # actually have content, OR when there's no snapshot yet.
-        if messages or candidate.chat_snapshot is None:
+        # opened the panel before history loaded). Also don't let a SHORTER
+        # scrape evict a longer one we already had on file: that's how a
+        # flaky DOM read on the extension side can wipe out a previously-
+        # complete conversation snapshot. Refresh only when the new batch
+        # strictly grows what's stored, OR when there's no snapshot yet.
+        existing_count = len(snapshot_msgs)
+        if messages and (candidate.chat_snapshot is None or len(messages) >= existing_count):
             candidate.chat_snapshot = {
                 "messages": messages,
+                "captured_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.db.commit()
+        elif candidate.chat_snapshot is None:
+            candidate.chat_snapshot = {
+                "messages": messages or [],
                 "captured_at": datetime.now(timezone.utc).isoformat(),
             }
             self.db.commit()
