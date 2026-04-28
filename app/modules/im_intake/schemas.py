@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 SlotKey = str
@@ -53,20 +53,79 @@ class ChatMessageIn(BaseModel):
     sent_at: str | None = None
 
 
+def _validate_boss_id(v: str) -> str:
+    """BUG-043 / BUG-048: strip + reject all-whitespace, enforce max length."""
+    s = (v or "").strip()
+    if not s:
+        raise ValueError("boss_id must not be empty or whitespace-only")
+    if len(s) > 64:
+        raise ValueError("boss_id exceeds 64 characters")
+    return s
+
+
+def _validate_pdf_url(v: str | None) -> str | None:
+    """BUG-044 / BUG-032 / BUG-038: reject path-traversal strings.
+
+    Accept: http(s):// URLs, or simple filename / relative path under storage
+    (no '..', no leading '/', no backslash, no null byte). Path-resolution
+    against ``settings.resume_storage_path`` happens at file-read time too,
+    but we reject obvious attack strings up-front.
+    """
+    if v is None:
+        return None
+    s = v.strip()
+    if not s:
+        return None
+    if "\x00" in s:
+        raise ValueError("pdf_url contains null byte")
+    low = s.lower()
+    if low.startswith(("http://", "https://")):
+        return s
+    if ".." in s or s.startswith(("/", "\\")) or "\\" in s:
+        raise ValueError("pdf_url must be http(s) URL or safe relative path")
+    if len(s) > 512:
+        raise ValueError("pdf_url exceeds 512 characters")
+    return s
+
+
 class RegisterCandidateIn(BaseModel):
-    boss_id: str = Field(min_length=1)
+    boss_id: str = Field(min_length=1, max_length=64)
     name: str = ""
     job_title: str | None = None
 
+    @field_validator("boss_id")
+    @classmethod
+    def _v_boss_id(cls, v: str) -> str:
+        return _validate_boss_id(v)
+
 
 class CollectChatIn(BaseModel):
-    boss_id: str = Field(min_length=1)
+    boss_id: str = Field(min_length=1, max_length=64)
     name: str = ""
     job_intention: str | None = None
     messages: list[ChatMessageIn] = Field(default_factory=list)
     pdf_present: bool = False
     pdf_url: str | None = None
     skip_outbox: bool = False
+
+    @field_validator("boss_id")
+    @classmethod
+    def _v_boss_id(cls, v: str) -> str:
+        return _validate_boss_id(v)
+
+    @field_validator("pdf_url")
+    @classmethod
+    def _v_pdf_url(cls, v: str | None) -> str | None:
+        return _validate_pdf_url(v)
+
+    @model_validator(mode="after")
+    def _v_pdf_consistency(self):
+        # BUG-053: pdf_present=True implies pdf_url required; pdf_url alone
+        # without pdf_present silently ignored downstream — reject the
+        # contradictory combination so client knows.
+        if self.pdf_present and not self.pdf_url:
+            raise ValueError("pdf_present=True requires pdf_url")
+        return self
 
 
 class NextActionOut(BaseModel):
@@ -131,3 +190,13 @@ class IntakeSettingsOut(BaseModel):
 class IntakeSettingsIn(BaseModel):
     enabled: bool | None = None
     target_count: int | None = Field(default=None, ge=0)
+
+
+# ---- BUG-045 / BUG-051: typed body for autoscan/tick ----
+
+class AutoScanTickIn(BaseModel):
+    """Plugin → /autoscan/tick body. Reject non-numeric / null processed/skipped/total."""
+    processed: int = Field(default=0, ge=0)
+    skipped: int = Field(default=0, ge=0)
+    total: int = Field(default=0, ge=0)
+    ts: str | None = None

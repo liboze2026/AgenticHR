@@ -23,11 +23,9 @@ def test_ack_sent_records_asked(client, db_session):
     assert slots["arrival_date"].asked_at is not None
 
 
-def test_ack_state_mismatch_returns_state_drift(client, db_session):
-    """State mismatch (wrong action_type) returns 200 with state_drift=True.
-
-    Previous behaviour was 409; changed so outbox row is always expired first
-    to prevent duplicate dispatch by the 30-second poll.
+def test_ack_state_mismatch_rejects_409(client, db_session):
+    """BUG-052: state mismatch on ack-sent rejects 409 instead of silently
+    advancing. Outbox is still expired first to prevent duplicate dispatch.
     """
     from app.modules.im_intake.candidate_model import IntakeCandidate
     c = IntakeCandidate(user_id=1, boss_id="bxMis", name="mismatch", intake_status="collecting", source="plugin")
@@ -38,8 +36,11 @@ def test_ack_state_mismatch_returns_state_drift(client, db_session):
         f"/api/intake/candidates/{c.id}/ack-sent",
         json={"action_type": "request_pdf", "delivered": True},
     )
-    assert r.status_code == 200
-    assert r.json().get("state_drift") is True
+    assert r.status_code == 409
+    err = r.json()["detail"]
+    assert err["error"] == "state_drift"
+    assert err["client_action_type"] == "request_pdf"
+    assert err["server_action_type"] == "send_hard"
 
 
 def test_ack_not_delivered_noop(client, db_session):

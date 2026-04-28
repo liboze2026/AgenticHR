@@ -17,16 +17,9 @@ def enable(client, target=100):
 # ATTACK B1: collect-chat with pdf_present=True but pdf_url=None
 # ══════════════════════════════════════════════════════════════════════════════
 def test_B1_pdf_present_but_no_url(client):
-    """pdf_present=True, pdf_url=None: router checks `if body.pdf_present and body.pdf_url`
-    so the pdf slot update is skipped. But candidate.pdf_path not set. Inconsistent state."""
+    """BUG-053 fix: pdf_present=True without pdf_url rejected at validation."""
     r = collect(client, boss_id="pdf_no_url", pdf_present=True, pdf_url=None)
-    assert r.status_code == 200
-    data = r.json()
-    cid = data["candidate_id"]
-    # verify pdf_path is None in DB
-    r2 = client.get(f"/api/intake/candidates/{cid}")
-    # pdf slot should not be filled
-    print(f"[B1] pdf_present=True, pdf_url=None → status={data['intake_status']}, action={data['next_action']['type']}")
+    assert r.status_code == 422
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -40,17 +33,21 @@ def test_B2_autoscan_tick_missing_processed(client):
 
 
 def test_B2b_autoscan_tick_float_processed(client):
-    """autoscan/tick with float for processed — int(3.7) = 3, truncated silently."""
-    r = client.post("/api/intake/autoscan/tick", json={"processed": 3.7, "skipped": 1.2, "total": 5.9})
-    print(f"[B2b] float processed={r.status_code}: {r.text[:100]}")
-    assert r.status_code == 200
+    """BUG-045 fix: AutoScanTickIn coerces lossless ints; non-lossless floats reject.
+
+    Pydantic v2 default int coerces 3.0→3 but rejects 3.7. Either behavior is
+    safe (no crash); just assert the response is structured (200 or 422),
+    not 500.
+    """
+    r = client.post("/api/intake/autoscan/tick",
+                    json={"processed": 3.7, "skipped": 1.2, "total": 5.9})
+    assert r.status_code in (200, 422)
 
 
 def test_B2c_autoscan_tick_none_processed(client):
-    """autoscan/tick with null processed — int(None) throws TypeError → 500?"""
+    """BUG-051 fix: null processed rejected by Pydantic schema, not 500."""
     r = client.post("/api/intake/autoscan/tick", json={"processed": None})
-    print(f"[B2c] None processed → {r.status_code}: {r.text[:200]}")
-    # int(None) raises TypeError → unhandled → 500
+    assert r.status_code == 422
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -69,13 +66,13 @@ def test_B3_ack_sent_action_type_mismatch(client, db_session):
     db_session.add(IntakeSlot(candidate_id=c.id, slot_key="pdf", slot_category="pdf"))
     db_session.commit()
 
-    # Extension says it sent "request_pdf" but current state would compute "send_hard"
+    # BUG-052 fix: state drift on ack-sent now returns 409 instead of 200
     r = client.post(f"/api/intake/candidates/{c.id}/ack-sent",
                     json={"action_type": "request_pdf", "delivered": True})
-    data = r.json()
-    print(f"[B3] action_type mismatch → {r.status_code}: {data}")
-    assert r.status_code == 200
-    # Should return state_drift=True, not advance the machine
+    assert r.status_code == 409
+    err = r.json()["detail"]
+    assert err["error"] == "state_drift"
+    assert err["client_action_type"] == "request_pdf"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -97,17 +94,24 @@ def test_B4_force_complete_no_slots(client, db_session):
 # ATTACK B5: collect-chat where the job_id on candidate points to deleted job
 # ══════════════════════════════════════════════════════════════════════════════
 def test_B5_collect_chat_with_deleted_job(client, db_session):
-    """Candidate has job_id pointing to a non-existent job."""
+    """Candidate.job_id pointing to non-existent Job: FK enforced, then deleted.
+
+    Insert candidate with valid job, then delete the job to simulate stale FK.
+    """
     from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.screening.models import Job
+
+    job = Job(user_id=1, title="temp", jd_text="x")
+    db_session.add(job); db_session.commit()
     c = IntakeCandidate(user_id=1, boss_id="bad_job_boss", name="BJ",
                         intake_status="collecting", source="plugin",
-                        job_id=99999)  # non-existent job
+                        job_id=job.id)
     db_session.add(c); db_session.commit()
+    db_session.delete(job); db_session.commit()
 
     r = collect(client, boss_id="bad_job_boss")
-    print(f"[B5] collect-chat with deleted job_id → {r.status_code}: {r.text[:200]}")
-    # router does: job = db.query(Job).filter_by(id=c.job_id).first() → None
-    # analyze_chat receives job=None → decide_next_action(job=None) → should work
+    # Router: job = db.query(Job).filter_by(id=c.job_id).first() → None,
+    # decide_next_action(job=None) handles gracefully.
     assert r.status_code == 200
 
 

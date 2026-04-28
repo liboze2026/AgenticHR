@@ -264,9 +264,35 @@ def cleanup_expired(db: Session, now: datetime | None = None) -> dict[str, int]:
                   .filter(IntakeCandidate.intake_status.in_(ACTIVE_CANDIDATE_STATES))
                   .all())
     abandoned_ids = [c.id for c in to_abandon]
+    # BUG-055: every batch-abandoned candidate must produce an audit row so
+    # post-incident triage can answer "why was candidate X auto-abandoned?".
+    # Audit write is wrapped per-candidate so a failure on one row does not
+    # silently swallow the rest of the cleanup pass.
+    if to_abandon:
+        try:
+            from app.core.audit.logger import log_event as _log_event
+        except Exception:
+            _log_event = None
+    else:
+        _log_event = None
     for c in to_abandon:
+        old_status = c.intake_status
         c.intake_status = "abandoned"
         c.intake_completed_at = now
+        if _log_event is not None:
+            try:
+                _log_event(
+                    f_stage="f4_abandoned", action="cleanup_expired",
+                    entity_type="intake_candidate", entity_id=c.id,
+                    input_payload={
+                        "from": old_status, "boss_id": c.boss_id,
+                        "expires_at": c.expires_at.isoformat() if c.expires_at else None,
+                        "reason": "expires_at < now",
+                    },
+                    reviewer_id=c.user_id,
+                )
+            except Exception:
+                pass
     expired_cnt = 0
     if abandoned_ids:
         expired_cnt = (db.query(IntakeOutbox)

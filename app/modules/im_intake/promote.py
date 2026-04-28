@@ -8,12 +8,15 @@ _log = logging.getLogger(__name__)
 
 
 def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0) -> Resume:
-    # BUG-016: user_id=0 会创建孤儿 Resume（无法被任何用户的 resume 端点查到）
-    if user_id == 0:
-        _log.warning(
-            "promote_to_resume called with user_id=0 for candidate %s (boss_id=%s); "
-            "resulting Resume will be orphaned (user_id=0 matches no real user).",
-            candidate.id, candidate.boss_id,
+    # BUG-016 / BUG-047: user_id<=0 creates orphan Resume rows (no real user
+    # owns user_id 0; they cannot be queried by any /api/resumes endpoint
+    # because every endpoint filters by Resume.user_id == calling_user_id).
+    # Hard-reject so the misuse surfaces at the call site instead of leaving
+    # dangling DB rows that confuse later debugging.
+    if user_id is None or int(user_id) <= 0:
+        raise ValueError(
+            f"promote_to_resume requires user_id > 0, got {user_id!r} "
+            f"(candidate {candidate.id}, boss_id={candidate.boss_id!r})"
         )
     # Local import to break a circular dependency: outbox_service imports
     # IntakeService → service.py imports promote.py.

@@ -121,17 +121,18 @@ def test_collect_chat_on_terminal_is_noop(client, db_session):
 # ---------- W-4 ----------
 def test_collect_chat_terminal_does_not_overwrite_pdf_path(client, db_session):
     c = _seed_terminal(db_session, status="complete", boss_id="bxW4")
-    c.pdf_path = "/old/resume.pdf"
+    # Post-BUG-044: pdf_url validator rejects "/abs" paths; use relative
+    c.pdf_path = "old/resume.pdf"
     db_session.commit()
     r = client.post("/api/intake/collect-chat", json={
         "boss_id": "bxW4",
         "messages": [],
-        "pdf_present": True, "pdf_url": "/new/resume.pdf",
+        "pdf_present": True, "pdf_url": "new/resume.pdf",
     })
     assert r.status_code == 200
     db_session.expire_all()
     c2 = db_session.query(IntakeCandidate).filter_by(id=c.id).first()
-    assert c2.pdf_path == "/old/resume.pdf", (
+    assert c2.pdf_path == "old/resume.pdf", (
         "terminal candidate's pdf_path must not be clobbered by late collect-chat"
     )
 

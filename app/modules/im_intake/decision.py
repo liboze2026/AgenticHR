@@ -26,6 +26,12 @@ def decide_next_action(
     hard_max: int = 3, pdf_timeout_h: int = 72, ask_cooldown_h: int = 6,
 ) -> NextAction:
     by = _slots_by_key(slots)
+    # BUG-049: empty slots list ⇒ ``all([]) == True`` would falsely report
+    # all hard slots filled and short-circuit to ``complete``. A candidate
+    # without any slot rows must be treated as fully unanswered: pending_human
+    # so an HR reviews before promoting a zero-info row.
+    if not by:
+        return NextAction(type="mark_pending_human")
     pdf = by.get("pdf")
     now = datetime.now(timezone.utc)
 

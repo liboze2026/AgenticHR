@@ -26,6 +26,7 @@ from app.modules.im_intake.settings_service import (
 )
 from app.modules.im_intake.schemas import (
     AckSentIn,
+    AutoScanTickIn,
     CandidateDetailOut,
     CandidateOut,
     CollectChatIn,
@@ -42,6 +43,7 @@ from app.modules.im_intake.schemas import (
     SlotPatchIn,
     StartConversationOut,
 )
+from urllib.parse import quote as _url_quote
 from app.modules.im_intake.promote import promote_to_resume
 from app.modules.im_intake.service import IntakeService
 from app.modules.im_intake.templates import HARD_SLOT_KEYS
@@ -325,6 +327,18 @@ async def collect_chat(
     c = svc.ensure_candidate(body.boss_id, name=body.name, job_intention=body.job_intention)
     job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
 
+    # BUG-050: terminal-state guard — re-running LLM analysis on already
+    # complete/abandoned/timed_out/pending_human candidates wastes budget and
+    # produces actions that contradict the persisted state. Return current
+    # state with a no-op action so the extension can clean up its UI.
+    if c.intake_status in _TERMINAL_STATUSES:
+        db.refresh(c)
+        return CollectChatOut(
+            candidate_id=c.id,
+            intake_status=c.intake_status,
+            next_action=NextActionOut(type="wait_reply", text="", slot_keys=[]),
+        )
+
     # Clamp message list — extension might be looping or user pasted a giant
     # transcript. Persisting 50k messages into chat_snapshot bloats the row,
     # slows extraction, and feeds noise to the LLM. Keep the most recent N.
@@ -382,9 +396,21 @@ async def ack_sent(
     job = db.query(Job).filter_by(id=c.job_id).first() if c.job_id else None
     action = await svc.analyze_chat(c, messages=[], job=job)
     if action.type != body.action_type:
-        # State drifted between collect-chat and ack. Outbox already cleared;
-        # skip record_asked to avoid double-advancing the state machine.
-        return {"ok": True, "outbox_expired": expired, "state_drift": True}
+        # BUG-052: state drifted between collect-chat and ack. Previously we
+        # returned 200 with state_drift=True which advanced the candidate
+        # opaquely and let the extension keep going. Reject 409 so the
+        # extension re-pulls fresh state via collect-chat instead.
+        _audit_safe(
+            "f4_ack_drift", "state_drift_reject", c.id,
+            {"client_action": body.action_type, "server_action": action.type},
+            reviewer_id=user_id,
+        )
+        raise HTTPException(409, detail={
+            "error": "state_drift",
+            "client_action_type": body.action_type,
+            "server_action_type": action.type,
+            "outbox_expired": expired,
+        })
     svc.record_asked(c, action)
     return {"ok": True, "outbox_expired": expired}
 
@@ -497,19 +523,21 @@ def autoscan_rank(
 
 @router.post("/autoscan/tick")
 def autoscan_tick(
-    body: dict = Body(default_factory=dict),
+    body: AutoScanTickIn = Body(default_factory=AutoScanTickIn),
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
     """Plugin reports tick results; backend writes F4_autoscan_tick audit + returns day stats."""
-    processed = int(body.get("processed", 0))
-    skipped = int(body.get("skipped", 0))
-    total_seen = int(body.get("total", 0))
+    # BUG-045 / BUG-051: typed schema rejects non-numeric / null at validation
+    # layer; downstream code can rely on int values without int() conversion crash.
+    processed = body.processed
+    skipped = body.skipped
+    total_seen = body.total
     # BUG-017: entity_id 从硬编码 0 改为 user_id，使审计记录可区分不同用户的 tick
     _audit_safe(
         "f4_autoscan_tick", "tick", user_id,
         {"processed": processed, "skipped": skipped, "total_seen": total_seen,
-         "ts": body.get("ts")},
+         "ts": body.ts},
         reviewer_id=user_id,
     )
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -533,7 +561,10 @@ def start_conversation(
     c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
     if not c:
         raise HTTPException(404, "candidate not found")
-    base = settings.boss_chat_url_template.format(boss_id=c.boss_id)
+    # BUG-046: URL-encode boss_id so attacker-controlled '&'/'?'/'#' cannot
+    # inject extra query params into the deep link.
+    safe_boss_id = _url_quote(c.boss_id or "", safe="")
+    base = settings.boss_chat_url_template.format(boss_id=safe_boss_id)
     sep = "&" if "?" in base else "?"
     deep_link = f"{base}{sep}intake_candidate_id={c.id}"
     return StartConversationOut(candidate_id=c.id, boss_id=c.boss_id, deep_link=deep_link)
