@@ -83,7 +83,10 @@ async function submit() {
     localStorage.setItem('token', data.token)
     localStorage.setItem('user', JSON.stringify(data.user))
     ElMessage.success(isRegister.value ? '注册成功' : '登录成功')
-    router.replace('/')
+    // Hard reload instead of router.replace so axios picks up the new
+    // localStorage token in a fresh module graph (avoids stale interceptor
+    // state if any view was mounted during a previous logged-out session).
+    window.location.replace('/')
   } catch {
     errorMsg.value = '无法连接服务器'
   } finally {

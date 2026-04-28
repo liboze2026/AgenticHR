@@ -126,9 +126,13 @@
 
                 <!-- 二维码 -->
                 <div class="qr-box">
-                  <img v-if="!row._qrError" :src="qrSrc(row)"
+                  <img v-if="row._qrBlobUrl && !row._qrError" :src="row._qrBlobUrl"
                     @error="() => { row._qrError = true }"
                     @load="() => { row._qrError = false }" alt="" />
+                  <div v-else-if="!row._qrError && row._qrLoading" class="qr-placeholder">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                    <span>加载中</span>
+                  </div>
                   <div v-else class="qr-placeholder" @click.stop="retryQr(row)" title="点击重试">
                     <el-icon><Refresh /></el-icon>
                     <span>点击重试</span>
@@ -253,6 +257,41 @@ const visibleResumes = computed(() => resumes.value)
 
 function toggleExpand(id) {
   expandedId.value = (expandedId.value === id) ? null : id
+  if (expandedId.value === id) {
+    const row = resumes.value.find(r => r.id === id)
+    if (row && !row._qrBlobUrl && !row._qrLoading && !row._qrError) {
+      loadQrBlob(row)
+    }
+  }
+}
+
+// `<img>` cannot send Authorization headers and the backend dropped the legacy
+// `?token=` query-param escape hatch (BUG-037: leaked JWTs into access logs and
+// browser history). Fetch the protected QR PNG with the auth header, turn it
+// into an object URL, and bind that to <img :src>.
+async function loadAuthBlob(url) {
+  const token = localStorage.getItem('token') || ''
+  const r = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!r.ok) throw new Error(`http ${r.status}`)
+  return URL.createObjectURL(await r.blob())
+}
+
+async function loadQrBlob(row) {
+  row._qrLoading = true
+  row._qrError = false
+  try {
+    const regen = row._qrRegen ? '?regen=1' : ''
+    const objectUrl = await loadAuthBlob(`/api/resumes/${row.id}/qr${regen}`)
+    if (row._qrBlobUrl) URL.revokeObjectURL(row._qrBlobUrl)
+    row._qrBlobUrl = objectUrl
+    row._qrRegen = false
+  } catch (e) {
+    row._qrError = true
+  } finally {
+    row._qrLoading = false
+  }
 }
 
 // 根据学历优先级返回"学校"显示：博士 > 硕士 > 本科
@@ -296,17 +335,11 @@ function ensurePollingIfNeeded() {
   }
 }
 
-const qrNonce = ref(Date.now())
-function qrSrc(row) {
-  const token = localStorage.getItem('token') || ''
-  const regen = row._qrRegen ? '&regen=1' : ''
-  return `/api/resumes/${row.id}/qr?v=${row._qrNonce || qrNonce.value}&token=${token}${regen}`
-}
 function retryQr(row) {
   // 点击"重试"会强制服务端重跑提取算法（旧缓存丢弃）
   row._qrError = false
   row._qrRegen = true
-  row._qrNonce = Date.now()
+  loadQrBlob(row)
 }
 
 async function saveField(row, field) {
@@ -351,9 +384,18 @@ function viewMatchingOnJob(jobId, resumeId) {
   window.open(`/#/jobs/${jobId}?tab=matching&highlight_resume=${resumeId}`, '_blank')
 }
 
-function viewPdf(resumeId) {
-  const token = localStorage.getItem('token') || ''
-  window.open(`/api/resumes/${resumeId}/pdf?token=${token}`, '_blank')
+async function viewPdf(resumeId) {
+  // Same constraint as QR: window.open can't carry an Authorization header.
+  // Fetch the PDF with the auth header, then open the resulting blob URL.
+  try {
+    const objectUrl = await loadAuthBlob(`/api/resumes/${resumeId}/pdf`)
+    window.open(objectUrl, '_blank')
+    // Revoke after a delay so the new tab has time to load it. Object URLs
+    // tied to PDFs need to remain valid until the viewer reads them.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+  } catch (e) {
+    ElMessage.error('打开 PDF 失败：' + (e.message || '请重新登录'))
+  }
 }
 
 async function toggleStatus(row, targetStatus) {
@@ -532,6 +574,13 @@ onUnmounted(() => {
   if (aiPollTimer) {
     clearInterval(aiPollTimer)
     aiPollTimer = null
+  }
+  // Release any QR blob object URLs we minted so they don't leak.
+  for (const r of resumes.value) {
+    if (r._qrBlobUrl) {
+      try { URL.revokeObjectURL(r._qrBlobUrl) } catch {}
+      r._qrBlobUrl = null
+    }
   }
 })
 </script>
