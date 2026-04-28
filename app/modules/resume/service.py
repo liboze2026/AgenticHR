@@ -1,9 +1,12 @@
 """简历业务逻辑"""
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 
 from app.modules.resume.models import Resume
 from app.modules.resume.schemas import ResumeCreate, ResumeUpdate
+
+logger = logging.getLogger(__name__)
 
 
 class ResumeService:
@@ -199,6 +202,27 @@ class ResumeService:
             "job_intention": job_intention, "skills": skills,
             "work_experience": work_experience,
         }
+
+        # Identity-mismatch guard: if the page-supplied boss_id and the name
+        # the PDF actually parses to disagree, refuse the merge — that's the
+        # signature of the Boss SPA "stale .geek-item.selected" bug, where
+        # the extension hands us boss_id of one candidate plus a different
+        # candidate's PDF. Better to reject than to fuse two people into one
+        # resume row. Names: page-supplied ("name from .name-box") vs the
+        # one extracted from the PDF text / Boss filename.
+        pdf_name = (pdf_fields.get("name") or filename_fields.get("name") or "").strip()
+        page_name = (page.get("name") or "").strip()
+        if boss_id and pdf_name and page_name and pdf_name != page_name:
+            # Tolerate substring matches (e.g. "李熠振" PDF vs "李熠" panel —
+            # Boss sometimes truncates names in the chat header). Otherwise
+            # treat as cross-candidate contamination and reject.
+            if pdf_name not in page_name and page_name not in pdf_name:
+                logger.warning(
+                    f"create_from_pdf rejecting cross-candidate merge: "
+                    f"page.name={page_name!r} vs pdf.name={pdf_name!r} "
+                    f"boss_id={boss_id} — likely stale .geek-item.selected"
+                )
+                return None
 
         # boss_id 去重：优先级最高（精确身份匹配，避免 PDF 上传重复创建）
         if boss_id:

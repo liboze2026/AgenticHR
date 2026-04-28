@@ -1577,7 +1577,17 @@ async function intake_runOrchestrator(opts = {}) {
     const authToken = await intake_getAuthToken();
     const detail = extractDetail();
     detail.boss_id = parsed.boss_id;
-    supplementFromPushText(detail, document.querySelector(".geek-item.selected"));
+    // Prefer the geek-item that matches our resolved boss_id over
+    // .geek-item.selected — Boss SPA leaves .selected pointing at the
+    // previously-clicked candidate when the user opens a chat via deep-link
+    // or switches conversations. Pulling push-text from the wrong row was
+    // how 李熠's PDF ended up tagged with 陈铭's boss_id earlier.
+    const pushTextSource =
+      document.querySelector(`.geek-item[data-id="${parsed.boss_id}"]`) ||
+      (document.querySelector(".geek-item.selected")?.getAttribute("data-id") === parsed.boss_id
+        ? document.querySelector(".geek-item.selected")
+        : null);
+    if (pushTextSource) supplementFromPushText(detail, pushTextSource);
     const dl = await downloadPdf(detail, parsed.name, serverUrl, authToken);
     if (dl && dl.ok && dl.data) {
       realPdfPath = dl.data.pdf_path || null;
