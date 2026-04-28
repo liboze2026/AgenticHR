@@ -1455,82 +1455,85 @@ async function intake_runOrchestrator(opts = {}) {
   const forceRequestPdf = !!opts.forceRequestPdfIfMissing;
   intake_showToast("正在分析聊天记录...");
 
-  // If URL has id param but candidate isn't selected yet, click their row.
-  // Boss SPA won't auto-select on fresh navigation — the user would normally
-  // click a geek-item manually; deep-link orchestrator must do it programmatically.
-  // Boss's geek list is virtually scrolled, so a candidate that lives below the
-  // initial render window won't be in the DOM until we scroll there.
+  // Resolve which candidate the user wants to capture, in priority order:
+  //   1. URL ?id=  (deep-link from /intake or extension popup)
+  //   2. .geek-item.selected (left-list selection state)
+  //   3. parseChatFromDOM result (right-panel parser; works even when the
+  //      candidate isn't rendered in the left list at all).
   const urlBossId = intake_getQueryParam("id");
-  // Manual trigger path: user already has a candidate selected — prefer the
-  // currently-selected geek-item over the URL id (URL may not match the
-  // ?id= convention on every Boss build, and the user's intent is the
-  // *visible* chat).
   let effectiveBossId = urlBossId;
   const selectedNow = document.querySelector(".geek-item.selected");
-  if (selectedNow) {
-    const selId = selectedNow.getAttribute("data-id");
-    if (selId) {
-      // If URL id is missing or disagrees, trust the DOM selection so the
-      // manual "采集当前聊天候选人" button works regardless of URL state.
-      if (!effectiveBossId || effectiveBossId !== selId) {
-        effectiveBossId = selId;
-      }
-    }
+  if (!effectiveBossId && selectedNow) {
+    effectiveBossId = selectedNow.getAttribute("data-id") || null;
   }
 
-  if (effectiveBossId) {
-    let found = !!document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`);
-    if (!found) {
-      try {
-        await intake_waitFor(
-          () => !!document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`),
-          2500
+  // Critical insight (verified against live Boss DOM): when the user opens a
+  // chat via deep-link, the right panel mounts but Boss does NOT auto-select
+  // or auto-scroll the corresponding .geek-item in the left list. The
+  // candidate may sit far outside the left-list render window, and the SPA
+  // is happy to leave it there forever — chasing it via virtual-scroll is
+  // expensive and can fail when the list runs out before reaching them.
+  //
+  // We don't actually need the left-list row. parseChatFromDOM reads the
+  // boss_id straight from the right-panel chat header / message list. So
+  // skip the left-list dance entirely whenever the chat panel is already
+  // showing the conversation we want.
+  const rightPanelReady = () => {
+    const nb = (document.querySelector(".name-box")?.textContent || "").trim();
+    const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
+    return !!nb && msgs > 0;
+  };
+
+  // Wait briefly for the right panel to render — for deep-link paths it
+  // may need a moment to mount.
+  try {
+    await intake_waitFor(rightPanelReady, 8000);
+  } catch {}
+
+  if (!rightPanelReady()) {
+    // Right panel never came up — fall back to the old left-list path so we
+    // can click the row programmatically and force the chat open.
+    if (effectiveBossId) {
+      let found = !!document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`);
+      if (!found) {
+        try {
+          await intake_waitFor(
+            () => !!document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`),
+            2500
+          );
+          found = true;
+        } catch {
+          intake_showToast("候选人未在视窗，自动滚动加载...");
+          found = await intake_scrollUntilGeekVisible(effectiveBossId);
+        }
+      }
+      if (!found) {
+        const total = document.querySelectorAll(".geek-item").length;
+        const sample = document.querySelector(".geek-item")?.getAttribute("data-id") || "(none)";
+        intake_showToast(
+          `候选人未出现在列表（找 id=${effectiveBossId}，DOM 有 ${total} 行，首行 data-id=${sample}）`,
+          "error"
         );
-        found = true;
-      } catch {
-        intake_showToast("候选人未在视窗，自动滚动加载...");
-        found = await intake_scrollUntilGeekVisible(effectiveBossId);
+        return;
+      }
+      const item = document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`);
+      if (item) {
+        try { item.scrollIntoView({ block: "center" }); } catch {}
+        if (!item.classList.contains("selected")) item.click();
       }
     }
-    if (!found) {
-      // Diagnostic: surface what we were looking for vs. what's actually in
-      // the DOM so the user can tell whether the id format changed.
-      const total = document.querySelectorAll(".geek-item").length;
-      const sample = document.querySelector(".geek-item")?.getAttribute("data-id") || "(none)";
+    try {
+      await intake_waitFor(rightPanelReady, 15000);
+    } catch {
+      const sel = document.querySelector(".geek-item.selected");
+      const nb = (document.querySelector(".name-box")?.textContent || "").trim();
+      const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
       intake_showToast(
-        `候选人未出现在列表（找 id=${effectiveBossId}，DOM 有 ${total} 行，首行 data-id=${sample}）`,
+        `未找到聊天窗口 (selected=${sel?.getAttribute("data-id") || "none"}, name="${nb || "空"}", msgs=${msgs})`,
         "error"
       );
       return;
     }
-    const item = document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`);
-    if (item) {
-      try { item.scrollIntoView({ block: "center" }); } catch {}
-      if (!item.classList.contains("selected")) item.click();
-    }
-  }
-
-  // Wait for right panel to sync: selected candidate matches the id we
-  // resolved above, .name-box populated, message list rendered.
-  try {
-    await intake_waitFor(() => {
-      const sel = document.querySelector(".geek-item.selected");
-      const nb = (document.querySelector(".name-box")?.textContent || "").trim();
-      const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
-      if (effectiveBossId) {
-        return sel?.getAttribute("data-id") === effectiveBossId && nb && msgs > 0;
-      }
-      return !!sel && !!nb && msgs > 0;
-    }, 15000);
-  } catch {
-    const sel = document.querySelector(".geek-item.selected");
-    const nb = (document.querySelector(".name-box")?.textContent || "").trim();
-    const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
-    intake_showToast(
-      `未找到聊天窗口 (selected=${sel?.getAttribute("data-id") || "none"}, name="${nb || "空"}", msgs=${msgs})`,
-      "error"
-    );
-    return;
   }
 
   const root = document.querySelector(window.CHAT_SELECTORS.root);

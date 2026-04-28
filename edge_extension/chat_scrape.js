@@ -23,11 +23,29 @@ const CHAT_SELECTORS = {
   textNode: ".text",
 };
 
+function _readUrlBossId() {
+  try {
+    const m = location.search.match(/[?&]id=([^&]+)/);
+    return m ? decodeURIComponent(m[1]) : "";
+  } catch {
+    return "";
+  }
+}
+
 function parseChatFromDOM(root, sel) {
   sel = sel || CHAT_SELECTORS;
   if (!root) return null;
-  const selected = document.querySelector(sel.selectedItem);
-  const boss_id = selected ? (selected.getAttribute(sel.selectedDataIdField) || "") : "";
+  // boss_id resolution priority:
+  //   1. URL `?id=` (deep-link scenario — Boss does not auto-select the
+  //      corresponding .geek-item in the left list, so .selected is missing).
+  //   2. .geek-item.selected[data-id] fallback for the manual-click flow.
+  // Verified on live Boss DOM (2026-04-29 陈铭 case): URL had id=607989070-0,
+  // right panel showed 陈铭, but no .geek-item.selected existed at all.
+  let boss_id = _readUrlBossId();
+  if (!boss_id) {
+    const selected = document.querySelector(sel.selectedItem);
+    boss_id = selected ? (selected.getAttribute(sel.selectedDataIdField) || "") : "";
+  }
   const name = (document.querySelector(sel.nameBox)?.textContent || "").trim();
   const job_intention = (document.querySelector(sel.jobIntentionSel)?.textContent || "").trim();
   const messages = [];
