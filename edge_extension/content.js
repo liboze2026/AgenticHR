@@ -322,7 +322,7 @@ async function batchCollectNew(limit, criteria, serverUrl, authToken = '') {
         }
       }
 
-      // 进 intake 流水线（让 F4/F5 scheduler 接管后续轮询发消息）
+      // 进 intake 流水线（Step1 仅注册候选人，Step2 inline 路径负责后续发消息）
       try {
         const headers = { 'Content-Type': 'application/json' };
         if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
@@ -335,6 +335,7 @@ async function batchCollectNew(limit, criteria, serverUrl, authToken = '') {
             messages: [],
             pdf_present: pdfPresent,
             pdf_url: realPdfPath || null,
+            skip_outbox: true,
           }),
         });
         if (resp.ok) {
@@ -1487,6 +1488,7 @@ async function intake_runOrchestrator(opts = {}) {
       messages: parsed.messages,
       pdf_present: pdf.present,
       pdf_url: realPdfPath || pdf.url || null,
+      skip_outbox: true,
     });
   } catch (e) {
     intake_showToast(`后端返回错误: ${e.message}`, "error");
@@ -1782,7 +1784,6 @@ async function step1_scanList() {
 // Message count cache lives in chrome.storage.session (survives content-script
 // re-injection within a browser session; cleared on browser close).
 // Loaded into a local object at the start of each step2_enrichCandidates run.
-const _STEP2_MAX_PER_RUN = 30;
 const _STEP2_INTER_DELAY_MS = 1500;
 
 async function step2_enrichCandidates() {
@@ -1810,7 +1811,7 @@ async function step2_enrichCandidates() {
   let candidates;
   try {
     const r = await fetch(
-      `${serverUrl}/api/intake/autoscan/rank?limit=${_STEP2_MAX_PER_RUN * 2}`,
+      `${serverUrl}/api/intake/autoscan/rank?limit=9999`,
       { headers: authHeaders }
     );
     if (!r.ok) return { ok: false, reason: `rank_http_${r.status}` };
@@ -1822,7 +1823,6 @@ async function step2_enrichCandidates() {
   let processed = 0, skipped_missing = 0, skipped_no_new = 0, failed = 0;
 
   for (const c of candidates) {
-    if (processed >= _STEP2_MAX_PER_RUN) break;
     const bossId = c.boss_id;
     if (!bossId) { skipped_missing++; continue; }
 

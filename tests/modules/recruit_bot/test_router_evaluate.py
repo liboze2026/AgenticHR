@@ -32,7 +32,7 @@ def client(tmp_path, monkeypatch):
     from app.modules.matching.scorers import evidence as evidence_mod
     monkeypatch.setattr(evidence_mod, "enhance_evidence_with_llm", _mock_llm_enhance)
     from app.modules.matching.scorers import skill as skill_mod
-    def _mock_vec(name, candidates, db_session=None):
+    def _mock_vec(name, candidates, db_session=None, _resume_emb_cache=None):
         if name in candidates: return 0.95
         return 0.0
     monkeypatch.setattr(skill_mod, "_max_vector_similarity", _mock_vec)

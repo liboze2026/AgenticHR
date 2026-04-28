@@ -32,24 +32,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"AI parse worker failed to auto-start: {e}")
-    # F4 后端调度器：每 N 秒扫 intake 生成 outbox + 清理过期
-    try:
-        import os as _os
-        from app.modules.im_intake import scheduler as _f4_sched
-        _under_pytest = bool(_os.environ.get("PYTEST_CURRENT_TEST"))
-        if settings.f4_scheduler_enabled and not _under_pytest:
-            _f4_sched.start()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"F4 scheduler failed to start: {e}")
     yield
-    # F4 scheduler graceful stop on app shutdown
-    try:
-        from app.modules.im_intake import scheduler as _f4_sched
-        _f4_sched.stop()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).warning(f"F4 scheduler failed to stop cleanly: {e}")
 
 
 app = FastAPI(

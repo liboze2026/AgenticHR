@@ -11,9 +11,6 @@ const STEP1_PERIOD_MIN = 60;
 const STEP2_ALARM = "intake_step2_enrich";
 const STEP2_PERIOD_MIN = 180;
 
-const OUTBOX_ALARM_NAME = "intake_outbox_poll";
-const OUTBOX_ALARM_PERIOD_MIN = 0.5; // 30s
-
 // ── 安装/启动 ──────────────────────────────────────────────────
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === "install") {
@@ -43,9 +40,7 @@ async function ensureAlarms() {
   }
   chrome.alarms.create(STEP1_ALARM, { periodInMinutes: STEP1_PERIOD_MIN });
   chrome.alarms.create(STEP2_ALARM, { periodInMinutes: STEP2_PERIOD_MIN });
-  chrome.alarms.create(OUTBOX_ALARM_NAME, { periodInMinutes: OUTBOX_ALARM_PERIOD_MIN });
-  console.log("[alarm] Step1=", STEP1_PERIOD_MIN, "min / Step2=", STEP2_PERIOD_MIN,
-              "min / Outbox=", OUTBOX_ALARM_PERIOD_MIN, "min");
+  console.log("[alarm] Step1=", STEP1_PERIOD_MIN, "min / Step2=", STEP2_PERIOD_MIN, "min");
 }
 
 // intake_enabled 变更时重建 alarm
@@ -89,73 +84,6 @@ async function getBossTab() {
   return (
     tabs.find((t) => /\/web\/chat(?!\/recommend)/.test(t.url || "")) || tabs[0]
   );
-}
-
-// ── Outbox poll（发消息，沿用原机制）──────────────────────────
-async function pollOutboxOnce() {
-  const { serverUrl, authToken } = await chrome.storage.local.get([
-    "serverUrl",
-    "authToken",
-  ]);
-  if (!serverUrl || !authToken) return;
-
-  let resp;
-  try {
-    resp = await fetch(`${serverUrl}/api/intake/outbox/claim`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ limit: 1 }),
-    });
-  } catch (e) {
-    console.warn("[outbox] claim fetch 失败:", e?.message || e);
-    return;
-  }
-  if (!resp.ok) {
-    console.warn("[outbox] claim HTTP", resp.status);
-    return;
-  }
-  const data = await resp.json();
-  const items = data.items || [];
-  if (!items.length) return;
-
-  const tab = await getBossTab();
-  if (!tab) {
-    for (const it of items) await reportAck(it.id, false, "no Boss tab open");
-    return;
-  }
-  for (const it of items) {
-    try {
-      await chrome.tabs.sendMessage(tab.id, {
-        type: "intake_outbox_dispatch",
-        outbox: it,
-      });
-    } catch (e) {
-      await reportAck(it.id, false, `dispatch failed: ${e?.message || e}`);
-    }
-  }
-}
-
-async function reportAck(outboxId, success, error = "") {
-  const { serverUrl, authToken } = await chrome.storage.local.get([
-    "serverUrl",
-    "authToken",
-  ]);
-  if (!serverUrl || !authToken) return;
-  try {
-    await fetch(`${serverUrl}/api/intake/outbox/${outboxId}/ack`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${authToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ success, error }),
-    });
-  } catch (e) {
-    console.warn("[outbox] ack 失败:", e?.message || e);
-  }
 }
 
 // ── Step1 / Step2 运行器 ──────────────────────────────────────
@@ -213,25 +141,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     await runStep1();
   } else if (alarm.name === STEP2_ALARM) {
     await runStep2();
-  } else if (alarm.name === OUTBOX_ALARM_NAME) {
-    // Step 运行期间暂停 outbox poll，防止 DOM 抢占
-    const { phase_running } = await chrome.storage.local.get(["phase_running"]);
-    if (!phase_running) {
-      await pollOutboxOnce();
-    }
   }
 });
 
 // ── 消息监听 ──────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  // outbox ack 回调（从 content script）
-  if (msg?.type === "intake_outbox_ack") {
-    reportAck(msg.outbox_id, msg.success, msg.error || "").finally(() =>
-      sendResponse({ ok: true })
-    );
-    return true;
-  }
-
   // 手动触发 Step1（来自 popup 或前端）
   if (msg?.type === "manual_step1") {
     runStep1().then((r) => sendResponse(r || { ok: true }));

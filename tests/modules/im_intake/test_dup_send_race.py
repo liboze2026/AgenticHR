@@ -1,84 +1,11 @@
-"""Regression: scheduler must not enqueue an outbox row when the extension has
-recently analyzed the candidate's chat (path A inline send is in-flight or
-just completed). Without this gate, the candidate receives the same question
-twice — once via the extension's inline send, once via outbox poll picking
-up the scheduler-generated row 30s later.
-
-Also: ack-sent endpoint must expire any leftover pending/claimed outbox rows
-for the same candidate so a stale scheduler row from before the inline send
-cannot trigger a duplicate.
-"""
-from datetime import datetime, timezone, timedelta
+"""Regression: ack-sent must expire any leftover pending/claimed outbox rows
+for the same candidate so a stale row cannot trigger a duplicate send."""
+from datetime import datetime, timezone
 
 import pytest
 
 from app.modules.im_intake.candidate_model import IntakeCandidate
-from app.modules.im_intake.models import IntakeSlot
 from app.modules.im_intake.outbox_model import IntakeOutbox
-from app.modules.im_intake.scheduler import scan_once
-from app.modules.im_intake.settings_service import update as settings_update
-from app.modules.im_intake.templates import HARD_SLOT_KEYS
-
-
-def _active_candidate(db, *, user_id=1, boss_id="bxR", chat_captured_at=None):
-    now = datetime.now(timezone.utc)
-    c = IntakeCandidate(
-        user_id=user_id, boss_id=boss_id, name="R",
-        intake_status="collecting", source="plugin",
-        intake_started_at=now, expires_at=now + timedelta(days=14),
-        chat_snapshot={"messages": [],
-                       "captured_at": (chat_captured_at or now).isoformat()}
-        if chat_captured_at is not None else None,
-    )
-    db.add(c); db.flush()
-    for k in HARD_SLOT_KEYS:
-        db.add(IntakeSlot(candidate_id=c.id, slot_key=k, slot_category="hard"))
-    db.add(IntakeSlot(candidate_id=c.id, slot_key="pdf", slot_category="pdf"))
-    db.commit()
-    return c
-
-
-def test_scheduler_skips_recently_analyzed_candidate(db_session):
-    """Candidate's chat_snapshot was captured 30s ago by the extension's
-    autoscan. Scheduler should defer — extension is actively driving."""
-    db = db_session
-    settings_update(db, user_id=1, enabled=True, target_count=99)
-    fresh = datetime.now(timezone.utc) - timedelta(seconds=30)
-    _active_candidate(db, boss_id="fresh", chat_captured_at=fresh)
-
-    stats = scan_once(db)
-
-    # No outbox rows generated because extension is actively analyzing.
-    assert stats["generated"] == 0
-    assert db.query(IntakeOutbox).count() == 0
-
-
-def test_scheduler_emits_for_stale_candidate(db_session):
-    """Candidate's chat_snapshot is older than the freshness window —
-    extension hasn't covered them. Scheduler is the backstop and emits."""
-    db = db_session
-    settings_update(db, user_id=1, enabled=True, target_count=99)
-    stale = datetime.now(timezone.utc) - timedelta(hours=2)
-    c = _active_candidate(db, boss_id="stale", chat_captured_at=stale)
-
-    stats = scan_once(db)
-
-    assert stats["generated"] == 1
-    rows = db.query(IntakeOutbox).filter_by(candidate_id=c.id).all()
-    assert len(rows) == 1
-
-
-def test_scheduler_emits_when_chat_snapshot_absent(db_session):
-    """Brand-new candidate without any chat_snapshot — backend has never
-    seen extension push history. Scheduler still emits (existing behavior)."""
-    db = db_session
-    settings_update(db, user_id=1, enabled=True, target_count=99)
-    c = _active_candidate(db, boss_id="brand-new", chat_captured_at=None)
-
-    stats = scan_once(db)
-
-    assert stats["generated"] == 1
-    assert db.query(IntakeOutbox).filter_by(candidate_id=c.id).count() == 1
 
 
 def test_ack_sent_expires_leftover_outbox(client, db_session):

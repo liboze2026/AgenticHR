@@ -162,7 +162,7 @@ def db(tmp_path, monkeypatch):
     # used by tests/integration/test_f2_e2e_smoke.py).
     monkeypatch.setattr(
         "app.modules.matching.scorers.skill._max_vector_similarity",
-        lambda name, resume_names, db_session=None: (
+        lambda name, resume_names, db_session=None, _resume_emb_cache=None: (
             0.95 if name in (resume_names or []) else 0.0
         ),
     )
