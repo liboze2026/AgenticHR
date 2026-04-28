@@ -1396,25 +1396,39 @@ function intake_waitFor(predicate, timeoutMs) {
 }
 
 // Scroll the geek-item virtual list until a row with the given data-id renders
-// into the DOM. Boss's left list is virtually scrolled — pure `scrollTop`
-// changes do NOT load more rows, the SPA only fetches the next batch when the
-// user clicks a candidate (that's why batchCollectNew works: it clicks each
-// fresh row, which triggers Boss's chat-switch fetch and pulls in more rows).
+// into the DOM.
 //
-// Strategy: try cheap scrolling first; if no new rows appear, click the last
-// rendered row to force the SPA to extend the list, then keep going.
+// Browser-verified DOM facts (Boss's chat page, 2026-04):
+//   - The real scroll container is `.user-list.b-scroll-stable`.
+//   - That container has `overflow-y: hidden` (display:none-style scroll bar)
+//     yet `scrollTop` writes ARE honored and DO trigger the SPA's lazy fetch.
+//   - `findScrollableAncestor` filters on `overflowY: auto|scroll`, so it
+//     SKIPS this container and falls back to `document.body`, which is why
+//     the previous implementation never actually scrolled the list.
+//   - Setting `scrollTop = scrollHeight` reliably extends the list (tested:
+//     40 → 42 with scrollHeight 7830 → 15630 in one tick).
+//
+// Strategy: pick `.user-list` explicitly; loop scrollTop=scrollHeight until
+// the target id renders or the list stops growing.
+function intake_findGeekListScroller() {
+  return document.querySelector(".user-list.b-scroll-stable")
+      || document.querySelector(".user-list");
+}
+
 async function intake_scrollUntilGeekVisible(bossId, opts = {}) {
   const sel = `.geek-item[data-id="${bossId}"]`;
   if (document.querySelector(sel)) return true;
 
-  const items = document.querySelectorAll(".geek-item");
-  if (!items.length) {
+  if (!document.querySelectorAll(".geek-item").length) {
     intake_showToast("候选人列表为空，请先打开 Boss 消息页", "error");
     return false;
   }
-  const scrollable = findScrollableAncestor(items[0]);
+  const scroller = intake_findGeekListScroller();
+  if (!scroller) {
+    intake_showToast("未找到候选人列表滚动容器（.user-list）", "error");
+    return false;
+  }
   const maxRounds = opts.maxRounds || 30;
-  let stalledRounds = 0;
 
   for (let i = 0; i < maxRounds; i++) {
     if (document.querySelector(sel)) {
@@ -1422,43 +1436,17 @@ async function intake_scrollUntilGeekVisible(bossId, opts = {}) {
       try { el.scrollIntoView({ block: "center", behavior: "instant" }); } catch { el.scrollIntoView(false); }
       return true;
     }
-
     const before = document.querySelectorAll(".geek-item").length;
-
-    // Round 1+: pure scroll attempt (cheap, no DOM mutation).
-    const after = await triggerListLoadMore(scrollable, before);
-
-    if (after > before) {
-      stalledRounds = 0;
-      intake_showToast(`滚动加载… 已渲染 ${after} 人 (round ${i + 1})`);
-      continue;
+    scroller.scrollTop = scroller.scrollHeight;
+    await new Promise((r) => setTimeout(r, 1200));
+    const after = document.querySelectorAll(".geek-item").length;
+    if (after === before) {
+      // List bottomed out — the SPA returned no new rows after a full
+      // scrollTop=scrollHeight write + 1.2s settle.
+      intake_showToast(`列表已到底，共 ${after} 人，未找到目标`, "error");
+      return false;
     }
-
-    // Pure scroll didn't add rows — Boss's virtual list is gated on clicks.
-    // Click the last rendered candidate to trigger an SPA chat-switch fetch,
-    // which is what `batchCollectNew` relies on to extend the list.
-    stalledRounds++;
-    const all = document.querySelectorAll(".geek-item");
-    const last = all[all.length - 1];
-    if (last) {
-      intake_showToast(`滚动停滞，点击末项触发加载 (round ${i + 1}, ${after} 人)`);
-      try { last.scrollIntoView({ block: "end", behavior: "instant" }); } catch {}
-      last.click();
-      // Wait for Boss to settle: list may grow, or the right panel may swap.
-      await new Promise((r) => setTimeout(r, 1200));
-    }
-
-    const after2 = document.querySelectorAll(".geek-item").length;
-    if (after2 > after) {
-      stalledRounds = 0;
-      intake_showToast(`点击触发后渲染 ${after2} 人 (round ${i + 1})`);
-      continue;
-    }
-
-    // Two consecutive stalls (scroll + click both ineffective) → bottom.
-    if (stalledRounds >= 2) {
-      return !!document.querySelector(sel);
-    }
+    intake_showToast(`滚动加载… 已渲染 ${after} 人 (round ${i + 1})`);
   }
   return !!document.querySelector(sel);
 }
