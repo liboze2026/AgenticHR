@@ -1396,10 +1396,13 @@ function intake_waitFor(predicate, timeoutMs) {
 }
 
 // Scroll the geek-item virtual list until a row with the given data-id renders
-// into the DOM. Reuses findScrollableAncestor + triggerListLoadMore which the
-// batch-collect path has already proven correct against Boss's virtual list
-// (a hand-rolled scroller picks the wrong ancestor when Boss uses
-// overflow:hidden + transform-based virtualization).
+// into the DOM. Boss's left list is virtually scrolled — pure `scrollTop`
+// changes do NOT load more rows, the SPA only fetches the next batch when the
+// user clicks a candidate (that's why batchCollectNew works: it clicks each
+// fresh row, which triggers Boss's chat-switch fetch and pulls in more rows).
+//
+// Strategy: try cheap scrolling first; if no new rows appear, click the last
+// rendered row to force the SPA to extend the list, then keep going.
 async function intake_scrollUntilGeekVisible(bossId, opts = {}) {
   const sel = `.geek-item[data-id="${bossId}"]`;
   if (document.querySelector(sel)) return true;
@@ -1410,21 +1413,51 @@ async function intake_scrollUntilGeekVisible(bossId, opts = {}) {
     return false;
   }
   const scrollable = findScrollableAncestor(items[0]);
-  const maxRounds = opts.maxRounds || 25;
+  const maxRounds = opts.maxRounds || 30;
+  let stalledRounds = 0;
 
   for (let i = 0; i < maxRounds; i++) {
     if (document.querySelector(sel)) {
-      // Bring it into the viewport so the click handler picks up the row.
       const el = document.querySelector(sel);
       try { el.scrollIntoView({ block: "center", behavior: "instant" }); } catch { el.scrollIntoView(false); }
       return true;
     }
+
     const before = document.querySelectorAll(".geek-item").length;
+
+    // Round 1+: pure scroll attempt (cheap, no DOM mutation).
     const after = await triggerListLoadMore(scrollable, before);
-    intake_showToast(`滚动加载… 已渲染 ${after} 人 (round ${i + 1})`);
-    if (after === before) {
-      // List bottomed out without surfacing the target id.
-      return false;
+
+    if (after > before) {
+      stalledRounds = 0;
+      intake_showToast(`滚动加载… 已渲染 ${after} 人 (round ${i + 1})`);
+      continue;
+    }
+
+    // Pure scroll didn't add rows — Boss's virtual list is gated on clicks.
+    // Click the last rendered candidate to trigger an SPA chat-switch fetch,
+    // which is what `batchCollectNew` relies on to extend the list.
+    stalledRounds++;
+    const all = document.querySelectorAll(".geek-item");
+    const last = all[all.length - 1];
+    if (last) {
+      intake_showToast(`滚动停滞，点击末项触发加载 (round ${i + 1}, ${after} 人)`);
+      try { last.scrollIntoView({ block: "end", behavior: "instant" }); } catch {}
+      last.click();
+      // Wait for Boss to settle: list may grow, or the right panel may swap.
+      await new Promise((r) => setTimeout(r, 1200));
+    }
+
+    const after2 = document.querySelectorAll(".geek-item").length;
+    if (after2 > after) {
+      stalledRounds = 0;
+      intake_showToast(`点击触发后渲染 ${after2} 人 (round ${i + 1})`);
+      continue;
+    }
+
+    // Two consecutive stalls (scroll + click both ineffective) → bottom.
+    if (stalledRounds >= 2) {
+      return !!document.querySelector(sel);
     }
   }
   return !!document.querySelector(sel);
