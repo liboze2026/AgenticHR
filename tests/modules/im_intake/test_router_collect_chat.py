@@ -30,13 +30,20 @@ def test_collect_chat_idempotent_on_boss_id(client, db_session):
 
 
 def test_collect_chat_fills_slots_from_messages(client, db_session):
+    """Slot extractor returns the candidate's original message content
+    verbatim — no rewriting / phrase carving — so the UI shows what the
+    candidate actually said.
+    """
+    msg = "明天到岗，能实习半年"
     payload = {
         "boss_id": "bxParse",
-        "messages": [{"sender_id": "bxParse", "content": "明天到岗，能实习半年"}],
+        "messages": [{"sender_id": "bxParse", "content": msg}],
     }
     r = client.post("/api/intake/collect-chat", json=payload)
     assert r.status_code == 200, r.text
     cid = r.json()["candidate_id"]
     slots = {s.slot_key: s for s in db_session.query(IntakeSlot).filter_by(candidate_id=cid).all()}
-    assert slots["arrival_date"].value == "明天"
-    assert slots["intern_duration"].value == "半年"
+    # Both slots quote the same source message; we keep the full sentence
+    # rather than carving "明天" / "半年" out of it.
+    assert slots["arrival_date"].value == msg
+    assert slots["intern_duration"].value == msg
