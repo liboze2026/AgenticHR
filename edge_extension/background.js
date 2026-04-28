@@ -20,12 +20,14 @@ chrome.runtime.onInstalled.addListener((details) => {
     });
     console.log("[招聘助手] 已安装，默认服务器: http://127.0.0.1:8000");
   }
+  // 安装/更新/重新加载扩展时清残留锁，避免上一次 SW 崩在 phase_running=true
+  chrome.storage.local.remove(["phase_running", "phase_started_at"]);
   ensureAlarms();
 });
 
 chrome.runtime.onStartup.addListener(() => {
   // 浏览器重启时清除残留的 phase_running 标志
-  chrome.storage.local.remove("phase_running");
+  chrome.storage.local.remove(["phase_running", "phase_started_at"]);
   ensureAlarms();
 });
 
@@ -148,13 +150,19 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // 手动触发 Step1（来自 popup 或前端）
   if (msg?.type === "manual_step1") {
-    runStep1().then((r) => sendResponse(r || { ok: true }));
+    console.log("[bg] manual_step1 received");
+    runStep1()
+      .then((r) => { console.log("[bg] manual_step1 done:", r); sendResponse(r || { ok: true }); })
+      .catch((e) => { console.error("[bg] manual_step1 err:", e); sendResponse({ ok: false, error: String(e?.message || e) }); });
     return true;
   }
 
   // 手动触发 Step2（来自 popup 或前端）
   if (msg?.type === "manual_step2") {
-    runStep2().then((r) => sendResponse(r || { ok: true }));
+    console.log("[bg] manual_step2 received");
+    runStep2()
+      .then((r) => { console.log("[bg] manual_step2 done:", r); sendResponse(r || { ok: true }); })
+      .catch((e) => { console.error("[bg] manual_step2 err:", e); sendResponse({ ok: false, error: String(e?.message || e) }); });
     return true;
   }
 
@@ -166,6 +174,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         intake_enabled: s.intake_enabled || false,
       });
     });
+    return true;
+  }
+
+  // 强制清残留 phase 锁 + 关自动化（来自 popup 紧急按钮）
+  if (msg?.type === "intake_force_reset") {
+    Promise.all([
+      chrome.storage.local.remove(["phase_running", "phase_started_at"]),
+      chrome.storage.local.set({ intake_enabled: false }),
+      chrome.alarms.clearAll(),
+    ]).then(() => {
+      console.log("[bg] intake_force_reset done");
+      sendResponse({ ok: true });
+    }).catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
     return true;
   }
 });

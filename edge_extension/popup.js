@@ -283,6 +283,31 @@ function doLogout() {
 
 // ── Connection check ────────────────────────────────────────────────
 
+// 这些按钮即使后端未连通也允许点击：
+// - 测试连接：本身就是为了重试连接
+// - 设置/登录类：纯本地或本地→后端 401 比 disabled 更直观
+// - F4 手动 Step1/Step2：后端如果未连通，错误会落到 result-area，让用户看到具体原因，
+//   而不是按钮死灰、看似完全没反应（曾经的"点了没反应" bug）
+const _ALWAYS_ENABLED_BTN_IDS = new Set([
+  'btnTestConnection',
+  'btnOpenSettings',
+  'btnCloseSettings',
+  'btnLogin',
+  'btnLogout',
+  'btnLogoutFromSettings',
+  'btnStep1',
+  'btnStep2',
+  'intakeAutoscanToggle',
+]);
+
+function _setBackendDependentButtons(disabled) {
+  document.querySelectorAll('button, input[type="checkbox"]').forEach(btn => {
+    if (_ALWAYS_ENABLED_BTN_IDS.has(btn.id)) return;
+    btn.disabled = disabled;
+    btn.style.opacity = disabled ? '0.5' : '';
+  });
+}
+
 async function checkConnection() {
   const url = getServerUrl();
   setStatus("checking");
@@ -295,31 +320,16 @@ async function checkConnection() {
     if (resp.ok) {
       setStatus("connected");
       showResult("已连接到招聘助手后端", "success");
-      document.querySelectorAll('button').forEach(btn => {
-        if (btn.id !== 'check-connection') {
-          btn.disabled = false;
-          btn.style.opacity = '';
-        }
-      });
+      _setBackendDependentButtons(false);
     } else {
       setStatus("error");
       showResult(`连接失败: HTTP ${resp.status}`, "error");
-      document.querySelectorAll('button').forEach(btn => {
-        if (btn.id !== 'check-connection') {
-          btn.disabled = true;
-          btn.style.opacity = '0.5';
-        }
-      });
+      _setBackendDependentButtons(true);
     }
   } catch (err) {
     setStatus("error");
     showResult(`无法连接到服务器: ${err.message}\n请确认后端服务已启动`, "error");
-    document.querySelectorAll('button').forEach(btn => {
-      if (btn.id !== 'check-connection') {
-        btn.disabled = true;
-        btn.style.opacity = '0.5';
-      }
-    });
+    _setBackendDependentButtons(true);
   }
 }
 

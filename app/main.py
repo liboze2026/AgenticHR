@@ -1,4 +1,5 @@
 """FastAPI 应用入口"""
+import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,9 +42,29 @@ app = FastAPI(
 )
 
 _cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+# 浏览器扩展 popup 的 origin 是 chrome-extension://<32 [a-p] 字符 ext id>，
+# 装在 BOSS 直聘内的 content script 的 fetch origin 是 https://www.zhipin.com。
+# 这些 origin 不能枚举（ext id 重装会变；zhipin 子域不固定），所以用 regex 放行。
+_cors_origin_regex = (
+    r"^(chrome-extension://[a-p]{32}"
+    r"|https?://([\w-]+\.)*zhipin\.com(:\d+)?"
+    r"|https?://(localhost|127\.0\.0\.1)(:\d+)?)$"
+)
+_cors_origin_re = re.compile(_cors_origin_regex)
+
+
+def _cors_origin_allowed(origin: str) -> bool:
+    if not origin:
+        return False
+    if origin in _cors_origins:
+        return True
+    return bool(_cors_origin_re.fullmatch(origin))
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,7 +81,10 @@ async def auth_middleware(request: Request, call_next):
         from starlette.responses import Response
         response = Response(status_code=200)
         origin = request.headers.get("origin", "")
-        response.headers["Access-Control-Allow-Origin"] = origin if origin in _cors_origins else ""
+        if _cors_origin_allowed(origin):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
         return response
