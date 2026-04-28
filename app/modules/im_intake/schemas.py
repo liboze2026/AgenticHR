@@ -67,9 +67,11 @@ def _validate_pdf_url(v: str | None) -> str | None:
     """BUG-044 / BUG-032 / BUG-038: reject path-traversal strings.
 
     Accept: http(s):// URLs, or simple filename / relative path under storage
-    (no '..', no leading '/', no backslash, no null byte). Path-resolution
-    against ``settings.resume_storage_path`` happens at file-read time too,
-    but we reject obvious attack strings up-front.
+    (no '..', no leading '/' or '\\', no null byte). Backslashes inside the
+    path are normalized to forward slashes so Windows-style paths produced by
+    ``pathlib.Path`` on the server are accepted (the storage layer also
+    re-resolves the path against ``settings.resume_storage_path`` at read
+    time).
     """
     if v is None:
         return None
@@ -81,7 +83,10 @@ def _validate_pdf_url(v: str | None) -> str | None:
     low = s.lower()
     if low.startswith(("http://", "https://")):
         return s
-    if ".." in s or s.startswith(("/", "\\")) or "\\" in s:
+    # Normalize Windows separators before traversal checks so a legitimate
+    # `data\resumes\foo.pdf` is treated identically to `data/resumes/foo.pdf`.
+    s = s.replace("\\", "/")
+    if ".." in s or s.startswith("/"):
         raise ValueError("pdf_url must be http(s) URL or safe relative path")
     if len(s) > 512:
         raise ValueError("pdf_url exceeds 512 characters")

@@ -1395,6 +1395,49 @@ function intake_waitFor(predicate, timeoutMs) {
   });
 }
 
+// Find the scroll container that lazy-loads geek-item rows. Walk up from any
+// existing .geek-item and pick the nearest ancestor whose content overflows.
+function intake_findGeekListScroller() {
+  const sample = document.querySelector(".geek-item");
+  if (!sample) return null;
+  let el = sample.parentElement;
+  while (el && el !== document.body) {
+    const style = getComputedStyle(el);
+    const oy = style.overflowY;
+    if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 4) {
+      return el;
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+
+// Scroll the geek-item virtual list until a row with the given data-id renders
+// into the DOM, or until the list reaches the bottom / attempt cap.
+async function intake_scrollUntilGeekVisible(bossId, opts = {}) {
+  const maxAttempts = opts.maxAttempts || 30;
+  const stepMs = opts.stepMs || 400;
+  if (document.querySelector(`.geek-item[data-id="${bossId}"]`)) return true;
+  const scroller = intake_findGeekListScroller();
+  if (!scroller) return false;
+  let lastTop = -1;
+  let stableTicks = 0;
+  for (let i = 0; i < maxAttempts; i++) {
+    if (document.querySelector(`.geek-item[data-id="${bossId}"]`)) return true;
+    scroller.scrollTop = scroller.scrollTop + scroller.clientHeight * 0.9;
+    await new Promise((r) => setTimeout(r, stepMs));
+    if (scroller.scrollTop === lastTop) {
+      stableTicks++;
+      // Bottom reached and no new rows loaded after two consecutive ticks.
+      if (stableTicks >= 2) break;
+    } else {
+      stableTicks = 0;
+      lastTop = scroller.scrollTop;
+    }
+  }
+  return !!document.querySelector(`.geek-item[data-id="${bossId}"]`);
+}
+
 async function intake_runOrchestrator(opts = {}) {
   const forceRequestPdf = !!opts.forceRequestPdfIfMissing;
   intake_showToast("正在分析聊天记录...");
@@ -1402,19 +1445,31 @@ async function intake_runOrchestrator(opts = {}) {
   // If URL has id param but candidate isn't selected yet, click their row.
   // Boss SPA won't auto-select on fresh navigation — the user would normally
   // click a geek-item manually; deep-link orchestrator must do it programmatically.
+  // Boss's geek list is virtually scrolled, so a candidate that lives below the
+  // initial render window won't be in the DOM until we scroll there.
   const urlBossId = intake_getQueryParam("id");
   if (urlBossId) {
+    let found = false;
     try {
       await intake_waitFor(
         () => !!document.querySelector(`.geek-item[data-id="${urlBossId}"]`),
-        12000
+        2500
       );
+      found = true;
     } catch {
-      intake_showToast("候选人未出现在列表（URL id 无匹配）", "error");
+      // not in initial render — scroll the virtual list to load more rows.
+      intake_showToast("候选人未在视窗，自动滚动加载...");
+      found = await intake_scrollUntilGeekVisible(urlBossId);
+    }
+    if (!found) {
+      intake_showToast("候选人未出现在列表（滚动到底仍未加载）", "error");
       return;
     }
     const item = document.querySelector(`.geek-item[data-id="${urlBossId}"]`);
-    if (item && !item.classList.contains("selected")) item.click();
+    if (item) {
+      try { item.scrollIntoView({ block: "center" }); } catch {}
+      if (!item.classList.contains("selected")) item.click();
+    }
   }
 
   // Wait for right panel to sync: selected candidate matches URL id,

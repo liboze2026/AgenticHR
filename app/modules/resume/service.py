@@ -171,6 +171,10 @@ class ResumeService:
         from app.modules.resume.pdf_parser import parse_pdf, extract_resume_fields, parse_boss_filename, extract_boss_qr
         from pathlib import Path as _Path
 
+        # Normalize Windows backslashes to forward slashes so downstream
+        # consumers (intake collect-chat pdf_url validator, FE resume viewer)
+        # accept the path uniformly across OSes.
+        file_path = file_path.replace("\\", "/")
         raw_text = parse_pdf(file_path)
         if not raw_text:
             return None
