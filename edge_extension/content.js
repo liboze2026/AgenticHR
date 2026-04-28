@@ -1395,47 +1395,39 @@ function intake_waitFor(predicate, timeoutMs) {
   });
 }
 
-// Find the scroll container that lazy-loads geek-item rows. Walk up from any
-// existing .geek-item and pick the nearest ancestor whose content overflows.
-function intake_findGeekListScroller() {
-  const sample = document.querySelector(".geek-item");
-  if (!sample) return null;
-  let el = sample.parentElement;
-  while (el && el !== document.body) {
-    const style = getComputedStyle(el);
-    const oy = style.overflowY;
-    if ((oy === "auto" || oy === "scroll") && el.scrollHeight > el.clientHeight + 4) {
-      return el;
-    }
-    el = el.parentElement;
-  }
-  return null;
-}
-
 // Scroll the geek-item virtual list until a row with the given data-id renders
-// into the DOM, or until the list reaches the bottom / attempt cap.
+// into the DOM. Reuses findScrollableAncestor + triggerListLoadMore which the
+// batch-collect path has already proven correct against Boss's virtual list
+// (a hand-rolled scroller picks the wrong ancestor when Boss uses
+// overflow:hidden + transform-based virtualization).
 async function intake_scrollUntilGeekVisible(bossId, opts = {}) {
-  const maxAttempts = opts.maxAttempts || 30;
-  const stepMs = opts.stepMs || 400;
-  if (document.querySelector(`.geek-item[data-id="${bossId}"]`)) return true;
-  const scroller = intake_findGeekListScroller();
-  if (!scroller) return false;
-  let lastTop = -1;
-  let stableTicks = 0;
-  for (let i = 0; i < maxAttempts; i++) {
-    if (document.querySelector(`.geek-item[data-id="${bossId}"]`)) return true;
-    scroller.scrollTop = scroller.scrollTop + scroller.clientHeight * 0.9;
-    await new Promise((r) => setTimeout(r, stepMs));
-    if (scroller.scrollTop === lastTop) {
-      stableTicks++;
-      // Bottom reached and no new rows loaded after two consecutive ticks.
-      if (stableTicks >= 2) break;
-    } else {
-      stableTicks = 0;
-      lastTop = scroller.scrollTop;
+  const sel = `.geek-item[data-id="${bossId}"]`;
+  if (document.querySelector(sel)) return true;
+
+  const items = document.querySelectorAll(".geek-item");
+  if (!items.length) {
+    intake_showToast("候选人列表为空，请先打开 Boss 消息页", "error");
+    return false;
+  }
+  const scrollable = findScrollableAncestor(items[0]);
+  const maxRounds = opts.maxRounds || 25;
+
+  for (let i = 0; i < maxRounds; i++) {
+    if (document.querySelector(sel)) {
+      // Bring it into the viewport so the click handler picks up the row.
+      const el = document.querySelector(sel);
+      try { el.scrollIntoView({ block: "center", behavior: "instant" }); } catch { el.scrollIntoView(false); }
+      return true;
+    }
+    const before = document.querySelectorAll(".geek-item").length;
+    const after = await triggerListLoadMore(scrollable, before);
+    intake_showToast(`滚动加载… 已渲染 ${after} 人 (round ${i + 1})`);
+    if (after === before) {
+      // List bottomed out without surfacing the target id.
+      return false;
     }
   }
-  return !!document.querySelector(`.geek-item[data-id="${bossId}"]`);
+  return !!document.querySelector(sel);
 }
 
 async function intake_runOrchestrator(opts = {}) {
@@ -1448,44 +1440,75 @@ async function intake_runOrchestrator(opts = {}) {
   // Boss's geek list is virtually scrolled, so a candidate that lives below the
   // initial render window won't be in the DOM until we scroll there.
   const urlBossId = intake_getQueryParam("id");
-  if (urlBossId) {
-    let found = false;
-    try {
-      await intake_waitFor(
-        () => !!document.querySelector(`.geek-item[data-id="${urlBossId}"]`),
-        2500
-      );
-      found = true;
-    } catch {
-      // not in initial render — scroll the virtual list to load more rows.
-      intake_showToast("候选人未在视窗，自动滚动加载...");
-      found = await intake_scrollUntilGeekVisible(urlBossId);
+  // Manual trigger path: user already has a candidate selected — prefer the
+  // currently-selected geek-item over the URL id (URL may not match the
+  // ?id= convention on every Boss build, and the user's intent is the
+  // *visible* chat).
+  let effectiveBossId = urlBossId;
+  const selectedNow = document.querySelector(".geek-item.selected");
+  if (selectedNow) {
+    const selId = selectedNow.getAttribute("data-id");
+    if (selId) {
+      // If URL id is missing or disagrees, trust the DOM selection so the
+      // manual "采集当前聊天候选人" button works regardless of URL state.
+      if (!effectiveBossId || effectiveBossId !== selId) {
+        effectiveBossId = selId;
+      }
+    }
+  }
+
+  if (effectiveBossId) {
+    let found = !!document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`);
+    if (!found) {
+      try {
+        await intake_waitFor(
+          () => !!document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`),
+          2500
+        );
+        found = true;
+      } catch {
+        intake_showToast("候选人未在视窗，自动滚动加载...");
+        found = await intake_scrollUntilGeekVisible(effectiveBossId);
+      }
     }
     if (!found) {
-      intake_showToast("候选人未出现在列表（滚动到底仍未加载）", "error");
+      // Diagnostic: surface what we were looking for vs. what's actually in
+      // the DOM so the user can tell whether the id format changed.
+      const total = document.querySelectorAll(".geek-item").length;
+      const sample = document.querySelector(".geek-item")?.getAttribute("data-id") || "(none)";
+      intake_showToast(
+        `候选人未出现在列表（找 id=${effectiveBossId}，DOM 有 ${total} 行，首行 data-id=${sample}）`,
+        "error"
+      );
       return;
     }
-    const item = document.querySelector(`.geek-item[data-id="${urlBossId}"]`);
+    const item = document.querySelector(`.geek-item[data-id="${effectiveBossId}"]`);
     if (item) {
       try { item.scrollIntoView({ block: "center" }); } catch {}
       if (!item.classList.contains("selected")) item.click();
     }
   }
 
-  // Wait for right panel to sync: selected candidate matches URL id,
-  // .name-box populated, message list rendered.
+  // Wait for right panel to sync: selected candidate matches the id we
+  // resolved above, .name-box populated, message list rendered.
   try {
     await intake_waitFor(() => {
       const sel = document.querySelector(".geek-item.selected");
       const nb = (document.querySelector(".name-box")?.textContent || "").trim();
       const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
-      if (urlBossId) {
-        return sel?.getAttribute("data-id") === urlBossId && nb && msgs > 0;
+      if (effectiveBossId) {
+        return sel?.getAttribute("data-id") === effectiveBossId && nb && msgs > 0;
       }
       return !!sel && !!nb && msgs > 0;
     }, 15000);
   } catch {
-    intake_showToast("未找到聊天窗口，请检查页面", "error");
+    const sel = document.querySelector(".geek-item.selected");
+    const nb = (document.querySelector(".name-box")?.textContent || "").trim();
+    const msgs = document.querySelectorAll(".chat-message-list .message-item").length;
+    intake_showToast(
+      `未找到聊天窗口 (selected=${sel?.getAttribute("data-id") || "none"}, name="${nb || "空"}", msgs=${msgs})`,
+      "error"
+    );
     return;
   }
 
