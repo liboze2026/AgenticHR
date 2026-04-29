@@ -295,8 +295,9 @@ def _target_to_response_dict(target, db: Session | None = None):
     }
 
 
-# IntakeCandidate 不存在的字段（前端 ResumeUpdate 可能携带，仅对 Resume 有意义）
-_RESUME_ONLY_FIELDS = {"status", "reject_reason"}
+# spec 0429 阶段 A 后 IntakeCandidate 也有 status/reject_reason 列，写入不再被 skip。
+# 但 PATCH 这两个字段时 candidate 仍需 promote 出 Resume 作 matching/interview FK 锚点。
+_PROMOTE_TRIGGER_FIELDS = {"status", "reject_reason"}
 
 
 def _resolve_owned_or_404(service: ResumeService, resume_id: int, user_id: int):
@@ -331,11 +332,11 @@ def update_resume(
     is_candidate = isinstance(target, IntakeCandidate)
 
     update_data = data.model_dump(exclude_none=True)
-    has_resume_only_field = any(k in _RESUME_ONLY_FIELDS for k in update_data)
+    has_promote_trigger = any(k in _PROMOTE_TRIGGER_FIELDS for k in update_data)
 
-    # BUG-057 修复：candidate 入口收到 status/reject_reason 但 promoted_resume_id 缺失时
-    # 自动 promote，确保字段有承载体；否则用户改动静默丢失
-    if is_candidate and has_resume_only_field and not target.promoted_resume_id:
+    # BUG-057 修复 + spec 0429: candidate 入口收到 status/reject_reason 但
+    # promoted_resume_id 缺失时自动 promote，确保 matching/interview FK 有 Resume 锚点。
+    if is_candidate and has_promote_trigger and not target.promoted_resume_id:
         try:
             from app.modules.im_intake.promote import promote_to_resume
             promote_to_resume(service.db, target, user_id=user_id)
@@ -345,8 +346,7 @@ def update_resume(
             raise HTTPException(status_code=500, detail="无法同步简历状态，请稍后重试")
 
     for key, value in update_data.items():
-        if is_candidate and key in _RESUME_ONLY_FIELDS:
-            continue  # candidate 不存这俩字段；下面统一写到 promoted Resume
+        # spec 0429 阶段 A: candidate 也有 status/reject_reason，不再 skip
         if hasattr(target, key):
             setattr(target, key, value)
 

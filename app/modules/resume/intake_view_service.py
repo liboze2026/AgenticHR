@@ -47,28 +47,21 @@ def _complete_query(db: Session, user_id: int):
 
 def candidate_to_resume_dict(c: IntakeCandidate, db: Session | None = None) -> dict[str, Any]:
     """IntakeCandidate -> ResumeResponse-shape dict (前端零改动)
-    BUG-068 修复：status 不再硬编码 'passed'；abandoned/timed_out 候选人映射到 'rejected'。
-    BUG-086 修复：reject_reason 从 promoted Resume 拉取（IntakeCandidate 无此列）。"""
-    # status 映射
-    intake_st = c.intake_status or ""
-    if intake_st in ("abandoned", "timed_out"):
-        status = "rejected"
-    elif intake_st == "complete":
-        status = "passed"
-    else:
-        status = "pending"
 
-    # reject_reason / Resume.status 从 promoted Resume 拉取
-    reject_reason = ""
-    if db is not None and c.promoted_resume_id:
-        from app.modules.resume.models import Resume as _R
-        r = db.query(_R).filter_by(id=c.promoted_resume_id).first()
-        if r:
-            if r.status == "rejected":
-                status = "rejected"
-            elif r.status == "passed" and intake_st == "complete":
-                status = "passed"
-            reject_reason = r.reject_reason or ""
+    spec 0429 阶段 A: status / reject_reason 直接读 candidate 列, 不再反查 Resume。
+    历史兼容: 如果 candidate.status 还是默认 'pending' 但 intake_status 已 abandoned/
+    timed_out, 仍按 intake_status 映射到 rejected (老数据没跑过 0022 backfill 时兜底)。
+    """
+    # 优先用 candidate 自己的 status (0022 已回填)
+    status = (c.status or "").strip() or "pending"
+    intake_st = c.intake_status or ""
+    if status == "pending":
+        if intake_st in ("abandoned", "timed_out"):
+            status = "rejected"
+        elif intake_st == "complete":
+            status = "passed"
+
+    reject_reason = (c.reject_reason or "")
 
     return {
         "id": c.id,

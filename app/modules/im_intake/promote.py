@@ -59,6 +59,9 @@ def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0)
         candidate.promoted_resume_id = r.id
         candidate.intake_status = "complete"
         candidate.intake_completed_at = datetime.now(timezone.utc)
+        # spec 0429 阶段 A: candidate.status 同步为 passed (Resume.status 已是 passed)
+        if not candidate.status or candidate.status == "pending":
+            candidate.status = r.status or "passed"
         # Expire any pending/claimed outbox so a stale scheduler row can't
         # fire after the candidate is already promoted.
         expire_pending_for_candidate(db, candidate.id, reason="promote_merge")
@@ -83,5 +86,7 @@ def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0)
     candidate.promoted_resume_id = r.id
     candidate.intake_status = "complete"
     candidate.intake_completed_at = datetime.now(timezone.utc)
+    # spec 0429 阶段 A: candidate.status 同步为 passed
+    candidate.status = "passed"
     expire_pending_for_candidate(db, candidate.id, reason="promote_new")
     return r

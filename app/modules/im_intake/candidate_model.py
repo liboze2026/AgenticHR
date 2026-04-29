@@ -15,6 +15,9 @@ class IntakeCandidate(Base):
     job_intention = Column(String(256), nullable=True)
     job_id = Column(Integer, ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True)
     intake_status = Column(String(20), nullable=False, default="collecting")
+    # spec 0429 阶段 A：决策字段从 Resume 下沉到 candidate，消跨表反查
+    status = Column(String(20), nullable=False, default="pending")
+    reject_reason = Column(String(200), nullable=False, default="")
     source = Column(String(32), nullable=False, default="plugin")
     pdf_path = Column(String(512), nullable=True)
     raw_text = Column(Text, nullable=True)
