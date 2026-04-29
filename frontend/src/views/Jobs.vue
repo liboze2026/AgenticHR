@@ -199,6 +199,98 @@
             </el-table>
           </div>
         </el-tab-pane>
+        <el-tab-pane label="五维能力筛选" name="five_dim" v-if="editingJob">
+          <el-alert
+            v-if="competencyStatus !== 'approved'"
+            type="warning" :closable="false" show-icon
+            title="尚未启用"
+            description="请先在「能力模型」Tab 完成抽取并审核通过后，方可使用五维能力筛选。"
+          />
+          <template v-else>
+            <el-alert
+              type="info" :closable="false" show-icon
+              title="筛选规则"
+              description="先按硬筛通过的候选人(四项齐全 + 学历 + 院校等级)，再按能力模型 5 维(技能/经验/职级/教育/行业)加权打分。点击行可展开详情。"
+              style="margin-bottom: 12px;"
+            />
+            <div class="matching-toolbar">
+              <el-button type="primary" plain @click="recomputeFiveDim" :loading="fiveDim.recomputing">
+                {{ fiveDim.items.length ? '再次分析' : '开始分析' }}
+              </el-button>
+              <el-select v-model="fiveDim.tagFilter" placeholder="按标签筛选" clearable @change="loadFiveDim" style="width: 160px;">
+                <el-option label="高匹配" value="高匹配" />
+                <el-option label="中匹配" value="中匹配" />
+                <el-option label="低匹配" value="低匹配" />
+                <el-option label="硬门槛未过" value="硬门槛未过" />
+              </el-select>
+              <span v-if="fiveDim.staleCount > 0" class="stale-warn">
+                ⚠ {{ fiveDim.staleCount }} 份分数基于旧能力模型，建议再次分析
+              </span>
+            </div>
+
+            <el-progress
+              v-if="fiveDim.recomputing"
+              :percentage="fiveDimPercent"
+              :stroke-width="14"
+              :format="fiveDimProgressFormat"
+              style="margin-bottom: 14px"
+            />
+
+            <div v-loading="fiveDim.loading">
+              <el-empty v-if="!fiveDim.items.length && !fiveDim.recomputing" description="尚无评分结果，点击「开始分析」对硬筛通过的候选人打分" />
+
+              <div v-for="item in fiveDim.items" :key="item.id" class="matching-row" :class="{ expanded: fiveDim.expandedId === item.id }">
+                <div class="matching-head">
+                  <div class="m-head-left" @click="toggleFiveDimExpand(item.id)">
+                    <span class="m-arrow">▶</span>
+                    <span class="m-name">{{ item.resume_name }}</span>
+                    <span class="m-score">{{ item.total_score.toFixed(1) }}</span>
+                    <div class="m-tags">
+                      <el-tag v-for="t in item.tags" :key="t" :type="tagType(t)" size="small">{{ t }}</el-tag>
+                      <el-tag v-if="item.stale" type="warning" effect="plain" size="small">⚠ 过时</el-tag>
+                    </div>
+                  </div>
+                </div>
+
+                <transition name="expand">
+                  <div v-if="fiveDim.expandedId === item.id" class="matching-detail">
+                    <div class="dim-bar" v-for="dim in dimensionList(item)" :key="dim.label">
+                      <span class="dim-label">{{ dim.label }} ({{ dim.weight }}%)</span>
+                      <el-progress :percentage="dim.score" :color="dim.color" :stroke-width="16" />
+                    </div>
+
+                    <div v-if="item.hard_gate_passed === false" class="hard-gate-warn">
+                      🛑 硬门槛未过：缺失必须项 {{ item.missing_must_haves.join(', ') }}
+                    </div>
+
+                    <div class="evidence-list">
+                      <h4>证据片段</h4>
+                      <div v-for="(items, dim) in item.evidence" :key="dim">
+                        <div v-for="(e, i) in items" :key="i" class="evidence-item">
+                          <span class="ev-dim">[{{ dim }}]</span>
+                          <span class="ev-text">{{ e.text }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </transition>
+              </div>
+
+              <el-pagination
+                v-if="fiveDim.total > fiveDim.pageSize"
+                v-model:current-page="fiveDim.page"
+                :page-size="fiveDim.pageSize"
+                :total="fiveDim.total"
+                layout="total, prev, pager, next"
+                @current-change="loadFiveDim"
+                style="margin-top: 12px; justify-content: flex-end"
+              />
+            </div>
+          </template>
+        </el-tab-pane>
+        <el-tab-pane label="AI智能筛选" name="ai_smart" v-if="editingJob">
+          <el-empty description="开发中" />
+        </el-tab-pane>
       </el-tabs>
       <template #footer>
         <el-button @click="showCreateDialog = false">取消</el-button>
@@ -635,21 +727,121 @@ async function recomputeMatching() {
   }
 }
 
+// ── 五维能力筛选 Tab ────────────────────────────────────────────────────────
+const fiveDim = ref({
+  loading: false,
+  items: [],
+  total: 0,
+  page: 1,
+  pageSize: 20,
+  tagFilter: '',
+  expandedId: null,
+  recomputing: false,
+  staleCount: 0,
+  pollTimer: null,
+  taskTotal: 0,
+  taskCompleted: 0,
+  taskFailed: 0,
+})
+
+const fiveDimPercent = computed(() => {
+  const t = fiveDim.value.taskTotal
+  if (!t) return 0
+  return Math.min(100, Math.round((fiveDim.value.taskCompleted / t) * 100))
+})
+
+function fiveDimProgressFormat() {
+  const c = fiveDim.value.taskCompleted
+  const t = fiveDim.value.taskTotal
+  return t ? `${c} / ${t}` : '准备中…'
+}
+
+async function loadFiveDim() {
+  if (!editingJob.value) return
+  fiveDim.value.loading = true
+  try {
+    const data = await matchingApi.listByJob(editingJob.value.id, {
+      page: fiveDim.value.page,
+      page_size: fiveDim.value.pageSize,
+      tag: fiveDim.value.tagFilter || undefined,
+    })
+    fiveDim.value.items = data.items
+    fiveDim.value.total = data.total
+    fiveDim.value.staleCount = (data.items || []).filter(i => i.stale).length
+  } catch (e) {
+    ElMessage.error('加载五维评分结果失败')
+  } finally {
+    fiveDim.value.loading = false
+  }
+}
+
+function toggleFiveDimExpand(id) {
+  fiveDim.value.expandedId = fiveDim.value.expandedId === id ? null : id
+}
+
+async function recomputeFiveDim() {
+  if (!editingJob.value) return
+  if (competencyStatus.value !== 'approved') {
+    ElMessage.warning('请先发布能力模型')
+    return
+  }
+  try {
+    fiveDim.value.recomputing = true
+    fiveDim.value.taskCompleted = 0
+    fiveDim.value.taskFailed = 0
+    const { task_id, total } = await matchingApi.recomputeJob(editingJob.value.id)
+    fiveDim.value.taskTotal = total
+    if (!total) {
+      fiveDim.value.recomputing = false
+      ElMessage.warning('当前无候选人通过硬筛，可在「匹配候选人」Tab 检查门槛设置')
+      return
+    }
+    fiveDim.value.pollTimer = setInterval(async () => {
+      try {
+        const s = await matchingApi.recomputeStatus(task_id)
+        fiveDim.value.taskCompleted = s.completed
+        fiveDim.value.taskFailed = s.failed
+        fiveDim.value.taskTotal = s.total
+        if (!s.running) {
+          clearInterval(fiveDim.value.pollTimer)
+          fiveDim.value.pollTimer = null
+          fiveDim.value.recomputing = false
+          ElMessage.success(`分析完成：${s.completed}/${s.total}${s.failed ? `（失败 ${s.failed}）` : ''}`)
+          loadFiveDim()
+        }
+      } catch (_e) {
+        // 单次轮询失败不致命，继续等
+      }
+    }, 2000)
+  } catch (e) {
+    fiveDim.value.recomputing = false
+    ElMessage.error('启动分析失败：' + (e.response?.data?.detail || e.message || '请重试'))
+  }
+}
+
 function jumpToResume(resumeId, source, offset) {
   const [start, end] = offset
   window.open(`/#/resumes/${resumeId}?highlight=${start},${end}&source=${source}`, '_blank')
 }
 
-watch(activeTab, (tab) => {
+watch(activeTab, async (tab) => {
   if (tab === 'matching' && editingJob.value) {
     loadMatching()
     loadJobWeights()
     weightsPanel.value.open = false
   }
+  if (tab === 'five_dim' && editingJob.value && competencyStatus.value === 'approved') {
+    await loadFiveDim()
+    // 列表为空 → 自动启动一次分析（首次进入），有结果时只展示不重算
+    if (!fiveDim.value.items.length && !fiveDim.value.recomputing) {
+      recomputeFiveDim()
+    }
+  }
 })
 
 onUnmounted(() => {
   if (matching.value.pollTimer) clearInterval(matching.value.pollTimer)
+  if (fiveDim.value.pollTimer) clearInterval(fiveDim.value.pollTimer)
 })
 
 onMounted(loadJobs)

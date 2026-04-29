@@ -235,15 +235,35 @@ def _prune_stale_tasks(hours: int = 24) -> None:
         _RECOMPUTE_TASKS.pop(k, None)
 
 
-async def recompute_job(db: Session, job_id: int, task_id: str, user_id: int = 0) -> None:
-    """后台任务：对 job 的所有 ai_parsed='yes' 简历打分."""
+async def recompute_job(
+    db: Session,
+    job_id: int,
+    task_id: str,
+    user_id: int = 0,
+    *,
+    pre_filter_resume_ids: set[int] | None = None,
+) -> None:
+    """后台任务：对 job 的所有 ai_parsed='yes' 简历打分.
+
+    pre_filter_resume_ids: 仅对集合内 Resume.id 打分（用于 "硬筛 → F2" 串联）。
+                           None = 旧行为（全量 ai_parsed=yes）。空集合 = 跳过全部。
+    """
     task = _RECOMPUTE_TASKS[task_id]
     try:
-        resume_ids = [r.id for r in db.query(Resume).filter(
+        q = db.query(Resume).filter(
             Resume.ai_parsed == "yes",
             Resume.user_id == user_id,
-        ).all()]
-        # total is pre-set by the endpoint via _new_task; only update if not yet set
+        )
+        if pre_filter_resume_ids is not None:
+            if not pre_filter_resume_ids:
+                resume_ids = []
+            else:
+                q = q.filter(Resume.id.in_(pre_filter_resume_ids))
+                resume_ids = [r.id for r in q.all()]
+        else:
+            resume_ids = [r.id for r in q.all()]
+        # endpoint 通常已显式设好 total (硬筛通过数), 后台仅在未设时回填,
+        # 避免后台 session 看不到主测试 session 的数据导致 total 被错误覆盖。
         if not task["total"]:
             task["total"] = len(resume_ids)
         service = MatchingService(db)
@@ -258,8 +278,18 @@ async def recompute_job(db: Session, job_id: int, task_id: str, user_id: int = 0
     finally:
         task["running"] = False
         task["current"] = ""
-        log_event(db, "recompute_job_done", "matching", job_id,
-                  extra={"task_id": task_id, "completed": task["completed"], "failed": task["failed"]})
+        try:
+            log_event(
+                f_stage="F2", action="recompute_job_done",
+                entity_type="matching", entity_id=job_id,
+                output_payload={
+                    "task_id": task_id,
+                    "completed": task["completed"],
+                    "failed": task["failed"],
+                },
+            )
+        except Exception as e:
+            logger.warning(f"audit log failed (non-fatal): {e}")
 
 
 async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
@@ -285,16 +315,35 @@ async def recompute_resume(db: Session, resume_id: int, task_id: str) -> None:
     finally:
         task["running"] = False
         task["current"] = ""
-        log_event(db, "recompute_resume_done", "matching", resume_id,
-                  extra={"task_id": task_id, "completed": task["completed"], "failed": task["failed"]})
+        try:
+            log_event(
+                f_stage="F2", action="recompute_resume_done",
+                entity_type="matching", entity_id=resume_id,
+                output_payload={
+                    "task_id": task_id,
+                    "completed": task["completed"],
+                    "failed": task["failed"],
+                },
+            )
+        except Exception as e:
+            logger.warning(f"audit log failed (non-fatal): {e}")
 
 
-async def recompute_job_with_fresh_session(job_id: int, task_id: str, user_id: int = 0) -> None:
+async def recompute_job_with_fresh_session(
+    job_id: int,
+    task_id: str,
+    user_id: int = 0,
+    *,
+    pre_filter_resume_ids: set[int] | None = None,
+) -> None:
     """Wrapper for recompute_job that opens its own DB session so it outlives the HTTP response."""
     from app.database import SessionLocal
     db = SessionLocal()
     try:
-        await recompute_job(db, job_id, task_id, user_id=user_id)
+        await recompute_job(
+            db, job_id, task_id, user_id=user_id,
+            pre_filter_resume_ids=pre_filter_resume_ids,
+        )
     finally:
         db.close()
 

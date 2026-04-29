@@ -103,3 +103,76 @@ async def test_score_pair_hard_gate_missing(db_session):
 async def test_score_pair_raises_on_missing_resume(db_session):
     with pytest.raises(ValueError, match="resume"):
         await MatchingService(db_session).score_pair(99999, 1)
+
+
+@pytest.mark.asyncio
+async def test_recompute_job_pre_filter_limits_targets(db_session):
+    """recompute_job 接受 pre_filter_resume_ids 时, 仅对集合内简历打分."""
+    from app.modules.matching.service import recompute_job, _new_task, _RECOMPUTE_TASKS
+
+    cm = {"hard_skills": [], "experience": {"years_min": 0},
+          "education": {}, "job_level": "中级"}
+    job = _seed_job_with_competency(db_session, cm, user_id=1)
+
+    r1 = _seed_resume(db_session, name="A", user_id=1)
+    r2 = _seed_resume(db_session, name="B", user_id=1)
+    r3 = _seed_resume(db_session, name="C", user_id=1)
+
+    task_id = _new_task(0)
+    with patch("app.modules.matching.service.enhance_evidence_with_llm",
+               new=AsyncMock(side_effect=lambda ev, *a, **kw: ev)):
+        await recompute_job(
+            db_session, job.id, task_id, user_id=1,
+            pre_filter_resume_ids={r1.id, r3.id},
+        )
+
+    rows = db_session.query(MatchingResult).filter_by(job_id=job.id).all()
+    scored_ids = {r.resume_id for r in rows}
+    assert scored_ids == {r1.id, r3.id}
+    assert _RECOMPUTE_TASKS[task_id]["completed"] == 2
+    assert _RECOMPUTE_TASKS[task_id]["total"] == 2
+
+
+@pytest.mark.asyncio
+async def test_recompute_job_pre_filter_empty_skips_all(db_session):
+    """pre_filter_resume_ids=空集合 → 完全跳过, 不打任何分."""
+    from app.modules.matching.service import recompute_job, _new_task, _RECOMPUTE_TASKS
+
+    cm = {"hard_skills": [], "experience": {"years_min": 0},
+          "education": {}, "job_level": "中级"}
+    job = _seed_job_with_competency(db_session, cm, user_id=1)
+    _seed_resume(db_session, name="A", user_id=1)
+
+    task_id = _new_task(0)
+    with patch("app.modules.matching.service.enhance_evidence_with_llm",
+               new=AsyncMock(side_effect=lambda ev, *a, **kw: ev)):
+        await recompute_job(
+            db_session, job.id, task_id, user_id=1,
+            pre_filter_resume_ids=set(),
+        )
+
+    assert db_session.query(MatchingResult).filter_by(job_id=job.id).count() == 0
+    assert _RECOMPUTE_TASKS[task_id]["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_recompute_job_pre_filter_none_keeps_legacy(db_session):
+    """pre_filter_resume_ids=None → 旧行为 (全 ai_parsed=yes 简历打分)."""
+    from app.modules.matching.service import recompute_job, _new_task, _RECOMPUTE_TASKS
+
+    cm = {"hard_skills": [], "experience": {"years_min": 0},
+          "education": {}, "job_level": "中级"}
+    job = _seed_job_with_competency(db_session, cm, user_id=1)
+    r1 = _seed_resume(db_session, name="A", user_id=1)
+    r2 = _seed_resume(db_session, name="B", user_id=1)
+
+    task_id = _new_task(0)
+    with patch("app.modules.matching.service.enhance_evidence_with_llm",
+               new=AsyncMock(side_effect=lambda ev, *a, **kw: ev)):
+        await recompute_job(
+            db_session, job.id, task_id, user_id=1,
+            pre_filter_resume_ids=None,
+        )
+
+    rows = db_session.query(MatchingResult).filter_by(job_id=job.id).all()
+    assert {r.resume_id for r in rows} == {r1.id, r2.id}

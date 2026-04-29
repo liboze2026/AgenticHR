@@ -60,6 +60,29 @@ def _normalize_resume_id(db: Session, input_id: int, user_id: int) -> int | None
     return None
 
 
+def _hard_filter_resume_ids(db: Session, user_id: int, job_id: int) -> set[int]:
+    """硬筛通过的 candidate → 翻译为 Resume.id 集合 (按需 promote).
+    用于 "五维能力筛选" 通道：仅对硬筛通过的人跑 F2 评分。
+    翻译失败的 candidate (promote 抛异常) 静默跳过, 不阻塞批量。
+    """
+    from app.modules.resume.intake_view_service import (
+        _complete_query, list_matched_for_job,
+    )
+    # 复用 list_matched_for_job 的过滤规则 (四齐全 + 学历 + 院校等级)
+    matched_dicts = list_matched_for_job(db, user_id=user_id, job_id=job_id)
+    cand_ids = [d["id"] for d in matched_dicts]
+    resume_ids: set[int] = set()
+    for cid in cand_ids:
+        try:
+            rid = _normalize_resume_id(db, cid, user_id)
+            if rid is not None:
+                resume_ids.add(rid)
+        except _NormalizeError:
+            # promote 失败 → 跳过, 这条候选人本轮不参与 F2 评分
+            continue
+    return resume_ids
+
+
 def _resolve_or_404(db: Session, input_id: int, user_id: int) -> int:
     """统一鉴权 + 翻译。BUG-056 修复：他人资源与不存在均返 404。"""
     try:
@@ -244,9 +267,16 @@ async def post_recompute(
         job = db.query(Job).filter_by(id=req.job_id).first()
         if not job or job.user_id != user_id:
             raise HTTPException(status_code=404, detail="岗位不存在")
-        total = db.query(Resume).filter(Resume.ai_parsed == "yes", Resume.user_id == user_id).count()
+        # 硬筛串联 (五维能力筛选通道): 用 list_matched_for_job 的 candidate ID 集合
+        # 翻译成 Resume.id, 仅对硬筛通过的人跑 F2, 避免给被硬筛拒掉的人浪费 LLM token.
+        pre_filter_resume_ids = _hard_filter_resume_ids(db, user_id, req.job_id)
+        total = len(pre_filter_resume_ids)
         task_id = _new_task(total)
-        background.add_task(recompute_job_with_fresh_session, req.job_id, task_id, user_id)
+        background.add_task(
+            recompute_job_with_fresh_session,
+            req.job_id, task_id, user_id,
+            pre_filter_resume_ids=pre_filter_resume_ids,
+        )
         return {"task_id": task_id, "total": total}
 
     real_resume_id = _resolve_or_404(db, req.resume_id, user_id)
