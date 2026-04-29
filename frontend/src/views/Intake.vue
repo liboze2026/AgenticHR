@@ -128,6 +128,14 @@
             <el-button
               v-if="!['complete', 'abandoned'].includes(row.intake_status)"
               size="small"
+              type="warning"
+              link
+              :loading="row._reextracting"
+              @click="doReextract(row)"
+            >重抽</el-button>
+            <el-button
+              v-if="!['complete', 'abandoned'].includes(row.intake_status)"
+              size="small"
               type="success"
               link
               @click="doForceComplete(row)"
@@ -174,6 +182,7 @@ import {
   forceComplete,
   deleteCandidate,
   startConversation,
+  reextract,
   getDailyCap,
 } from '../api/intake'
 import { getIntakeSettings, updateIntakeSettings } from '../api/intakeSettings'
@@ -420,6 +429,32 @@ async function doForceComplete(row) {
     loadCandidates()
   } catch (e) {
     ElMessage.error('操作失败')
+  }
+}
+
+async function doReextract(row) {
+  if (row._reextracting) return
+  row._reextracting = true
+  try {
+    const r = await reextract(row.resume_id)
+    if (r.skipped === 'no_messages') {
+      ElMessage.warning('无聊天记录可抽')
+    } else if (r.skipped === 'all_hard_filled') {
+      ElMessage.info('四项已齐，无需重抽')
+    } else if (r.filled && r.filled.length) {
+      ElMessage.success(`重抽成功: ${r.filled.join(', ')}`)
+      loadCandidates()
+    } else {
+      ElMessage.info('LLM 未抽到新值（候选人可能未明确回答）')
+    }
+  } catch (e) {
+    if (e.response && e.response.status === 503) {
+      ElMessage.error('LLM 未配置')
+    } else {
+      ElMessage.error('重抽失败')
+    }
+  } finally {
+    row._reextracting = false
   }
 }
 

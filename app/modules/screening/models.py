@@ -13,6 +13,7 @@ class Job(Base):
     title = Column(String(200), nullable=False, index=True)
     department = Column(String(100), default="")
     education_min = Column(String(50), default="")
+    school_tier_min = Column(String(20), default="", nullable=False)
     work_years_min = Column(Integer, default=0)
     work_years_max = Column(Integer, default=99)
     salary_min = Column(Float, default=0)

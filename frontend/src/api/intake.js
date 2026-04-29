@@ -10,6 +10,7 @@ export const intakeApi = {
   forceComplete: (id) => api.post(`/intake/candidates/${id}/force-complete`),
   startConversation: (id) => api.post(`/intake/candidates/${id}/start-conversation`),
   deleteCandidate: (id) => api.delete(`/intake/candidates/${id}`),
+  reextract: (id) => api.post(`/intake/candidates/${id}/reextract`),
   getDailyCap: () => api.get('/intake/daily-cap'),
 }
 
@@ -21,6 +22,7 @@ export const abandonCandidate = intakeApi.abandonCandidate
 export const forceComplete = intakeApi.forceComplete
 export const startConversation = intakeApi.startConversation
 export const deleteCandidate = intakeApi.deleteCandidate
+export const reextract = intakeApi.reextract
 export const getDailyCap = intakeApi.getDailyCap
 
 export default intakeApi

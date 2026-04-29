@@ -46,10 +46,10 @@ def _mk_job(session, **kw):
     return j
 
 
-def test_results_nonexistent_job_returns_403(client):
-    """/results?job_id=999999 → 403，不能访问不属于自己或不存在的岗位."""
+def test_results_nonexistent_job_returns_404(client):
+    """/results?job_id=999999 → 404；他人资源与不存在均返 404，不暴露存在性（BUG-056）."""
     resp = client.get("/api/matching/results?job_id=999999")
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 def test_results_no_filter_returns_400(client, db_session):
@@ -104,11 +104,11 @@ def test_results_page_zero_returns_422(client, db_session):
     assert resp.status_code == 422
 
 
-def test_score_missing_resume_returns_403(client, db_session):
-    """/score 简历 ID 不存在 → 403（不泄露存在性）."""
+def test_score_missing_resume_returns_404(client, db_session):
+    """/score 简历 ID 不存在 → 404（统一不暴露存在性，BUG-056）."""
     job = _mk_job(db_session)
     resp = client.post("/api/matching/score", json={"resume_id": 999999, "job_id": job.id})
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 def test_score_job_no_competency_returns_404(client, db_session):

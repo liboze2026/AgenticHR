@@ -5,7 +5,7 @@
       :closable="false"
       show-icon
       title="简历库语义"
-      description="本列表仅显示已完成信息采集（intake_status = complete）的候选人。正在采集中的候选人请到 /intake 查看。"
+      description="本列表显示四项信息齐全（到岗时间、空闲时段、实习时长、PDF 简历）的候选人。正在采集中的候选人请到 /intake 查看。"
       style="margin-bottom: 12px;"
     />
     <!-- 顶部工具栏 -->
@@ -312,7 +312,6 @@ async function loadResumes() {
       page_size: pageSize,
       keyword: keyword.value || undefined,
       status: statusFilter.value || undefined,
-      intake_status: 'complete',
     })
     resumes.value = data.items
     total.value = data.total
@@ -475,7 +474,6 @@ function pollAiParseStatus() {
       const data = await resumeApi.list({
         page: page.value, page_size: pageSize,
         keyword: keyword.value || undefined, status: statusFilter.value || undefined,
-        intake_status: 'complete',
       })
       resumes.value = data.items
       total.value = data.total

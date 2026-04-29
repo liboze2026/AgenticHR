@@ -1801,6 +1801,807 @@
 - **发现时间**: 2026-04-27T11:45Z
 
 ---
+## BUG-056: `_resolve_resume_target` 不按 user_id 过滤 — 跨用户存在性探测
+
+- **严重级别**: Medium
+- **错误类型**: Security / Information Disclosure
+
+- **复现步骤**:
+  1. 用户 A 登录，调 `GET /api/resumes/{id}`，id 是用户 B 拥有的 IntakeCandidate.id
+  2. 系统返回 403「无权访问该简历」（携带"简历不存在"分支同等行为）
+  3. 用户 A 调同一端点，id 是不存在的整数
+  4. 系统返回 404「简历不存在」
+
+- **精确输入值**:
+  ```
+  GET /api/resumes/123  # 123 属于 user_id=2
+  Authorization: Bearer <token of user_id=1>
+  ```
+
+- **期望行为**: 一律返回 404，不区分"存在但他人拥有"与"不存在"。
+
+- **实际行为**: 403 vs 404 区分泄露资源是否存在，可枚举其他用户简历库 ID 范围。
+
+- **代码位置**: `app/modules/resume/router.py:508-515` `_resolve_resume_target` 全表查询不带 user_id；`get_resume`/PATCH/DELETE/ai-parse 都先 resolve 再判 user_id
+
+- **触发的代码路径**: GET `/api/resumes/{id}` → `_resolve_resume_target(service, id)` → `db.query(IntakeCandidate).filter(id==target_id)` → 不限 user_id
+
+- **攻击向量**: 越权 / 信息泄露
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-057: candidate-入口 PATCH 未 promote 时 `status` 静默丢失
+
+- **严重级别**: High
+- **错误类型**: Logic / Data
+
+- **复现步骤**:
+  1. 创建 IntakeCandidate（四项齐全但 promoted_resume_id 为 NULL — 例如老数据从未被 promote）
+  2. 前端打开 /resumes 页，点击该候选人「淘汰」
+  3. 前端发 `PATCH /api/resumes/{candidate.id}` body=`{"status":"rejected"}`
+  4. 后端返回 200 OK
+  5. 重新加载列表，候选人仍显示「已通过」
+
+- **精确输入值**:
+  ```json
+  {"status":"rejected"}
+  ```
+
+- **期望行为**: 后端拒绝（候选人无 promoted Resume，无法承载 status），或自动 promote 后再写。
+
+- **实际行为**: 200 OK 但 status 不持久化（`_RESUME_ONLY_FIELDS` 在 candidate 入口跳过；同步块仅在 promoted_resume_id 非 NULL 时才执行）。
+
+- **代码位置**: `app/modules/resume/router.py:300-314` PATCH update_resume 同步块条件 `if is_candidate and target.promoted_resume_id`
+
+- **触发的代码路径**: PATCH /resumes/{id} → resolve 命中 candidate → status 在 _RESUME_ONLY_FIELDS 中被 continue → 同步块条件不满足 → commit 后无任何变化
+
+- **攻击向量**: 缺失值 / 状态机
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-058: PATCH/DELETE 同步到 promoted Resume 不验证归属 — 跨用户写
+
+- **严重级别**: Critical
+- **错误类型**: Security / Privilege Escalation
+
+- **复现步骤**:
+  1. DBA/迁移 bug 把 candidate.promoted_resume_id 设为属另一用户的 Resume.id（数据腐化或恶意篡改）
+  2. 当前用户调 PATCH 自己的 candidate 行
+  3. 同步块 `r = service.db.query(_R).filter_by(id=target.promoted_resume_id).first()` 不带 user_id
+  4. 当前用户的字段值写入他人 Resume
+
+- **精确输入值**:
+  ```sql
+  -- 前置数据腐化
+  UPDATE intake_candidates SET promoted_resume_id=42 WHERE id=10;  -- Resume 42 owned by user_id=2
+  -- 攻击
+  PATCH /api/resumes/10 (user_id=1) body={"name":"已被改","status":"rejected"}
+  ```
+
+- **期望行为**: 同步前校验 r.user_id == user_id，不一致跳过或抛错。
+
+- **实际行为**: 任意写入。DELETE 路径同样问题：`service.delete(target.promoted_resume_id)` 不验归属。
+
+- **代码位置**:
+  - PATCH: `app/modules/resume/router.py:308-314`
+  - DELETE: `app/modules/resume/router.py:340-341`
+
+- **触发的代码路径**: PATCH/DELETE /resumes/{candidate_id} → 跟随 candidate.promoted_resume_id → 直接写/删 Resume 行不验 user
+
+- **攻击向量**: 数据腐化 + 越权
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-059: ai-parse 自动 promote 失败被静默吞，候选人显示 ai_parsed=yes 但无 Resume
+
+- **严重级别**: High
+- **错误类型**: Logic / Silent Failure
+
+- **复现步骤**:
+  1. 候选人 promoted_resume_id 为 NULL；候选人 boss_id="" 但同 user_id 已有空 boss_id Resume（merge_by_boss_id 撞车场景）
+  2. 调 ai-parse → AI 返回有效 dict
+  3. `_apply_parsed_fields(target, parsed)` 设 candidate.ai_parsed="yes"
+  4. promote_to_resume 抛出（user_id<=0 或其他）→ 被 except 捕获 + 仅 warning log
+  5. score_resume_id = None → F2 T1 trigger 不触发
+  6. commit 后 candidate.ai_parsed="yes" 但无 Resume；后续 matching/recompute_job 找不到该 Resume，永远不评分
+
+- **精确输入值**:
+  ```
+  POST /api/resumes/{candidate_id}/ai-parse
+  ```
+
+- **期望行为**: promote 失败应回滚 candidate.ai_parsed，或返回 5xx 让用户重试。
+
+- **实际行为**: 200 OK 假成功；用户看不到错误；matching 永远跳过该候选人。
+
+- **代码位置**: `app/modules/resume/router.py:469-503`
+
+- **触发的代码路径**: ai-parse → _apply_parsed_fields(candidate) → promote_to_resume 抛 → except 吞 → service.db.commit() → return 200
+
+- **攻击向量**: 错误处理 / 静默降级
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-060: `_apply_parsed_fields` seniority 不走 `_s()` — dict/list 触发 AttributeError
+
+- **严重级别**: High
+- **错误类型**: Crash
+
+- **复现步骤**:
+  1. 调 ai-parse；让 AI 返回 `{"seniority": {"level": "中级"}}`（结构化对象）或 list
+  2. `_apply_parsed_fields` 末行 `target.seniority = (parsed.get("seniority") or "").strip() or ""`
+  3. dict 无 `.strip()` → AttributeError → 500
+
+- **精确输入值**: AI mock 返回 `{"seniority": {"value": "高级"}}`
+
+- **期望行为**: 与其他字段一致用 `_s()` helper：`target.seniority = _s(parsed.get("seniority")).strip()`。
+
+- **实际行为**:
+  ```
+  AttributeError: 'dict' object has no attribute 'strip'
+  ```
+
+- **代码位置**: `app/modules/resume/router.py:412`
+
+- **触发的代码路径**: ai-parse → _apply_parsed_fields → seniority 行
+
+- **攻击向量**: 类型混用 / 边界值
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-061: ai-parse Resume 入口失败时 ai_parsed 不标 failed
+
+- **严重级别**: Medium
+- **错误类型**: Logic
+
+- **复现步骤**:
+  1. 用 legacy Resume.id 调 ai-parse；AI 返回空 dict
+  2. 后端 `if not parsed:` 分支只对 `is_candidate` 设 ai_parsed="failed"
+  3. Resume 行 ai_parsed 仍为 "no"
+  4. 前端依据 ai_parsed=='failed' 显示「内容解析失败」红条 → 不显示 → 用户不知道失败
+
+- **精确输入值**:
+  ```
+  POST /api/resumes/{resume_id}/ai-parse  # resume_id 命中 Resume 表
+  ```
+
+- **期望行为**: 双侧一致，Resume 入口也设 failed。
+
+- **实际行为**: candidate / Resume 两入口失败状态写入不一致。
+
+- **代码位置**: `app/modules/resume/router.py:459-463`
+
+- **攻击向量**: 一致性 / 错误路径
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-062: clear_all_resumes 只清 Resume 表，IntakeCandidate + IntakeSlot 残留
+
+- **严重级别**: High
+- **错误类型**: Logic / Data
+
+- **复现步骤**:
+  1. /resumes 页点「清空全部」并输入「确认清空」
+  2. 后端 `clear_all_resumes` 删 Resume + Interview + Notification + matching_results + PDF 文件
+  3. 但 `IntakeCandidate` / `IntakeSlot` / `intake_outbox` 行未清
+  4. 刷新 /resumes 页 → 列表回填全部候选人（intake_view_service 直接读 candidate 表）→ 用户以为清空失败
+
+- **精确输入值**: `DELETE /api/resumes/clear-all`
+
+- **期望行为**: 同步清候选人 + slots + outbox + audit；或文档说明二者解耦。
+
+- **实际行为**: 用户视角"清空"无效；磁盘上 PDF 文件被删但 DB 候选人仍指向旧路径 → /pdf 端点 404 大面积。
+
+- **代码位置**: `app/modules/resume/router.py:30-73`
+
+- **攻击向量**: 状态机 / 危险操作语义不全
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-063: DELETE candidate 入口不清 intake_outbox / audit / scheduling Interview
+
+- **严重级别**: High
+- **错误类型**: Logic / Data Integrity
+
+- **复现步骤**:
+  1. 候选人 X 已有 promoted Resume，并已安排 Interview，且 intake_outbox 有待处理行
+  2. 用户点删除候选人
+  3. 后端 `delete_resume` candidate 入口：
+     - `service.delete(promoted_resume_id)` 删 Resume + matching_results
+     - 删 IntakeSlot
+     - 删 IntakeCandidate
+  4. 漏删：Interview（FK 到 Resume，已被 ondelete=? 处理或留孤儿？需查 schema），NotificationLog，intake_outbox（candidate_id FK 但行为？），audit_events
+
+- **精确输入值**: `DELETE /api/resumes/{candidate_id}`
+
+- **期望行为**: 与 Resume 入口对称（Resume 入口 service.delete 走 _resolve 也未清 outbox/audit）。两者都需要级联或文档化。
+
+- **实际行为**:
+  - intake_outbox 留行 → 后续 outbox 处理器试图用已删 candidate.id 推断 → 异常
+  - Interview 状态依 ondelete 配置；若 SET NULL 则 resume_id=NULL 后续通知 lookup 失败显示"候选人#0"
+
+- **代码位置**: `app/modules/resume/router.py:338-353`；对照模型 `app/modules/im_intake/outbox_model.py`
+
+- **攻击向量**: 状态机 / 级联缺失
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-064: ai-parse 并发同一 candidate — 双写 Resume 行
+
+- **严重级别**: Medium
+- **错误类型**: Concurrency
+
+- **复现步骤**:
+  1. 候选人 X 无 promoted_resume_id（首次解析）
+  2. 同时发两个 `POST /api/resumes/{X}/ai-parse` 请求
+  3. 两路并发：
+     - A 读 candidate.promoted_resume_id=None
+     - B 读 candidate.promoted_resume_id=None
+     - A promote_to_resume → 创建 Resume R1，flush
+     - B promote_to_resume → 检查 boss_id 重复（merge_by_boss_id 触发？仅当 boss_id 非空）；若 candidate.boss_id="" 则不 merge → 创建 R2
+     - A commit → 设 candidate.promoted_resume_id=R1
+     - B commit → 覆盖为 R2，R1 孤儿
+
+- **精确输入值**: 并发 POST 同一 candidate id
+
+- **期望行为**: 加分布式锁 / 选用 INSERT...ON CONFLICT 保证幂等。
+
+- **实际行为**: 偶发 R1 孤儿存在 DB，无 candidate 引用，ai_parsed=yes 但不再被任何流程访问。
+
+- **代码位置**: `app/modules/im_intake/promote.py:25-87`；`app/modules/resume/router.py:469-484`
+
+- **攻击向量**: 并发
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-065: scheduling create_interview 翻译失败暴露异常文本到客户端
+
+- **严重级别**: Low
+- **错误类型**: Information Disclosure
+
+- **复现步骤**:
+  1. candidate 数据腐化（boss_id 包含特殊字符导致 promote 抛 SQL 异常）
+  2. POST /api/scheduling/interviews body={resume_id: candidate.id, ...}
+  3. except `raise HTTPException(500, f"无法 promote 候选人到简历：{_e}")`
+  4. 异常文本含 SQL 错误 / 文件路径 / 表结构信息
+
+- **精确输入值**: 任何能让 promote_to_resume 抛 IntegrityError 的 candidate
+
+- **期望行为**: 通用 500 文案；异常细节仅写日志。
+
+- **实际行为**: 客户端拿到 SQL/Python 内部错误。
+
+- **代码位置**: `app/modules/scheduling/router.py:355-356`
+
+- **攻击向量**: 错误处理 / 信息泄露
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-066: scheduling create_interview 翻译失败已 commit 部分状态
+
+- **严重级别**: High
+- **错误类型**: Logic / Atomicity
+
+- **复现步骤**:
+  1. POST /api/scheduling/interviews body={resume_id: candidate.id, ...}
+  2. promote_to_resume 内部 db.flush + 后续 db.commit() 在 router 显式调用
+  3. promote_to_resume 创建/合并 Resume 并 commit
+  4. 后续 service.create_interview 报 409 或 500
+  5. Resume 已永久创建；candidate.promoted_resume_id 已设
+  6. 用户看到 409 错误，但下次请求会发现 candidate 已 promote — 与"取消面试创建"语义矛盾
+
+- **精确输入值**: 安排面试时间冲突
+  ```json
+  {"resume_id": <candidate_id>, "interviewer_id": <iv>, "start_time": "<conflicting>", "end_time": "<conflicting>"}
+  ```
+
+- **期望行为**: 翻译延后到与 Interview 创建同一事务，或 promote 失败时回滚 Resume 创建。
+
+- **实际行为**: 副作用泄露，用户多次试错会留多份 promote 状态变更。
+
+- **代码位置**: `app/modules/scheduling/router.py:343-358`
+
+- **攻击向量**: 事务 / 状态机
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-067: PATCH update_resume 接受 status="任意字符串" — 数据污染
+
+- **严重级别**: Medium
+- **错误类型**: Validation
+
+- **复现步骤**:
+  1. PATCH /api/resumes/{id} body=`{"status":"foobar123"}`
+  2. ResumeUpdate.status 仅声明 `str | None`，无 enum 校验
+  3. 写入 Resume.status="foobar123"
+  4. 列表过滤 `status=passed` 不显示该行；前端 if/else 渲染 fallback 显示「已通过」
+  5. matching live_resume_ids 过滤 `Resume.status != "rejected"` → 通过 → 矛盾状态
+
+- **精确输入值**: `{"status":"💀hacked💀"}`
+
+- **期望行为**: 仅允许 pending / passed / rejected。
+
+- **实际行为**: 无校验。
+
+- **代码位置**: `app/modules/resume/schemas.py:73`
+
+- **攻击向量**: 注入 / 边界值
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-068: `_target_to_response_dict` 永远返回 status="passed" for IntakeCandidate
+
+- **严重级别**: Medium
+- **错误类型**: Logic / UX
+
+- **复现步骤**:
+  1. 候选人状态 intake_status="abandoned" 但仍四项齐全
+  2. 列表/详情返回 `status: "passed"`（hard-coded in candidate_to_resume_dict）
+  3. 前端 UI 渲染「已通过」绿色 tag
+  4. 实际候选人已 abandoned，不该显示
+
+- **精确输入值**: GET /api/resumes/?keyword=<abandoned candidate>
+
+- **期望行为**: 把 intake_status 转为对应业务 status，或不展示已 abandoned/timed_out 候选人。
+
+- **实际行为**: 全部显示「已通过」。
+
+- **代码位置**: `app/modules/resume/intake_view_service.py:71`
+
+- **攻击向量**: UX / 状态映射
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-069: PATCH 接受 name="" 清空候选人姓名（绕过 min_length）
+
+- **严重级别**: Low
+- **错误类型**: Validation
+
+- **复现步骤**:
+  1. PATCH /api/resumes/{id} body=`{"name":""}`
+  2. ResumeUpdate.name `str | None = Field(None, max_length=100)` — 无 min_length
+  3. 设 candidate.name=""
+  4. UI 显示「(未填写)」，所有下游报告/通知用空字符串
+
+- **精确输入值**: `{"name":""}`
+
+- **期望行为**: min_length=1 校验。
+
+- **实际行为**: 接受。
+
+- **代码位置**: `app/modules/resume/schemas.py:46`
+
+- **攻击向量**: 缺失值
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-070: ResumeUpdate 不接受 expected_salary_min/max — 字段静默丢弃
+
+- **严重级别**: Medium
+- **错误类型**: Logic / Schema (silent failure)
+
+- **复现步骤**:
+  1. UI 想要编辑 candidate 的期望薪资
+  2. 调 PATCH /api/resumes/{id} body=`{"expected_salary_min":30000}`
+  3. ResumeUpdate 无 expected_salary_min/max 字段；Pydantic v2 默认 extra="ignore" → 字段被静默丢弃
+  4. 后端返回 200 OK，但 expected_salary_min 未变更
+  5. 用户以为保存成功，实际未生效
+
+- **精确输入值**: `{"expected_salary_min":30000}`
+
+- **期望行为**: 与 ResumeCreate 一致暴露字段；或 model_config={"extra":"forbid"} 明确拒绝。
+
+- **实际行为**: 200 OK 但字段不更新（已实测确认 expected_salary_min 不在 model_dump 输出中）。
+
+- **代码位置**: `app/modules/resume/schemas.py:44-74`
+
+- **攻击向量**: 缺失字段
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-071: matching list_results 过滤孤儿用 `Resume.status != "rejected"` — 漏过 candidate-only 行
+
+- **严重级别**: Medium
+- **错误类型**: Logic / Data
+
+- **复现步骤**:
+  1. ai-parse on candidate 因 promote 失败导致 Resume 不存在但 candidate.ai_parsed="yes"
+  2. matching_results 表里有该 candidate 对应的旧 Resume 行（已被 service.delete 删掉但 matching 行因为 manual delete 漏）
+  3. GET /api/matching/results?resume_id=<candidate_id>
+  4. 翻译为 promoted_resume_id（可能 NULL → 失败 or 撞库）
+
+- **精确输入值**: 状态机已被破坏的 candidate
+
+- **期望行为**: 联合过滤 IntakeCandidate.intake_status not in ("abandoned","timed_out")。
+
+- **实际行为**: 过滤逻辑只看 Resume → 不一致。
+
+- **代码位置**: `app/modules/matching/router.py:79-93`
+
+- **攻击向量**: 状态机不一致
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-072: `_normalize_resume_id` 在用 promote 失败时返回 None — 调用方 403 而非 500
+
+- **严重级别**: Low
+- **错误类型**: UX / Error Code
+
+- **复现步骤**:
+  1. candidate 没 promote，promote_to_resume 抛异常（如 user_id<=0 — 实际不会发生但有理论路径）
+  2. except 吞 + return None
+  3. 调用方（matching score / list / recompute）抛 403「无权访问该简历」
+
+- **精确输入值**: 任意触发 promote_to_resume 抛异常
+
+- **期望行为**: 5xx 表示服务端错误，403 是权限错而非系统错。
+
+- **实际行为**: 误导用户认为没权限，但其实是后端故障。
+
+- **代码位置**: `app/modules/matching/router.py:35-66`
+
+- **攻击向量**: 错误处理
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-073: ResumeUpdate.phone 验证函数对 None 返 None，PATCH 传 null 清空字段被允许
+
+- **严重级别**: Low
+- **错误类型**: Validation
+
+- **复现步骤**:
+  1. PATCH /api/resumes/{id} body=`{"phone":null}`
+  2. exclude_none=True 过滤 → 不进 update_data → 不更新（OK）
+  3. 但 PATCH body=`{"phone":""}` → "" 不是 None → 进 update_data → setattr → phone=""
+  4. validator `if v` 对 "" 为假 → 跳过校验直接通过
+
+- **精确输入值**: `{"phone":""}`
+
+- **期望行为**: 显式 phone="" 应清空且不报错（业务意图），但应明确允许而非偶然行为。
+
+- **实际行为**: 现在的"允许"是 validator 的 `if v` 副产物，不是业务设计。
+
+- **代码位置**: `app/modules/resume/schemas.py:50-55`
+
+- **攻击向量**: 边界值 / 输入控制
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-074: ai-parse 视觉路径 raw_text 仅同步到 promoted Resume，candidate raw_text 已先被覆盖
+
+- **严重级别**: Low
+- **错误类型**: Logic / Data Loss
+
+- **复现步骤**:
+  1. ai-parse on candidate；use_vision=True；parsed 有 name/skills/work_experience
+  2. line 455: `target.raw_text = f"[AI视觉解析] 姓名:... 技能:... 经历:..."` 覆盖 candidate.raw_text 原文
+  3. 同步到 promoted Resume 时 line 481-482 拷贝 raw_text → 同样覆盖
+  4. candidate 原始 chat-derived raw_text（详细对话内容）被丢失，无法回查
+
+- **期望行为**: raw_text 累加或保留原文 + 解析摘要，或单独字段存 vision summary。
+
+- **实际行为**: 原文永久丢失。
+
+- **代码位置**: `app/modules/resume/router.py:454-455`
+
+- **攻击向量**: 数据完整性
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-075: get_resume_pdf 通过 candidate.pdf_path 读文件，未限制 storage_root 校验绕过
+
+- **严重级别**: High
+- **错误类型**: Security / Path Traversal (回归)
+
+- **复现步骤**:
+  1. 攻击者通过 collect-chat 灌入 pdf_url=`<storage_root>/../<other_user_pdf>.pdf`（A2 校验返回 True 因为 startswith 比较前必须 resolve）
+  2. 等候 promote_to_resume 拷贝到 Resume.pdf_path
+  3. /api/resumes/{candidate_id}/pdf 现走 _resolve_resume_target 命中 candidate
+  4. router 检查 `str(pdf_file).startswith(str(storage_root))` 通过（path 已 resolve）
+  5. 文件存在 → 返回任意路径文件
+
+  注意：本 BUG-038 在原始 chaos 报告标"已修复"。但目前 get_resume_pdf 同 BUG-038 风险路径仍存在，且 candidate 入口绕过 user_id ownership 校验只看 user_id 字段，pdf_path 是 candidate 自身字段无法被他人塞入 — 重新评估为同源历史 bug 但通过 collect-chat 注入。需联合 BUG-044 评估。
+
+- **代码位置**: `app/modules/resume/router.py:463-490`
+
+- **攻击向量**: 路径穿越（多端联动）
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-076: 前端 Interviews.vue resumeMap 用 candidate.id 索引，interview.resume_id 是 Resume.id — 候选人卡片显示 "候选人#X"
+
+- **严重级别**: Low
+- **错误类型**: UX
+
+- **复现步骤**:
+  1. /resumes 页 → 选择候选人 → 安排面试 → 创建成功
+  2. /interviews 页打开 → 查看刚创建的面试
+  3. 列表项显示 "候选人#42"（Resume.id），不是候选人姓名
+  4. resumeMap 由 listPassedForJob 填充（candidate.id 为 key），interview.resume_id=42（Resume.id）→ 查不到
+
+- **精确输入值**: 任何走完 candidate.id 流程创建的面试
+
+- **期望行为**: 后端 InterviewResponse 增加 resume_name / candidate_id 字段，或前端再 fetch resume detail。
+
+- **实际行为**: 列表展示降级为 "候选人#X"。
+
+- **代码位置**:
+  - 前端: `frontend/src/views/Interviews.vue:443-446`
+  - 后端: `app/modules/scheduling/schemas.py:130-147`
+
+- **攻击向量**: 跨表 ID 不一致 / UX
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-077: PATCH update_resume 同步到 Resume 不刷新 service.db.refresh(r) — 返回 dict 仍读 candidate stale 字段
+
+- **严重级别**: Low
+- **错误类型**: Logic / Cache
+
+- **复现步骤**:
+  1. PATCH /api/resumes/{candidate_id} body=`{"name":"新"}`
+  2. setattr(target, "name", "新")；同步 setattr(r, "name", "新")
+  3. commit
+  4. `service.db.refresh(target)` 仅刷新 candidate；Resume r 不刷新 — 在某些 DB 触发器场景（如 trigger 改 updated_at）字段值与 DB 不一致
+  5. 返回 dict 用 candidate 数据，OK 但跨入口的 Resume 视图不一致
+
+- **代码位置**: `app/modules/resume/router.py:316-317`
+
+- **攻击向量**: 缓存不一致
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-078: ai-parse pdf 视觉路径在 Windows 下 `os.path.exists(target.pdf_path)` 处理反斜杠，但路径含未规范化 `/` 字符
+
+- **严重级别**: Medium
+- **错误类型**: Cross-platform
+
+- **复现步骤**:
+  1. service.create_from_pdf line 180: `file_path = file_path.replace("\\", "/")` 写入 candidate.pdf_path
+  2. ai-parse line 448: `os.path.exists(target.pdf_path)` 在 Windows 上 `/` 路径仍 work（Python 容错）
+  3. 但 line 478: `pdf_file = Path(target.pdf_path).resolve()` 在 Windows 上将 `/` 与盘符组合可能丢盘符
+  4. line 480: `str(pdf_file).startswith(str(storage_root))` 比较时大小写敏感（NTFS 不敏感）→ 大小写差异路径误判越界
+
+- **期望行为**: 用 Path.resolve() 统一并 case-insensitive 比较 storage_root。
+
+- **实际行为**: Windows 大小写不一致路径或盘符被丢可能导致 403。
+
+- **代码位置**: `app/modules/resume/router.py:478-481`
+
+- **攻击向量**: 跨平台 / 大小写
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-079: scheduling create_interview duplicate check `Interview.status != "cancelled"` 漏 status=`completed`
+
+- **严重级别**: Medium
+- **错误类型**: Logic
+
+- **复现步骤**:
+  1. 候选人 X 已完成一次面试（status=completed）
+  2. 用户想再排第二轮面试
+  3. POST /api/scheduling/interviews resume_id=X
+  4. duplicate check: `Interview.resume_id == X AND Interview.status != "cancelled"` → 命中 completed 行 → 409
+
+- **精确输入值**: 已完成首轮面试的候选人再次安排
+
+- **期望行为**: `Interview.status NOT IN ("cancelled","completed")`，允许多轮面试。
+
+- **实际行为**: 409 拒绝，候选人无法二轮。
+
+- **代码位置**: `app/modules/scheduling/router.py:359-368`
+
+- **攻击向量**: 状态机
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-080: candidate-入口 ai-parse promoted Resume.raw_text 来源时序错乱
+
+- **严重级别**: Low
+- **错误类型**: Logic
+
+- **复现步骤**:
+  1. ai-parse on candidate；use_vision=False；走 elif `target.raw_text` 分支
+  2. line 457: `parsed = await ai_parse_resume(target.raw_text, ai)`
+  3. `_apply_parsed_fields(target, parsed)` 不动 raw_text
+  4. promoted Resume 同步：line 481 `if use_vision and target.raw_text` 不成立 → Resume.raw_text 不同步
+  5. 若 candidate.raw_text 在 step1 之后被其他流程更新（极端）→ Resume.raw_text 不一致
+
+- **精确输入值**: 长期使用，多次 ai-parse + collect-chat 交错
+
+- **期望行为**: raw_text 同步在两个模型之间无条件做。
+
+- **实际行为**: 仅视觉路径同步。
+
+- **代码位置**: `app/modules/resume/router.py:480-482`
+
+- **攻击向量**: 一致性
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-081: matching score_pair 内部仍读 Resume — 若 normalize 翻译后 promoted Resume 同时被 DELETE，score_pair 抛 ValueError
+
+- **严重级别**: Low
+- **错误类型**: Concurrency
+
+- **复现步骤**:
+  1. 用户 A 触发 matching score（candidate.id 翻译到 promoted_resume_id=42）
+  2. 同一秒，用户 A 在另一个 tab 删了 candidate（DELETE 走 candidate 入口连带删 Resume 42）
+  3. score_pair line 36 `db.query(Resume).filter_by(id=42).first()` 返回 None
+  4. raise ValueError("resume 42 not found") → router 404
+
+- **期望行为**: TOCTOU 窗口最小化或加分布式锁。
+
+- **实际行为**: 罕见但可触发的 race。
+
+- **代码位置**: `app/modules/matching/service.py:36-38`
+
+- **攻击向量**: 并发
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-082: 列表 GET /api/resumes/ 未限制 page_size 上界（Query le=100 OK），但 keyword LIKE 搜未限长
+
+- **严重级别**: Low
+- **错误类型**: Performance / DoS
+
+- **复现步骤**:
+  1. GET `/api/resumes/?keyword=<10000 char string>`
+  2. 后端 escape + LIKE pattern → 生成 10000+ 字符 LIKE 表达式
+  3. SQLite 全表扫每行做 like 比较 → 慢
+
+- **期望行为**: keyword max_length=64。
+
+- **代码位置**: `app/modules/resume/router.py:195-215` + `app/modules/resume/intake_view_service.py:99-110`
+
+- **攻击向量**: DoS
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-083: 0021 backfill 把 work_years=0 当作"空"，永远无法回填真实 0 年（应届生）
+
+- **严重级别**: Low
+- **错误类型**: Data Migration
+
+- **复现步骤**:
+  1. Resume.work_years=0（应届）
+  2. 同 candidate.work_years=0（默认）
+  3. 0021 line 70: `if res_val in (None, "", 0): continue` → 跳过 0
+  4. 应届生信息无法从 Resume 同步到 candidate，candidate 仍 0（其实正确，但若 candidate 默认值不同会出错）
+  5. 同理：expected_salary_min=0, work_years=0, ai_score=0 等数值字段全部被忽略
+
+- **期望行为**: `if res_val is None or res_val == ""` 区分 0 与空。
+
+- **代码位置**: `migrations/versions/0021_backfill_intake_from_resume.py:70`
+
+- **攻击向量**: 数据迁移 / 边界值
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-084: clear_all_resumes 删除文件用 `os.remove(path)` 不做 storage_root 校验
+
+- **严重级别**: High
+- **错误类型**: Security / Path Traversal
+
+- **复现步骤**:
+  1. 攻击者通过 BUG-044/053 注入 `pdf_path="../../../system/critical.pdf"` 到 Resume
+  2. 用户调 clear_all_resumes
+  3. 后端 line 67-71 `os.remove(path)` 直接执行
+  4. 系统文件被删（仅当后端进程有权限）
+
+- **精确输入值**: 经 BUG-044 注入路径穿越 pdf_path
+
+- **期望行为**: 只删 Path(path) 在 storage_root 之内的文件。
+
+- **代码位置**: `app/modules/resume/router.py:67-72`
+
+- **攻击向量**: 路径穿越（联动）
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-085: ai-parse 接受 None pdf_path + None raw_text — 静默 500「AI 解析失败」无明确原因
+
+- **严重级别**: Low
+- **错误类型**: UX / Error Reporting
+
+- **复现步骤**:
+  1. candidate.pdf_path=NULL, raw_text=NULL（极端早期未交互）
+  2. ai-parse → use_vision=False（pdf 不存在）→ elif raw_text 假 → parsed={}
+  3. `if not parsed:` → 500 "AI 解析失败"
+  4. 用户不知道原因（无 PDF 也无文本）
+
+- **期望行为**: 区分输入缺失与 AI 解析失败两种情况，前者 400 并提示。
+
+- **代码位置**: `app/modules/resume/router.py:444-463`
+
+- **攻击向量**: 边界值
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## BUG-086: get_resume 通过 candidate.id 查到的 IntakeCandidate 缺失 reject_reason 字段，前端 UI 不可用
+
+- **严重级别**: Low
+- **错误类型**: Schema 不对称
+
+- **复现步骤**:
+  1. /resumes 列表点击候选人 → 展开详情卡片
+  2. 卡片显示「淘汰原因」字段（前端读 row.reject_reason）
+  3. _target_to_response_dict for candidate 始终返回 ""（getattr fallback）
+  4. 即使候选人在 promoted Resume 上有 reject_reason，前端通过 candidate.id 入口看不到
+
+- **期望行为**: candidate-入口的 dict 应从 promoted_resume.reject_reason 拉取。
+
+- **代码位置**: `app/modules/resume/router.py:259`（reject_reason getattr fallback）；`app/modules/resume/intake_view_service.py:75`（hard-coded ""）
+
+- **攻击向量**: 跨模型字段映射
+
+- **发现时间**: 2026-04-28T00:00Z
+
+---
+## 覆盖率快照（第 7 轮，chaos_round3 — 简历表迁移聚焦）
+
+| 维度 | 已覆盖 | 总量 | 百分比 |
+|------|--------|------|--------|
+| 函数/方法 | 152 | 158 | ~96% |
+| 代码分支(if/else) | 195 | 205 | ~95% |
+| 输入入口 | 42 | 44 | 95% |
+| 错误处理路径 | 48 | 52 | ~92% |
+| 状态转换 | 13 | 14 | ~93% |
+| 攻击向量类型 | 7 | 7 | 100% |
+
+**综合估计覆盖率**: 95%
+**已发现 Bug 总数**: 86 (Critical: 8, High: 14, Medium: 33, Low: 31)
+**第 7 轮新发现**: 31 (BUG-056..086)
+**实测 reproduce 验证**: 9 (tests/chaos/test_chaos_round3.py — 全过即全部触发)
+
+### 第 7 轮焦点
+- 迁移 0020/0021 引入的 IntakeCandidate ↔ Resume 双 ID 路径
+- 单条 resume 端点 GET/PATCH/DELETE/ai-parse 跨表行为
+- promote_to_resume 隐式调用边界
+- scheduling create_interview 翻译副作用
+- ResumeUpdate schema 字段缺失/校验缺口
+
+### 高优新发现优先级
+1. **BUG-058 (Critical)** — PATCH/DELETE 跨用户写：腐化 FK 即可越权改/删他人简历
+2. **BUG-062 (High)** — 清空全部不清 candidate/slot：数据残留误导
+3. **BUG-063 (High)** — DELETE 不清 outbox/audit/Interview：状态机断
+4. **BUG-059 (High)** — ai-parse promote 失败静默吞：候选人永远不评分
+5. **BUG-060 (High)** — `_apply_parsed_fields` seniority dict/list 触发 AttributeError 500
+6. **BUG-066 (High)** — create_interview 翻译失败已 commit 部分状态：副作用泄露
+7. **BUG-084 (High)** — clear_all 不校验 storage_root：联动 BUG-044 → 任意文件删除
+
+---
+
 ## 覆盖率快照（第 5-6 轮，chaos_round1 + chaos_round2）
 
 | 维度 | 已覆盖 | 总量 | 百分比 |

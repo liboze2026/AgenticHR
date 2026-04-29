@@ -322,6 +322,48 @@ def clear_all_interviews(
     }
 
 
+def _enrich_interview(db: Session, iv) -> dict:
+    """BUG-076 修复：把 Interview 转成 InterviewResponse-shape，附 resume_name / candidate_id / interviewer_name。"""
+    from app.modules.resume.models import Resume as _R
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.scheduling.models import Interviewer as _Iver
+
+    resume_name = ""
+    candidate_id = None
+    if iv.resume_id:
+        r = db.query(_R).filter_by(id=iv.resume_id).first()
+        if r:
+            resume_name = r.name or ""
+            cand = db.query(IntakeCandidate).filter_by(promoted_resume_id=r.id).first()
+            if cand:
+                candidate_id = cand.id
+    interviewer_name = ""
+    if iv.interviewer_id:
+        ier = db.query(_Iver).filter_by(id=iv.interviewer_id).first()
+        if ier:
+            interviewer_name = ier.name or ""
+    return {
+        "id": iv.id,
+        "resume_id": iv.resume_id,
+        "resume_name": resume_name,
+        "candidate_id": candidate_id,
+        "interviewer_id": iv.interviewer_id,
+        "interviewer_name": interviewer_name,
+        "job_id": iv.job_id,
+        "start_time": iv.start_time,
+        "end_time": iv.end_time,
+        "meeting_topic": iv.meeting_topic or "",
+        "meeting_link": iv.meeting_link or "",
+        "meeting_password": iv.meeting_password or "",
+        "meeting_account": getattr(iv, "meeting_account", "") or "",
+        "meeting_id": getattr(iv, "meeting_id", "") or "",
+        "status": iv.status or "",
+        "notes": iv.notes or "",
+        "created_at": iv.created_at,
+        "updated_at": iv.updated_at,
+    }
+
+
 @router.post("/interviews", response_model=InterviewResponse, status_code=201)
 def create_interview(
     data: InterviewCreate,
@@ -334,29 +376,70 @@ def create_interview(
     if data.start_time.astimezone(timezone.utc).replace(tzinfo=None) < datetime.utcnow():
         raise HTTPException(status_code=400, detail="面试时间不能早于当前时间")
 
-    # 防呆：同一候选人是否已有待面试安排
-    existing_for_candidate = service.db.query(Interview).filter(
-        Interview.resume_id == data.resume_id,
-        Interview.status != "cancelled",
-    ).first()
-    if existing_for_candidate:
-        raise HTTPException(
-            status_code=409,
-            detail=f"该候选人已有待面试安排（面试ID: {existing_for_candidate.id}），请先取消旧面试或编辑现有面试"
-        )
-
-    # Verify resume belongs to this user
+    # 前端简历库以 IntakeCandidate.id 为行键，但 Interview.resume_id 必须是 Resume.id。
+    # 翻译策略：优先 candidate（避免与 Resume 表 id 撞数值时找错人），缺失则按需 promote。
+    # BUG-066 修复：先做 duplicate / 时段 / 归属 检查，全部通过后再 promote 出 Resume，
+    # 避免 promote 后续失败时残留副作用。
+    # BUG-065 修复：异常细节仅写日志，对外不暴露 SQL/Python 错误。
     from app.modules.resume.models import Resume as _ResumeModel
-    resume = service.db.query(_ResumeModel).filter(_ResumeModel.id == data.resume_id).first()
-    if not resume:
-        raise HTTPException(status_code=404, detail="简历不存在")
-    if resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权为该候选人安排面试")
+    from app.modules.im_intake.candidate_model import IntakeCandidate
 
+    resume = None
+    pending_promote_candidate = None
+    cand = service.db.query(IntakeCandidate).filter_by(id=data.resume_id, user_id=user_id).first()
+    if cand is not None:
+        if cand.promoted_resume_id:
+            resume = service.db.query(_ResumeModel).filter_by(id=cand.promoted_resume_id).first()
+            if resume is not None and resume.user_id != user_id:
+                resume = None  # FK 腐化，拒绝
+        if resume is None:
+            pending_promote_candidate = cand  # 推迟到所有校验通过再 promote
+    else:
+        resume = service.db.query(_ResumeModel).filter_by(id=data.resume_id, user_id=user_id).first()
+
+    if resume is None and pending_promote_candidate is None:
+        raise HTTPException(status_code=404, detail="简历不存在")
+
+    if resume is not None and resume.user_id != user_id:
+        raise HTTPException(status_code=404, detail="简历不存在")
+
+    # 防呆：同一候选人是否已有待面试安排
+    # BUG-079 修复：completed/cancelled 都不阻塞新面试，允许多轮
+    if resume is not None:
+        existing_for_candidate = service.db.query(Interview).filter(
+            Interview.resume_id == resume.id,
+            ~Interview.status.in_(["cancelled", "completed"]),
+        ).first()
+        if existing_for_candidate:
+            raise HTTPException(
+                status_code=409,
+                detail=f"该候选人已有待面试安排（面试ID: {existing_for_candidate.id}），请先取消旧面试或编辑现有面试"
+            )
+
+    # 校验全部通过 → 此时才 promote（确保失败时不留 Resume 副作用）
+    if pending_promote_candidate is not None:
+        try:
+            from app.modules.im_intake.promote import promote_to_resume
+            resume = promote_to_resume(service.db, pending_promote_candidate, user_id=user_id)
+            service.db.commit()
+        except Exception as _e:
+            import logging as _log
+            _log.getLogger(__name__).error(f"promote_to_resume failed: {_e}", exc_info=True)
+            service.db.rollback()
+            raise HTTPException(status_code=500, detail="无法落库简历，请稍后重试")
+        # promote 后再做一次 duplicate 检查（极小概率 race）
+        existing_for_candidate = service.db.query(Interview).filter(
+            Interview.resume_id == resume.id,
+            ~Interview.status.in_(["cancelled", "completed"]),
+        ).first()
+        if existing_for_candidate:
+            raise HTTPException(status_code=409, detail="该候选人已有待面试安排")
+
+    data.resume_id = resume.id
     interview = service.create_interview(data, user_id=user_id)
     if interview is None:
         raise HTTPException(status_code=409, detail="该时段与面试官的其他面试冲突，请选择其他时间")
-    return interview
+    return _enrich_interview(service.db, interview)
 
 
 @router.get("/interviews", response_model=InterviewListResponse)
@@ -367,9 +450,12 @@ def list_interviews(
     service: SchedulingService = Depends(get_scheduling_service),
     user_id: int = Depends(get_current_user_id),
 ):
-    return service.list_interviews(
+    result = service.list_interviews(
         interviewer_id=interviewer_id, resume_id=resume_id, status=status, user_id=user_id
     )
+    if isinstance(result, dict) and "items" in result:
+        result["items"] = [_enrich_interview(service.db, iv) for iv in result["items"]]
+    return result
 
 
 @router.get("/interviews/{interview_id}", response_model=InterviewResponse)
@@ -381,9 +467,10 @@ def get_interview(
     interview = service.get_interview(interview_id)
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
+    # BUG-018 修复：他人资源与不存在均返 404
     if interview.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该面试")
-    return interview
+        raise HTTPException(status_code=404, detail="面试不存在")
+    return _enrich_interview(service.db, interview)
 
 
 @router.patch("/interviews/{interview_id}", response_model=InterviewResponse)
@@ -408,7 +495,7 @@ async def update_interview(
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
     if interview.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权操作此面试")
+        raise HTTPException(status_code=404, detail="面试不存在")
 
     # 判断时间是否真的变了（payload 里的时间 vs DB 里的时间）
     _from_req = data.model_dump(exclude_none=True)
@@ -539,13 +626,13 @@ async def update_interview(
         service.db.commit()
         service.db.refresh(interview)
 
-        return interview
+        return _enrich_interview(service.db, interview)
 
     # 普通更新路径（没改时间，或原本就没会议）
     interview = service.update_interview(interview_id, data)
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
-    return interview
+    return _enrich_interview(service.db, interview)
 
 
 @router.delete("/interviews/{interview_id}", status_code=204)
@@ -563,7 +650,7 @@ async def delete_interview(
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
     if interview.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权操作此面试")
+        raise HTTPException(status_code=404, detail="面试不存在")
 
     cleanup = await _cleanup_interview_external(interview)
     logger.info(f"Delete interview {interview_id} external cleanup: {cleanup}")
@@ -659,7 +746,7 @@ async def ask_interviewer_time(
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
     if interview.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权操作此面试")
+        raise HTTPException(status_code=404, detail="面试不存在")
 
     from app.modules.scheduling.models import Interviewer
     from app.modules.resume.models import Resume
@@ -716,7 +803,7 @@ async def cancel_interview(
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
     if interview.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权操作此面试")
+        raise HTTPException(status_code=404, detail="面试不存在")
 
     # Step 1: 立即更新 DB —— 前端马上能看到 "已取消" 状态
     from datetime import timezone as _tz
@@ -797,4 +884,4 @@ async def cancel_interview(
 
         threading.Thread(target=_bg_cleanup, args=(snapshot,), daemon=True).start()
 
-    return interview
+    return _enrich_interview(service.db, interview)

@@ -45,11 +45,27 @@ def test_get_resume_not_found(client):
     assert response.status_code == 404
 
 
-def test_list_resumes_api(client):
+def test_list_resumes_api(client, db_session):
+    """PR4: /api/resumes/ 返回四项齐全的 IntakeCandidate"""
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.im_intake.models import IntakeSlot
+    from app.modules.im_intake.templates import HARD_SLOT_KEYS
+
     for i in range(3):
-        client.post(
-            "/api/resumes/", json={"name": f"列表测试{i}", "phone": f"1390000{i:04d}"}
+        c = IntakeCandidate(
+            user_id=1, boss_id=f"b_list_{i}", name=f"列表测试{i}",
+            phone=f"139000000{i}",
+            pdf_path="data/x.pdf", intake_status="complete",
         )
+        db_session.add(c)
+        db_session.commit()
+        db_session.refresh(c)
+        for k in HARD_SLOT_KEYS:
+            db_session.add(IntakeSlot(
+                candidate_id=c.id, slot_key=k, slot_category="hard",
+                value="filled", ask_count=1,
+            ))
+        db_session.commit()
 
     response = client.get("/api/resumes/")
     assert response.status_code == 200
@@ -58,15 +74,27 @@ def test_list_resumes_api(client):
     assert len(data["items"]) == 3
 
 
-def test_list_resumes_with_filters(client):
-    client.post(
-        "/api/resumes/",
-        json={"name": "Java开发", "phone": "13800000010", "skills": "Java,Spring"},
-    )
-    client.post(
-        "/api/resumes/",
-        json={"name": "Python开发", "phone": "13800000011", "skills": "Python"},
-    )
+def test_list_resumes_with_filters(client, db_session):
+    """PR4: 关键词在 IntakeCandidate 字段上搜索"""
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.im_intake.models import IntakeSlot
+    from app.modules.im_intake.templates import HARD_SLOT_KEYS
+
+    for boss, name, skills in [("b_java", "Java开发", "Java,Spring"),
+                                ("b_py", "Python开发", "Python")]:
+        c = IntakeCandidate(
+            user_id=1, boss_id=boss, name=name, skills=skills,
+            pdf_path="data/x.pdf", intake_status="complete",
+        )
+        db_session.add(c)
+        db_session.commit()
+        db_session.refresh(c)
+        for k in HARD_SLOT_KEYS:
+            db_session.add(IntakeSlot(
+                candidate_id=c.id, slot_key=k, slot_category="hard",
+                value="filled", ask_count=1,
+            ))
+        db_session.commit()
 
     response = client.get("/api/resumes/?keyword=Java")
     data = response.json()

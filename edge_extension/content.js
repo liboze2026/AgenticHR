@@ -1302,6 +1302,11 @@ async function intake_clickRequestResumeButton() {
 
 async function intake_checkPdfReceived(bossId) {
   // Skip accept/reject prompt cards; only treat 预览/查看/下载 buttons as real PDF.
+  // BUG-A1: do NOT return card title as `url`. The title is human-readable
+  // text like "简历.pdf" and earlier callers used it as a fallback pdf_url
+  // when downloadPdf() failed, polluting Resume.pdf_path with bare filenames
+  // that 404 in /api/resumes/{id}/pdf. Only signal presence here; the real
+  // server-side path comes from downloadPdf() → /api/resumes/upload.
   const cards = document.querySelectorAll(".message-card-wrap.boss-green");
   for (let i = cards.length - 1; i >= 0; i--) {
     const title = (cards[i].querySelector(".message-card-top-title")?.textContent || "").trim();
@@ -1310,7 +1315,7 @@ async function intake_checkPdfReceived(bossId) {
     for (const btn of btns) {
       const t = (btn.textContent || "").trim();
       if (/预览|查看|下载/.test(t)) {
-        return { present: true, url: title || `present://${bossId || "unknown"}` };
+        return { present: true };
       }
     }
   }
@@ -1620,7 +1625,10 @@ async function intake_runOrchestrator(opts = {}) {
       job_intention: parsed.job_intention,
       messages: parsed.messages,
       pdf_present: pdf.present,
-      pdf_url: realPdfPath || pdf.url || null,
+      // BUG-A1: only ever send a real server-side path from /resumes/upload.
+      // Never fall back to pdf.url (card title) — backend now rejects bare names
+      // but defending at the source avoids audit noise.
+      pdf_url: realPdfPath || null,
       skip_outbox: true,
     });
   } catch (e) {
@@ -2044,7 +2052,9 @@ async function step2_enrichCandidates() {
           job_intention: parsed?.job_intention || "",
           messages,
           pdf_present: pdf.present,
-          pdf_url: realPdfPath || (pdf.present ? pdf.url : null),
+          // BUG-A1: only ever send a real server-side path; null lets backend
+          // re-issue request_pdf instead of persisting a card-title fallback.
+          pdf_url: realPdfPath || null,
           skip_outbox: true,
         }),
       });

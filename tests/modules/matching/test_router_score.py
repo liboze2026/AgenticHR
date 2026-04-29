@@ -27,6 +27,7 @@ def test_score_endpoint_returns_result(client, db_session):
     assert "evidence" in data
 
 
-def test_score_endpoint_403_on_missing(client):
+def test_score_endpoint_404_on_missing(client):
+    """BUG-056: 不存在的资源返 404 而非 403，避免存在性探测。"""
     resp = client.post("/api/matching/score", json={"resume_id": 99999, "job_id": 99999})
-    assert resp.status_code == 403
+    assert resp.status_code == 404

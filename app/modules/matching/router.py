@@ -31,18 +31,56 @@ def _require_matching_enabled():
         raise HTTPException(status_code=503, detail="matching feature disabled")
 
 
+class _NormalizeError(Exception):
+    """promote 失败的内部错误，区分 404（不存在）和 500（服务端错误）。"""
+    pass
+
+
+def _normalize_resume_id(db: Session, input_id: int, user_id: int) -> int | None:
+    """翻译 candidate.id → Resume.id（按需 promote）；不存在返 None；
+    BUG-072 修复：promote 抛异常时抛 _NormalizeError，调用方区分 500 vs 404。"""
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    cand = db.query(IntakeCandidate).filter_by(id=input_id, user_id=user_id).first()
+    if cand:
+        if cand.promoted_resume_id:
+            existing = db.query(Resume).filter_by(id=cand.promoted_resume_id).first()
+            if existing and existing.user_id == user_id:
+                return existing.id
+        try:
+            from app.modules.im_intake.promote import promote_to_resume
+            r = promote_to_resume(db, cand, user_id=user_id)
+            db.commit()
+            return r.id
+        except Exception as _e:
+            db.rollback()
+            raise _NormalizeError(str(_e))
+    resume = db.query(Resume).filter_by(id=input_id, user_id=user_id).first()
+    if resume:
+        return resume.id
+    return None
+
+
+def _resolve_or_404(db: Session, input_id: int, user_id: int) -> int:
+    """统一鉴权 + 翻译。BUG-056 修复：他人资源与不存在均返 404。"""
+    try:
+        rid = _normalize_resume_id(db, input_id, user_id)
+    except _NormalizeError as e:
+        raise HTTPException(status_code=500, detail="无法落库简历，请稍后重试")
+    if rid is None:
+        raise HTTPException(status_code=404, detail="简历不存在")
+    return rid
+
+
 @router.post("/score", response_model=MatchingResultResponse)
 async def score_pair(req: ScoreRequest, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
     _require_matching_enabled()
-    resume = db.query(Resume).filter_by(id=req.resume_id).first()
+    real_resume_id = _resolve_or_404(db, req.resume_id, user_id)
     job = db.query(Job).filter_by(id=req.job_id).first()
-    if not resume or resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该简历")
     if not job or job.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该岗位")
+        raise HTTPException(status_code=404, detail="岗位不存在")
     service = MatchingService(db)
     try:
-        return await service.score_pair(req.resume_id, req.job_id, triggered_by="T4")
+        return await service.score_pair(real_resume_id, req.job_id, triggered_by="T4")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
@@ -65,23 +103,33 @@ def list_results(
     if job_id:
         job = db.query(Job).filter_by(id=job_id).first()
         if not job or job.user_id != user_id:
-            raise HTTPException(status_code=403, detail="无权访问该岗位")
+            raise HTTPException(status_code=404, detail="岗位不存在")
         q = q.filter_by(job_id=job_id).order_by(MatchingResult.total_score.desc())
     if resume_id:
-        resume = db.query(Resume).filter_by(id=resume_id).first()
-        if not resume or resume.user_id != user_id:
-            raise HTTPException(status_code=403, detail="无权访问该简历")
+        resume_id = _resolve_or_404(db, resume_id, user_id)
         q = q.filter_by(resume_id=resume_id).order_by(MatchingResult.total_score.desc())
 
     raw_rows = q.all()
     # 防御性过滤：剔除引用已删除 Resume / Job 的孤儿行（matching_results 无 FK）
+    # BUG-071 修复：补上 IntakeCandidate 状态过滤；abandoned/timed_out candidate 对应的
+    # promoted Resume 也应剔除，避免出现"matching 显示但前端列表已过滤"的不一致。
     if raw_rows:
+        from app.modules.im_intake.candidate_model import IntakeCandidate
         live_resume_ids = {
             r.id for r in db.query(Resume.id).filter(
                 Resume.id.in_({m.resume_id for m in raw_rows}),
-                Resume.status != "rejected",  # 排除已归档候选人
+                Resume.status != "rejected",
             ).all()
         }
+        # 进一步剔除对应 candidate 已 abandoned/timed_out 的 Resume.id
+        if live_resume_ids:
+            dead_via_candidate = {
+                cid for (cid,) in db.query(IntakeCandidate.promoted_resume_id).filter(
+                    IntakeCandidate.promoted_resume_id.in_(live_resume_ids),
+                    IntakeCandidate.intake_status.in_(["abandoned", "timed_out"]),
+                ).all()
+            }
+            live_resume_ids -= dead_via_candidate
         live_job_ids = {
             j.id for j in db.query(Job.id).filter(
                 Job.id.in_({m.job_id for m in raw_rows})
@@ -158,10 +206,10 @@ def set_action(result_id: int, body: _ActionBody, db: Session = Depends(get_db),
     row = db.query(MatchingResult).filter_by(id=result_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="matching result not found")
-    # Verify ownership via resume
+    # BUG-056 修复：他人资源与不存在均返 404，不暴露存在性
     owner_resume = db.query(Resume).filter_by(id=row.resume_id).first()
     if not owner_resume or owner_resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权修改该匹配结果")
+        raise HTTPException(status_code=404, detail="matching result not found")
     if body.action not in (None, "passed", "rejected"):
         raise HTTPException(status_code=400, detail="action must be passed/rejected/null")
     row.job_action = body.action
@@ -171,17 +219,12 @@ def set_action(result_id: int, body: _ActionBody, db: Session = Depends(get_db),
 
 @router.get("/passed-resumes/{job_id}")
 def list_passed_for_job(job_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
-    _require_matching_enabled()
+    """岗位匹配候选人: 四项齐全 ∩ 学历门槛 ∩ 院校等级门槛 (PR4)"""
     job = db.query(Job).filter_by(id=job_id).first()
     if not job or job.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该岗位")
-    rows = db.query(MatchingResult).filter_by(job_id=job_id, job_action="passed").all()
-    resume_ids = [r.resume_id for r in rows]
-    resumes = db.query(Resume).filter(Resume.id.in_(resume_ids)).all() if resume_ids else []
-    return [
-        {"id": r.id, "name": r.name, "phone": r.phone, "email": r.email}
-        for r in resumes
-    ]
+        raise HTTPException(status_code=404, detail="岗位不存在")
+    from app.modules.resume.intake_view_service import list_matched_for_job
+    return list_matched_for_job(db, user_id=user_id, job_id=job_id)
 
 
 @router.post("/recompute")
@@ -197,17 +240,22 @@ async def post_recompute(
         raise HTTPException(status_code=400, detail="need job_id or resume_id")
 
     if req.job_id:
+        # BUG-006 / 限定 job 归属
+        job = db.query(Job).filter_by(id=req.job_id).first()
+        if not job or job.user_id != user_id:
+            raise HTTPException(status_code=404, detail="岗位不存在")
         total = db.query(Resume).filter(Resume.ai_parsed == "yes", Resume.user_id == user_id).count()
         task_id = _new_task(total)
         background.add_task(recompute_job_with_fresh_session, req.job_id, task_id, user_id)
         return {"task_id": task_id, "total": total}
 
+    real_resume_id = _resolve_or_404(db, req.resume_id, user_id)
     total = db.query(Job).filter(
         Job.is_active == True,
         Job.competency_model_status == "approved",
     ).count()
     task_id = _new_task(total)
-    background.add_task(recompute_resume_with_fresh_session, req.resume_id, task_id)
+    background.add_task(recompute_resume_with_fresh_session, real_resume_id, task_id)
     return {"task_id": task_id, "total": total}
 
 

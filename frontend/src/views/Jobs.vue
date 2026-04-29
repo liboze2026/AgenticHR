@@ -82,6 +82,17 @@
                   <el-option label="博士" value="博士" />
                 </el-select>
               </el-form-item>
+              <el-form-item label="院校等级要求">
+                <el-select v-model="jobForm.school_tier_min" clearable placeholder="不限">
+                  <el-option label="不限" value="" />
+                  <el-option label="QS 前 200 / 211 / 985 任一" value="qs_top200" />
+                  <el-option label="211 及以上" value="211" />
+                  <el-option label="985" value="985" />
+                </el-select>
+                <div style="font-size:11px;color:#999;margin-top:4px;">
+                  匹配候选人会按此门槛过滤；空="不限"不卡门槛。
+                </div>
+              </el-form-item>
               <el-form-item label="工作年限">
                 <el-col :span="11">
                   <el-input-number v-model="jobForm.work_years_min" :min="0" />
@@ -155,137 +166,37 @@
         <el-tab-pane :label="competencyLabel" name="competency" v-if="currentJobId">
           <CompetencyEditor :job-id="currentJobId" :initial-jd-text="jobForm.jd_text || ''" @status-change="onStatusChange" @extract-background="onExtractBackground" />
         </el-tab-pane>
-        <el-tab-pane label="匹配候选人" name="matching" v-if="editingJob && editingJob.competency_model_status === 'approved'">
-          <div class="matching-toolbar">
-            <el-button type="primary" plain @click="recomputeMatching" :loading="matching.recomputing">重新打分</el-button>
-            <el-select v-model="matching.tagFilter" placeholder="按标签筛选" clearable @change="loadMatching" style="width: 180px; margin-left: 8px">
-              <el-option label="高匹配" value="高匹配" />
-              <el-option label="中匹配" value="中匹配" />
-              <el-option label="低匹配" value="低匹配" />
-              <el-option label="硬门槛未过" value="硬门槛未过" />
-            </el-select>
-            <span v-if="matching.staleCount > 0" class="stale-warn">
-              ⚠ {{ matching.staleCount }} 份分数基于旧能力模型
-            </span>
-            <el-button
-              type="default"
-              plain
-              size="small"
-              style="margin-left: auto"
-              @click="weightsPanel.open = !weightsPanel.open"
-            >{{ weightsPanel.open ? '收起权重' : '评分权重' }}</el-button>
-          </div>
-
-          <!-- 评分权重面板 -->
-          <div v-if="weightsPanel.open" class="weights-panel">
-            <div class="weights-status">
-              <span v-if="weightsPanel.custom" class="weights-status-custom">✓ 当前使用：本岗位自定义权重</span>
-              <span v-else class="weights-status-global">○ 当前使用：全局默认权重（可在设置页修改）</span>
-            </div>
-            <div class="weights-inputs">
-              <div class="weights-field" v-for="f in weightsFields" :key="f.key">
-                <label>{{ f.label }}</label>
-                <el-input-number
-                  v-model="weightsPanel.form[f.key]"
-                  :min="0"
-                  :max="100"
-                  size="small"
-                  style="width: 100px"
-                  @change="weightsPanel.dirty = true"
-                />
-              </div>
-            </div>
-            <div class="weights-sum-hint" :class="{ 'weights-sum-error': weightsSum !== 100 }">
-              当前总和: {{ weightsSum }}（需为 100）
-            </div>
-            <div class="weights-actions">
-              <el-button
-                type="primary"
-                size="small"
-                :disabled="weightsSum !== 100"
-                :loading="weightsPanel.saving"
-                @click="saveJobWeights"
-              >保存并重新打分</el-button>
-              <el-button
-                size="small"
-                :loading="weightsPanel.resetting"
-                @click="resetJobWeights"
-              >重置为全局默认</el-button>
-            </div>
-          </div>
-
+        <el-tab-pane label="匹配候选人" name="matching" v-if="editingJob">
+          <el-alert
+            type="info"
+            :closable="false"
+            show-icon
+            title="匹配规则"
+            description="本列表显示四项信息齐全（到岗时间/空闲时段/实习时长/PDF）且符合该岗位「最低学历」「院校等级要求」门槛的候选人。两道门槛均为不限时，与简历库一致。"
+            style="margin-bottom: 12px;"
+          />
           <div v-loading="matching.loading">
-            <el-empty v-if="!matching.items.length" description="尚无匹配结果，发布能力模型后会自动打分" />
-
-            <div v-for="item in matching.items" :key="item.id" class="matching-row" :class="{ expanded: matching.expandedId === item.id }">
-              <div class="matching-head">
-                <div class="m-head-left" @click="toggleMatchingExpand(item.id)">
-                  <el-icon class="m-arrow"><ArrowRight /></el-icon>
-                  <span class="m-name">{{ item.resume_name }}</span>
-                  <span class="m-score">{{ item.total_score.toFixed(1) }}</span>
-                  <div class="m-tags">
-                    <el-tag v-for="t in item.tags" :key="t" :type="tagType(t)" size="small">{{ t }}</el-tag>
-                    <el-tag v-if="item.stale" type="warning" effect="plain" size="small">⚠ 过时</el-tag>
-                    <el-tag v-if="item.job_action === 'passed'" type="success" size="small" effect="dark">本岗位通过</el-tag>
-                    <el-tag v-else-if="item.job_action === 'rejected'" type="danger" size="small" effect="dark">本岗位淘汰</el-tag>
-                  </div>
-                </div>
-                <div class="m-head-actions" @click.stop>
-                  <el-button
-                    :type="item.job_action === 'passed' ? 'success' : 'default'"
-                    size="small"
-                    @click="setJobAction(item, 'passed')"
-                    :loading="item._actionLoading"
-                  >{{ item.job_action === 'passed' ? '✓ 通过' : '通过' }}</el-button>
-                  <el-button
-                    :type="item.job_action === 'rejected' ? 'danger' : 'default'"
-                    size="small"
-                    @click="setJobAction(item, 'rejected')"
-                    :loading="item._actionLoading"
-                  >{{ item.job_action === 'rejected' ? '✕ 淘汰' : '淘汰' }}</el-button>
-                  <el-button
-                    v-if="item.job_action"
-                    size="small"
-                    link
-                    @click="setJobAction(item, null)"
-                    :loading="item._actionLoading"
-                  >清除</el-button>
-                </div>
-              </div>
-
-              <transition name="expand">
-                <div v-if="matching.expandedId === item.id" class="matching-detail">
-                  <div class="dim-bar" v-for="(dim, key) in dimensionList(item)" :key="key">
-                    <span class="dim-label">{{ dim.label }} ({{ dim.weight }}%)</span>
-                    <el-progress :percentage="dim.score" :color="dim.color" :stroke-width="16" />
-                  </div>
-
-                  <div v-if="item.hard_gate_passed === false" class="hard-gate-warn">
-                    🛑 硬门槛未过：缺失必须项 {{ item.missing_must_haves.join(', ') }}
-                  </div>
-
-                  <div class="evidence-list">
-                    <h4>证据片段</h4>
-                    <div v-for="(items, dim) in item.evidence" :key="dim">
-                      <div v-for="(e, i) in items" :key="i" class="evidence-item">
-                        <span class="ev-dim">[{{ dim }}]</span>
-                        <span class="ev-text">{{ e.text }}</span>
-                        <el-button v-if="e.source && e.offset" link size="small" @click="jumpToResume(item.resume_id, e.source, e.offset)">查看原文</el-button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </transition>
-            </div>
-
-            <el-pagination
-              v-model:current-page="matching.page"
-              :page-size="matching.pageSize"
-              :total="matching.total"
-              layout="total, prev, pager, next"
-              @current-change="loadMatching"
-              style="margin-top: 12px; justify-content: flex-end"
-            />
+            <el-empty v-if="!matching.items.length" description="无符合门槛的候选人" />
+            <el-table v-else :data="matching.items" border stripe size="small">
+              <el-table-column prop="name" label="姓名" min-width="100" />
+              <el-table-column prop="phone" label="手机" width="130" />
+              <el-table-column prop="email" label="邮箱" min-width="180" />
+              <el-table-column prop="education" label="学历" width="80" />
+              <el-table-column label="院校" min-width="180">
+                <template #default="{ row }">
+                  <span>{{ row.master_school || row.bachelor_school || row.phd_school || '—' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="院校等级" width="100">
+                <template #default="{ row }">
+                  <el-tag v-if="row.school_tier === '985'" type="danger" size="small">985</el-tag>
+                  <el-tag v-else-if="row.school_tier === '211'" type="warning" size="small">211</el-tag>
+                  <el-tag v-else-if="row.school_tier === 'qs_top200'" type="success" size="small">QS200</el-tag>
+                  <span v-else style="color:#999;">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="job_intention" label="求职意向" min-width="140" />
+            </el-table>
           </div>
         </el-tab-pane>
       </el-tabs>
@@ -358,7 +269,7 @@ function competencyTagText(status) {
   return { none: '未生成', draft: '待审核', approved: '已生效', rejected: '已驳回' }[status] || '未知'
 }
 
-const defaultForm = { title: '', department: '', education_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '', jd_text: '', batch_collect_criteria: null }
+const defaultForm = { title: '', department: '', education_min: '', school_tier_min: '', work_years_min: 0, work_years_max: 99, salary_min: 0, salary_max: 0, required_skills: '', soft_requirements: '', greeting_templates: '', jd_text: '', batch_collect_criteria: null }
 const jobForm = ref({ ...defaultForm })
 
 const batchSchool985 = ref(false)
@@ -436,6 +347,7 @@ async function parseJd() {
       title: result.title || '',
       department: result.department || '',
       education_min: result.education_min || '',
+      school_tier_min: result.school_tier_min || '',
       work_years_min: result.work_years_min ?? 0,
       work_years_max: result.work_years_max ?? 99,
       salary_min: result.salary_min ?? 0,
@@ -523,19 +435,13 @@ async function deleteJob(id) {
 
 // AI 评估按钮已废弃 — F2 用 matchingApi.recomputeJob 在岗位详情 "匹配候选人" Tab 触发
 
-// "筛选简历" 现在直接进入岗位详情的 "匹配候选人" Tab，让 HR 立刻能 通过/淘汰
+// "筛选简历" 直接进入岗位详情的 "匹配候选人" Tab (PR4: 不再需要能力模型已发布)
 function screenResumes(jobId) {
   const job = jobs.value.find(j => j.id === jobId)
   if (!job) {
     ElMessage.error('岗位未找到')
     return
   }
-  if (job.competency_model_status !== 'approved') {
-    ElMessage.warning('请先发布该岗位的能力模型，才能查看 AI 匹配候选人')
-    editJob(job)
-    return
-  }
-  // 走 editJob 流程，但 activeTab 直接定位到 matching
   editingJob.value = job
   jobForm.value = { ...job }
   currentJobId.value = job.id
@@ -636,21 +542,11 @@ async function loadMatching() {
   if (!editingJob.value) return
   matching.value.loading = true
   try {
-    const data = await matchingApi.listByJob(editingJob.value.id, {
-      page: matching.value.page,
-      page_size: matching.value.pageSize,
-      tag: matching.value.tagFilter || undefined,
-    })
-    // Sort: passed first, then unevaluated, then rejected; within each group by total_score desc
-    const sorted = [...data.items].sort((a, b) => {
-      const ao = jobActionOrder(a.job_action)
-      const bo = jobActionOrder(b.job_action)
-      if (ao !== bo) return ao - bo
-      return b.total_score - a.total_score
-    })
-    matching.value.items = sorted
-    matching.value.total = data.total
-    matching.value.staleCount = data.items.filter(i => i.stale).length
+    // PR4: 新逻辑 — 直接拉"四项齐全 ∩ 学历门槛 ∩ 院校等级门槛"列表
+    const items = await matchingApi.listPassedForJob(editingJob.value.id)
+    matching.value.items = items
+    matching.value.total = items.length
+    matching.value.staleCount = 0
   } catch (e) {
     ElMessage.error('加载匹配候选人失败')
   } finally {

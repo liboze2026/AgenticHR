@@ -2,6 +2,9 @@
 
 测试 PATCH /api/matching/results/{id}/action 和
 GET /api/matching/passed-resumes/{job_id} 端点。
+
+PR4 起 /passed-resumes/{job_id} 行为改为: 四项齐全 ∩ 学历门槛 ∩ 院校等级门槛
+(基于 IntakeCandidate)。本文件最后段使用新逻辑。
 """
 import pytest
 from datetime import datetime, timezone
@@ -9,6 +12,32 @@ from datetime import datetime, timezone
 from app.modules.matching.models import MatchingResult
 from app.modules.resume.models import Resume
 from app.modules.screening.models import Job
+from app.modules.im_intake.candidate_model import IntakeCandidate
+from app.modules.im_intake.models import IntakeSlot
+from app.modules.im_intake.templates import HARD_SLOT_KEYS
+
+
+def _mk_intake_complete(session, user_id=1, boss_id="b1", name="候选人A",
+                        education="本科", school_tier="985",
+                        bachelor_school="清华大学", phone="13800000001",
+                        email="a@example.com"):
+    c = IntakeCandidate(
+        user_id=user_id, boss_id=boss_id, name=name,
+        pdf_path="data/x.pdf", intake_status="collecting",
+        education=education, school_tier=school_tier,
+        bachelor_school=bachelor_school,
+        phone=phone, email=email,
+    )
+    session.add(c)
+    session.commit()
+    session.refresh(c)
+    for key in HARD_SLOT_KEYS:
+        session.add(IntakeSlot(
+            candidate_id=c.id, slot_key=key, slot_category="hard",
+            value="filled", ask_count=1,
+        ))
+    session.commit()
+    return c
 
 
 def _mk_resume(session, **kw):
@@ -148,16 +177,23 @@ def test_set_action_scoped_to_job(client, db_session):
 
 # ── GET passed-resumes tests ─────────────────────────────────────────────────
 
-def test_list_passed_for_job_returns_only_passed(client, db_session):
-    """GET /passed-resumes/{job_id} 只返回 job_action='passed' 的候选人。"""
-    resume_pass = _mk_resume(db_session, name="通过候选人", phone="13800000002")
-    resume_rej = _mk_resume(db_session, name="淘汰候选人", phone="13800000003")
-    resume_null = _mk_resume(db_session, name="未评估候选人", phone="13800000004")
-    job = _mk_job(db_session, title="只看通过岗位")
-
-    _mk_result(db_session, resume_pass.id, job.id, job_action="passed")
-    _mk_result(db_session, resume_rej.id, job.id, job_action="rejected")
-    _mk_result(db_session, resume_null.id, job.id)  # job_action=None
+def test_list_passed_for_job_returns_only_qualified(client, db_session):
+    """GET /passed-resumes/{job_id} 返回简历库 ∩ 学历门槛 ∩ 院校门槛 (PR4)"""
+    # 三个候选人均"四项齐全"
+    qualified = _mk_intake_complete(
+        db_session, boss_id="b1", name="通过候选人", phone="13800000002",
+        education="硕士", school_tier="985",
+    )
+    rej_edu = _mk_intake_complete(
+        db_session, boss_id="b2", name="学历不够", phone="13800000003",
+        education="本科", school_tier="985",
+    )
+    rej_tier = _mk_intake_complete(
+        db_session, boss_id="b3", name="院校不够", phone="13800000004",
+        education="硕士", school_tier="qs_top200",
+    )
+    job = _mk_job(db_session, title="硕士+985岗位",
+                  education_min="硕士", school_tier_min="985")
 
     resp = client.get(f"/api/matching/passed-resumes/{job.id}")
     assert resp.status_code == 200
@@ -168,7 +204,7 @@ def test_list_passed_for_job_returns_only_passed(client, db_session):
 
 
 def test_list_passed_for_job_empty_when_none(client, db_session):
-    """该岗位无任何 passed 记录 → 返回空列表。"""
+    """无候选人 / 无人达门槛 → 空列表"""
     job = _mk_job(db_session, title="空岗位")
     resp = client.get(f"/api/matching/passed-resumes/{job.id}")
     assert resp.status_code == 200
@@ -176,18 +212,38 @@ def test_list_passed_for_job_empty_when_none(client, db_session):
 
 
 def test_list_passed_for_job_includes_email(client, db_session):
-    """返回结果包含 email 字段。"""
-    resume = _mk_resume(db_session, name="有邮箱候选人", phone="13800000005")
-    resume.email = "test@example.com"
-    db_session.commit()
-    job = _mk_job(db_session, title="邮箱测试岗位")
-    _mk_result(db_session, resume.id, job.id, job_action="passed")
+    """返回结果包含 email 字段"""
+    _mk_intake_complete(db_session, boss_id="b1", name="有邮箱候选人",
+                        phone="13800000005", email="test@example.com")
+    job = _mk_job(db_session, title="邮箱测试岗位")  # 无门槛
 
     resp = client.get(f"/api/matching/passed-resumes/{job.id}")
     assert resp.status_code == 200
     data = resp.json()
     assert len(data) == 1
     assert data[0]["email"] == "test@example.com"
+
+
+def test_list_passed_for_job_excludes_incomplete_intake(client, db_session):
+    """未完成四项的候选人不出现"""
+    c = IntakeCandidate(
+        user_id=1, boss_id="bx", name="未完成", pdf_path="data/x.pdf",
+        intake_status="collecting",
+    )
+    db_session.add(c)
+    db_session.commit()
+    db_session.refresh(c)
+    # 仅填 1 个 hard slot
+    db_session.add(IntakeSlot(
+        candidate_id=c.id, slot_key="arrival_date", slot_category="hard",
+        value="2026-05-01", ask_count=1,
+    ))
+    db_session.commit()
+    job = _mk_job(db_session, title="不完整测试岗位")
+
+    resp = client.get(f"/api/matching/passed-resumes/{job.id}")
+    assert resp.status_code == 200
+    assert resp.json() == []
 
 
 # ── job_action persists across score (UPSERT) ────────────────────────────────

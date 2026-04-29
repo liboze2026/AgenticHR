@@ -32,12 +32,18 @@ def clear_all_resumes(
     db: Session = Depends(get_db),
     user_id: int = Depends(get_current_user_id),
 ):
-    """清空当前用户的所有简历、关联的面试和通知记录、以及PDF文件"""
-    import os, glob
+    """清空当前用户的所有简历 + 候选人 + 槽位 + 面试 + 通知 + PDF 文件 + 匹配结果 + 出箱。
+    BUG-062 修复：之前只清 Resume 表，IntakeCandidate/IntakeSlot/intake_outbox 残留导致刷新后列表回填。
+    BUG-084 修复：os.remove 加 storage_root 边界校验，防注入路径穿越删系统文件。
+    """
+    import os
     from app.modules.resume.models import Resume
     from app.modules.scheduling.models import Interview
     from app.modules.notification.models import NotificationLog
-    # 先获取当前用户的简历ID列表，再删关联数据（外键约束）
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.im_intake.models import IntakeSlot
+    from app.modules.im_intake.outbox_model import IntakeOutbox
+
     user_resume_ids = [r.id for r in db.query(Resume.id).filter(Resume.user_id == user_id).all()]
     interview_count = db.query(Interview).filter(Interview.resume_id.in_(user_resume_ids)).count() if user_resume_ids else 0
     if user_resume_ids:
@@ -46,7 +52,6 @@ def clear_all_resumes(
         if user_interview_ids:
             db.query(NotificationLog).filter(NotificationLog.interview_id.in_(user_interview_ids)).delete(synchronize_session=False)
         db.query(Interview).filter(Interview.resume_id.in_(user_resume_ids)).delete(synchronize_session=False)
-        # 级联清 F2 匹配结果（无 FK，需手动）
         try:
             from app.modules.matching.models import MatchingResult
             db.query(MatchingResult).filter(
@@ -56,21 +61,47 @@ def clear_all_resumes(
             pass
     else:
         notification_count = 0
-    # Collect this user's PDF paths before deletion
+
+    # 收集 candidate 侧 PDF 路径与 ID
+    cand_rows = db.query(IntakeCandidate).filter(IntakeCandidate.user_id == user_id).all()
+    cand_ids = [c.id for c in cand_rows]
+    cand_pdf_paths = [c.pdf_path for c in cand_rows if c.pdf_path]
+
+    # 收集 Resume 侧 PDF 路径
     user_pdf_paths = [r.pdf_path for r in db.query(Resume.pdf_path).filter(
         Resume.user_id == user_id, Resume.pdf_path != None, Resume.pdf_path != ""
     ).all() if r.pdf_path]
 
+    # 清候选人侧（slot/outbox/candidate）
+    if cand_ids:
+        db.query(IntakeSlot).filter(IntakeSlot.candidate_id.in_(cand_ids)).delete(synchronize_session=False)
+        try:
+            db.query(IntakeOutbox).filter(IntakeOutbox.candidate_id.in_(cand_ids)).delete(synchronize_session=False)
+        except Exception:
+            pass
+        db.query(IntakeCandidate).filter(IntakeCandidate.user_id == user_id).delete(synchronize_session=False)
+
     count = db.query(Resume).filter(Resume.user_id == user_id).count()
     db.query(Resume).filter(Resume.user_id == user_id).delete(synchronize_session=False)
     db.commit()
-    for path in user_pdf_paths:
+
+    # 删 PDF 文件，仅限 storage_root 之内
+    storage_root = Path(settings.resume_storage_path).resolve()
+    for path in set(user_pdf_paths + cand_pdf_paths):
         try:
-            if os.path.exists(path):
-                os.remove(path)
+            p = Path(path).resolve()
+            if not str(p).startswith(str(storage_root)):
+                continue  # 越界路径不删
+            if p.exists():
+                p.unlink()
         except OSError:
             pass
-    return {"deleted_resumes": count, "deleted_interviews": interview_count, "deleted_notifications": notification_count}
+    return {
+        "deleted_resumes": count,
+        "deleted_candidates": len(cand_ids),
+        "deleted_interviews": interview_count,
+        "deleted_notifications": notification_count,
+    }
 
 
 @router.post("/", response_model=ResumeResponse, status_code=201)
@@ -197,15 +228,22 @@ def list_resumes(
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=100),
     status: str | None = None,
-    keyword: str | None = None,
+    # BUG-082 修复：keyword 限长 64 防 LIKE 全表扫 DoS
+    keyword: str | None = Query(None, max_length=64),
     source: str | None = None,
     intake_status: str | None = None,
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
-    return service.list(
-        page=page, page_size=page_size, status=status, keyword=keyword,
-        source=source, intake_status=intake_status, user_id=user_id
+    """简历库: 四项齐全(三 hard slot + PDF) 的 IntakeCandidate"""
+    from app.modules.resume.intake_view_service import list_resume_library
+    return list_resume_library(
+        service.db,
+        user_id=user_id,
+        page=page,
+        page_size=page_size,
+        keyword=keyword,
+        source=source,
     )
 
 
@@ -216,18 +254,67 @@ def ai_parse_status():
     return get_parse_status()
 
 
+def _target_to_response_dict(target, db: Session | None = None):
+    """Resume 或 IntakeCandidate -> ResumeResponse 兼容 dict。"""
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    if isinstance(target, IntakeCandidate):
+        from app.modules.resume.intake_view_service import candidate_to_resume_dict
+        return candidate_to_resume_dict(target, db)
+    return {
+        "id": target.id,
+        "name": target.name or "",
+        "phone": target.phone or "",
+        "email": target.email or "",
+        "education": target.education or "",
+        "bachelor_school": target.bachelor_school or "",
+        "master_school": target.master_school or "",
+        "phd_school": target.phd_school or "",
+        "qr_code_path": target.qr_code_path or "",
+        "work_years": target.work_years or 0,
+        "expected_salary_min": target.expected_salary_min or 0.0,
+        "expected_salary_max": target.expected_salary_max or 0.0,
+        "job_intention": target.job_intention or "",
+        "skills": target.skills or "",
+        "work_experience": target.work_experience or "",
+        "project_experience": target.project_experience or "",
+        "self_evaluation": target.self_evaluation or "",
+        "source": target.source or "",
+        "raw_text": target.raw_text or "",
+        "pdf_path": target.pdf_path or "",
+        "status": target.status or "passed",
+        "ai_parsed": target.ai_parsed or "no",
+        "ai_score": target.ai_score,
+        "ai_summary": target.ai_summary or "",
+        "reject_reason": getattr(target, "reject_reason", "") or "",
+        "seniority": target.seniority or "",
+        "intake_status": getattr(target, "intake_status", "") or "",
+        "boss_id": target.boss_id or "",
+        "school_tier": getattr(target, "school_tier", "") or "",
+        "created_at": target.created_at,
+        "updated_at": target.updated_at,
+    }
+
+
+# IntakeCandidate 不存在的字段（前端 ResumeUpdate 可能携带，仅对 Resume 有意义）
+_RESUME_ONLY_FIELDS = {"status", "reject_reason"}
+
+
+def _resolve_owned_or_404(service: ResumeService, resume_id: int, user_id: int):
+    """统一鉴权 + 解析。BUG-056 修复：他人资源与不存在均返 404，不暴露存在性。"""
+    target = _resolve_resume_target(service, resume_id)
+    if not target or target.user_id != user_id:
+        raise HTTPException(status_code=404, detail="简历不存在")
+    return target
+
+
 @router.get("/{resume_id}", response_model=ResumeResponse)
 def get_resume(
     resume_id: int,
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
-    resume = service.get_by_id(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="简历不存在")
-    if resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该简历")
-    return resume
+    target = _resolve_owned_or_404(service, resume_id, user_id)
+    return _target_to_response_dict(target, service.db)
 
 
 @router.patch("/{resume_id}", response_model=ResumeResponse)
@@ -237,13 +324,44 @@ def update_resume(
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
-    resume = service.get_by_id(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="简历不存在")
-    if resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权修改该简历")
-    resume = service.update(resume_id, data)
-    return resume
+    target = _resolve_owned_or_404(service, resume_id, user_id)
+
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.resume.models import Resume as _R
+    is_candidate = isinstance(target, IntakeCandidate)
+
+    update_data = data.model_dump(exclude_none=True)
+    has_resume_only_field = any(k in _RESUME_ONLY_FIELDS for k in update_data)
+
+    # BUG-057 修复：candidate 入口收到 status/reject_reason 但 promoted_resume_id 缺失时
+    # 自动 promote，确保字段有承载体；否则用户改动静默丢失
+    if is_candidate and has_resume_only_field and not target.promoted_resume_id:
+        try:
+            from app.modules.im_intake.promote import promote_to_resume
+            promote_to_resume(service.db, target, user_id=user_id)
+            service.db.commit()
+            service.db.refresh(target)
+        except Exception as _e:
+            raise HTTPException(status_code=500, detail="无法同步简历状态，请稍后重试")
+
+    for key, value in update_data.items():
+        if is_candidate and key in _RESUME_ONLY_FIELDS:
+            continue  # candidate 不存这俩字段；下面统一写到 promoted Resume
+        if hasattr(target, key):
+            setattr(target, key, value)
+
+    # candidate 入口：同步到 promoted Resume（matching 读 Resume 表）
+    if is_candidate and target.promoted_resume_id:
+        r = service.db.query(_R).filter_by(id=target.promoted_resume_id).first()
+        # BUG-058 修复：跨用户 FK 腐化时拒绝写入，防止越权改他人简历
+        if r is not None and r.user_id == user_id:
+            for key, value in update_data.items():
+                if hasattr(r, key):
+                    setattr(r, key, value)
+
+    service.db.commit()
+    service.db.refresh(target)
+    return _target_to_response_dict(target, service.db)
 
 
 @router.delete("/{resume_id}", status_code=204)
@@ -253,18 +371,37 @@ def delete_resume(
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
-    resume = service.get_by_id(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="简历不存在")
-    if resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权删除该简历")
-    # Query linked IntakeCandidate BEFORE deleting resume, because ondelete="SET NULL"
-    # will null out promoted_resume_id after commit, making the candidate unfindable.
+    target = _resolve_owned_or_404(service, resume_id, user_id)
+
     from app.modules.im_intake.candidate_model import IntakeCandidate
     from app.modules.im_intake.models import IntakeSlot
+    from app.modules.im_intake.outbox_model import IntakeOutbox
+    from app.modules.resume.models import Resume as _R
+
+    if isinstance(target, IntakeCandidate):
+        # BUG-058 修复：删 promoted Resume 前校验 user 归属，防止跨用户 FK 腐化误删他人
+        if target.promoted_resume_id:
+            r_owner = db.query(_R.user_id).filter_by(id=target.promoted_resume_id).scalar()
+            if r_owner == user_id:
+                service.delete(target.promoted_resume_id)
+        # BUG-063 修复：候选人入口同时清 outbox + slots + candidate，避免出箱处理器悬挂
+        try:
+            db.query(IntakeOutbox).filter_by(candidate_id=target.id).delete(synchronize_session=False)
+        except Exception:
+            pass
+        db.query(IntakeSlot).filter_by(candidate_id=target.id).delete(synchronize_session=False)
+        db.delete(target)
+        db.commit()
+        return
+
+    # Resume 侧入口（legacy id）
     candidate = db.query(IntakeCandidate).filter_by(promoted_resume_id=resume_id, user_id=user_id).first()
     service.delete(resume_id)
     if candidate:
+        try:
+            db.query(IntakeOutbox).filter_by(candidate_id=candidate.id).delete(synchronize_session=False)
+        except Exception:
+            pass
         db.query(IntakeSlot).filter_by(candidate_id=candidate.id).delete(synchronize_session=False)
         db.delete(candidate)
         db.commit()
@@ -293,6 +430,44 @@ async def ai_parse_all_resumes(user_id: int = Depends(get_current_user_id)):
     return {"status": "started", "message": "AI 解析任务已在后台启动"}
 
 
+def _apply_parsed_fields(target, parsed: dict) -> None:
+    """把 AI 解析结果写到 target（Resume 或 IntakeCandidate）。
+    name/phone/email 仅在原值空/未知时填，避免覆盖人工编辑。
+    BUG-060 修复：seniority 改用 _s() 兼容 dict/list。"""
+    def _s(v):
+        return str(v) if isinstance(v, (dict, list)) else (v or "")
+
+    if parsed.get("name") and (not target.name or target.name == "未知"):
+        target.name = _s(parsed["name"])
+    if parsed.get("phone") and not target.phone:
+        target.phone = _s(parsed["phone"])
+    if parsed.get("email") and not target.email:
+        target.email = _s(parsed["email"])
+    if parsed.get("education"):
+        target.education = _s(parsed["education"])
+    if parsed.get("bachelor_school"):
+        target.bachelor_school = _s(parsed["bachelor_school"])
+    if parsed.get("master_school"):
+        target.master_school = _s(parsed["master_school"])
+    if parsed.get("phd_school"):
+        target.phd_school = _s(parsed["phd_school"])
+    if parsed.get("work_years"):
+        val = parsed["work_years"]
+        target.work_years = int(val) if isinstance(val, (int, float)) else 0
+    if parsed.get("skills"):
+        target.skills = _s(parsed["skills"])
+    if parsed.get("work_experience"):
+        target.work_experience = _s(parsed["work_experience"])
+    if parsed.get("project_experience"):
+        target.project_experience = _s(parsed["project_experience"])
+    if parsed.get("self_evaluation"):
+        target.self_evaluation = _s(parsed["self_evaluation"])
+    if parsed.get("job_intention") and not target.job_intention:
+        target.job_intention = _s(parsed["job_intention"])
+    target.seniority = _s(parsed.get("seniority")).strip()
+    target.ai_parsed = "yes"
+
+
 @router.post("/{resume_id}/ai-parse", response_model=ResumeResponse)
 async def ai_parse_single(
     resume_id: int,
@@ -300,96 +475,108 @@ async def ai_parse_single(
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
-    """AI 解析单条简历"""
+    """AI 解析单条简历。支持 Resume.id 与 IntakeCandidate.id 两种入参。"""
     from app.config import settings as cfg
     if not cfg.ai_enabled:
         raise HTTPException(status_code=400, detail="AI 功能未开启")
 
-    resume = service.get_by_id(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="简历不存在")
-    if resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该简历")
+    target = _resolve_owned_or_404(service, resume_id, user_id)
 
     from app.adapters.ai_provider import AIProvider
     from app.modules.resume.pdf_parser import ai_parse_resume, ai_parse_resume_vision, is_image_pdf
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.resume.models import Resume as _R
     import os
 
     ai = AIProvider()
     if not ai.is_configured():
         raise HTTPException(status_code=400, detail="AI 未配置")
 
-    # 判断用文本模式还是视觉模式
+    is_candidate = isinstance(target, IntakeCandidate)
+
+    # BUG-085 修复：无 PDF 也无 raw_text 时返 400（用户无可解析输入），而非 500 通用错
+    has_pdf = bool(target.pdf_path and os.path.exists(target.pdf_path))
+    has_text = bool(target.raw_text)
+    if not has_pdf and not has_text:
+        raise HTTPException(status_code=400, detail="没有 PDF 或聊天文本可解析")
+
     parsed = {}
     use_vision = False
-    if resume.pdf_path and os.path.exists(resume.pdf_path):
-        if not resume.raw_text or len(resume.raw_text.strip()) < 50 or is_image_pdf(resume.pdf_path):
+    if has_pdf:
+        if not target.raw_text or len(target.raw_text.strip()) < 50 or is_image_pdf(target.pdf_path):
             use_vision = True
 
     if use_vision:
-        parsed = await ai_parse_resume_vision(resume.pdf_path, ai)
+        parsed = await ai_parse_resume_vision(target.pdf_path, ai)
         if parsed:
-            resume.raw_text = f"[AI视觉解析] 姓名:{parsed.get('name','')} 技能:{parsed.get('skills','')} 经历:{parsed.get('work_experience','')}"
-    elif resume.raw_text:
-        parsed = await ai_parse_resume(resume.raw_text, ai)
+            target.raw_text = f"[AI视觉解析] 姓名:{parsed.get('name','')} 技能:{parsed.get('skills','')} 经历:{parsed.get('work_experience','')}"
+    elif target.raw_text:
+        parsed = await ai_parse_resume(target.raw_text, ai)
 
     if not parsed:
+        # BUG-061 修复：双入口一致都标 ai_parsed='failed'
+        target.ai_parsed = "failed"
+        service.db.commit()
         raise HTTPException(status_code=500, detail="AI 解析失败")
 
-    # 更新字段（dict/list 转字符串）
-    def _s(v):
-        return str(v) if isinstance(v, (dict, list)) else (v or "")
+    _apply_parsed_fields(target, parsed)
 
-    if parsed.get("name") and resume.name == "未知":
-        resume.name = _s(parsed["name"])
-    if parsed.get("phone") and not resume.phone:
-        resume.phone = _s(parsed["phone"])
-    if parsed.get("email") and not resume.email:
-        resume.email = _s(parsed["email"])
-    if parsed.get("education"):
-        resume.education = _s(parsed["education"])
-    if parsed.get("bachelor_school"):
-        resume.bachelor_school = _s(parsed["bachelor_school"])
-    if parsed.get("master_school"):
-        resume.master_school = _s(parsed["master_school"])
-    if parsed.get("phd_school"):
-        resume.phd_school = _s(parsed["phd_school"])
-    if parsed.get("work_years"):
-        val = parsed["work_years"]
-        resume.work_years = int(val) if isinstance(val, (int, float)) else 0
-    if parsed.get("skills"):
-        resume.skills = _s(parsed["skills"])
-    if parsed.get("work_experience"):
-        resume.work_experience = _s(parsed["work_experience"])
-    if parsed.get("project_experience"):
-        resume.project_experience = _s(parsed["project_experience"])
-    if parsed.get("self_evaluation"):
-        resume.self_evaluation = _s(parsed["self_evaluation"])
-    if parsed.get("job_intention") and not resume.job_intention:
-        resume.job_intention = _s(parsed["job_intention"])
-
-    resume.seniority = (parsed.get("seniority") or "").strip() or ""
-
-    resume.ai_parsed = "yes"
-    service.db.commit()
-    service.db.refresh(resume)
-
-    # F2 T1 trigger: score resume against all active+approved jobs (background, non-blocking)
-    try:
-        async def _t1_bg():
-            from app.database import SessionLocal
-            from app.modules.matching.triggers import on_resume_parsed
-            _db = SessionLocal()
+    # candidate 入口：同步到 promoted Resume（matching 读 Resume 表）；未 promote 则强制 promote
+    promoted_resume = None
+    if is_candidate:
+        if not target.promoted_resume_id:
+            # BUG-059 修复：promote 失败不再静默吞，直接返回 500，避免 candidate.ai_parsed=yes
+            # 但 Resume 不存在的"假成功"。
             try:
-                await on_resume_parsed(_db, resume.id)
-            finally:
-                _db.close()
-        background_tasks.add_task(_t1_bg)
-    except Exception as _t1_err:
-        import logging as _log
-        _log.getLogger(__name__).warning(f"F2 T1 trigger failed (non-fatal): {_t1_err}")
+                from app.modules.im_intake.promote import promote_to_resume
+                promoted_resume = promote_to_resume(service.db, target, user_id=user_id)
+            except Exception as _e:
+                import logging as _log
+                _log.getLogger(__name__).error(f"auto-promote failed: {_e}", exc_info=True)
+                service.db.rollback()
+                raise HTTPException(status_code=500, detail="解析完成但无法落库简历，请稍后重试")
+        else:
+            promoted_resume = service.db.query(_R).filter_by(id=target.promoted_resume_id).first()
+            # BUG-058 修复：跨用户 FK 腐化时不写他人 Resume
+            if promoted_resume is not None and promoted_resume.user_id != user_id:
+                promoted_resume = None
+        if promoted_resume is not None:
+            _apply_parsed_fields(promoted_resume, parsed)
+            if use_vision and target.raw_text:
+                promoted_resume.raw_text = target.raw_text
 
-    return resume
+    service.db.commit()
+    service.db.refresh(target)
+
+    # F2 T1 trigger: 用 Resume.id 评分（matching 表以 Resume 为外键基础）
+    score_resume_id = (promoted_resume.id if promoted_resume is not None else None) \
+        if is_candidate else target.id
+    if score_resume_id:
+        try:
+            async def _t1_bg():
+                from app.database import SessionLocal
+                from app.modules.matching.triggers import on_resume_parsed
+                _db = SessionLocal()
+                try:
+                    await on_resume_parsed(_db, score_resume_id)
+                finally:
+                    _db.close()
+            background_tasks.add_task(_t1_bg)
+        except Exception as _t1_err:
+            import logging as _log
+            _log.getLogger(__name__).warning(f"F2 T1 trigger failed (non-fatal): {_t1_err}")
+
+    return _target_to_response_dict(target, service.db)
+
+
+def _resolve_resume_target(service: ResumeService, target_id: int):
+    """简历库列表 (intake_view_service) 现以 IntakeCandidate.id 为行键暴露给前端，
+    /qr 与 /pdf 端点必须先按 candidate 解析；未命中再回落到旧 Resume 表（兼容历史 id）。"""
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    cand = service.db.query(IntakeCandidate).filter(IntakeCandidate.id == target_id).first()
+    if cand:
+        return cand
+    return service.get_by_id(target_id)
 
 
 @router.get("/{resume_id}/qr")
@@ -406,27 +593,23 @@ def get_resume_qr(
 
     `?regen=1`：强制忽略缓存，立即重跑算法（用于算法升级后让旧缓存重生成）。
     """
-    resume = service.get_by_id(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="简历不存在")
-    if resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该简历")
+    target = _resolve_owned_or_404(service, resume_id, user_id)
 
     # 先尝试用 DB 记录的路径；不存在或 regen=1 则从 PDF 即时生成
-    qr_path = resume.qr_code_path
+    qr_path = target.qr_code_path
     need_regen = regen == 1 or (not qr_path) or (not Path(qr_path).exists())
-    if need_regen and resume.pdf_path and Path(resume.pdf_path).exists():
+    if need_regen and target.pdf_path and Path(target.pdf_path).exists():
         from app.modules.resume.pdf_parser import extract_boss_qr
-        qr_out = Path("data/qrcodes") / f"{resume.id}.png"
+        qr_out = Path("data/qrcodes") / f"{target.id}.png"
         # 强制重生成时先删旧文件
         if regen == 1 and qr_out.exists():
             try:
                 qr_out.unlink()
             except Exception:
                 pass
-        qr_path = extract_boss_qr(resume.pdf_path, str(qr_out))
+        qr_path = extract_boss_qr(target.pdf_path, str(qr_out))
         if qr_path:
-            resume.qr_code_path = qr_path
+            target.qr_code_path = qr_path
             service.db.commit()
 
     if not qr_path or not Path(qr_path).exists():
@@ -451,17 +634,18 @@ def get_resume_pdf(
     user_id: int = Depends(get_current_user_id),
 ):
     """下载/查看候选人的 PDF 简历"""
-    resume = service.get_by_id(resume_id)
-    if not resume:
-        raise HTTPException(status_code=404, detail="简历不存在")
-    if resume.user_id != user_id:
-        raise HTTPException(status_code=403, detail="无权访问该简历")
-    if not resume.pdf_path:
+    target = _resolve_owned_or_404(service, resume_id, user_id)
+    if not target.pdf_path:
         raise HTTPException(status_code=404, detail="该候选人没有 PDF 简历")
 
-    pdf_file = Path(resume.pdf_path).resolve()
+    import os as _os
+    pdf_file = Path(target.pdf_path).resolve()
     storage_root = Path(settings.resume_storage_path).resolve()
-    if not str(pdf_file).startswith(str(storage_root)):
+    # BUG-078 修复：Windows NTFS 不区分大小写，比较前统一小写
+    pf, sr = str(pdf_file), str(storage_root)
+    if _os.name == "nt":
+        pf, sr = pf.lower(), sr.lower()
+    if not pf.startswith(sr):
         raise HTTPException(status_code=403, detail="非法文件路径")
     if not pdf_file.exists():
         raise HTTPException(status_code=404, detail="PDF 文件不存在")
@@ -469,6 +653,6 @@ def get_resume_pdf(
     return FileResponse(
         str(pdf_file),
         media_type="application/pdf",
-        filename=f"{resume.name}_简历.pdf",
+        filename=f"{target.name}_简历.pdf",
         content_disposition_type="inline",  # 浏览器中直接打开，不下载
     )

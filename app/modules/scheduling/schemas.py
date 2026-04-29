@@ -130,7 +130,11 @@ class InterviewUpdate(BaseModel):
 class InterviewResponse(BaseModel):
     id: int
     resume_id: int
+    # BUG-076 修复：暴露 resume_name + candidate_id（前端 candidate-keyed map 可查）
+    resume_name: str = ""
+    candidate_id: int | None = None
     interviewer_id: int
+    interviewer_name: str = ""
     job_id: int | None
     start_time: datetime
     end_time: datetime

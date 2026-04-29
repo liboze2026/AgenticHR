@@ -7,6 +7,7 @@ class JobCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     department: str = Field(default="", max_length=100)
     education_min: str = Field(default="", max_length=50)
+    school_tier_min: str = Field(default="", max_length=20, description="院校等级要求: ''/qs_top200/211/985")
     work_years_min: int = Field(default=0, ge=0)
     work_years_max: int = Field(default=99, ge=0)
     salary_min: float = Field(default=0, ge=0)
@@ -33,6 +34,7 @@ class JobUpdate(BaseModel):
     title: str | None = None
     department: str | None = None
     education_min: str | None = None
+    school_tier_min: str | None = None
     work_years_min: int | None = None
     work_years_max: int | None = None
     salary_min: float | None = None
@@ -64,6 +66,7 @@ class JobResponse(BaseModel):
     title: str
     department: str
     education_min: str
+    school_tier_min: str = ""
     work_years_min: int
     work_years_max: int
     salary_min: float

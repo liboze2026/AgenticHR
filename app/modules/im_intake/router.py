@@ -56,6 +56,25 @@ import logging as _logging
 _log = _logging.getLogger(__name__)
 
 
+def _is_valid_pdf_url(url: str | None) -> bool:
+    """Reject extension-side title fallback values like '简历.pdf' that crash
+    /api/resumes/{id}/pdf with 404. Accept either:
+      - http(s)://… URL
+      - absolute local path under settings.resume_storage_path that actually exists
+    """
+    if not url:
+        return False
+    if url.startswith(("http://", "https://")):
+        return True
+    try:
+        from pathlib import Path as _P
+        p = _P(url).resolve()
+        storage_root = _P(settings.resume_storage_path).resolve()
+        return str(p).startswith(str(storage_root)) and p.exists()
+    except (OSError, ValueError):
+        return False
+
+
 def _audit_safe(f_stage: str, action: str, entity_id: int, payload: dict | None = None,
                 reviewer_id: int | None = None) -> None:
     try:
@@ -349,14 +368,32 @@ async def collect_chat(
     messages = [m.model_dump() for m in raw]
 
     if body.pdf_present and body.pdf_url and not c.pdf_path:
-        slots = svc.ensure_slot_rows(c.id)
-        slots["pdf"].value = body.pdf_url
-        slots["pdf"].source = "plugin_detected"
-        slots["pdf"].answered_at = datetime.now(timezone.utc)
-        c.pdf_path = body.pdf_url
-        db.commit()
-        _audit_safe("f4_pdf_received", "pdf_uploaded", c.id,
-                    {"pdf_url": body.pdf_url}, reviewer_id=user_id)
+        if _is_valid_pdf_url(body.pdf_url):
+            slots = svc.ensure_slot_rows(c.id)
+            slots["pdf"].value = body.pdf_url
+            slots["pdf"].source = "plugin_detected"
+            slots["pdf"].answered_at = datetime.now(timezone.utc)
+            c.pdf_path = body.pdf_url
+            db.commit()
+            _audit_safe("f4_pdf_received", "pdf_uploaded", c.id,
+                        {"pdf_url": body.pdf_url}, reviewer_id=user_id)
+        else:
+            # BUG-A2: extension may fall back to card-title text ("简历.pdf") when
+            # downloadPdf fails. Persisting that as pdf_path causes /resumes/{id}/pdf
+            # to 404. Reject and let the candidate stay in collecting so the system
+            # re-issues request_pdf.
+            _audit_safe("f4_pdf_invalid_path", "rejected", c.id,
+                        {"received": body.pdf_url}, reviewer_id=user_id)
+        # PR3: 接到本地 PDF 后同步抽基础字段；AI 解析在后台异步进行（避免阻塞响应）
+        try:
+            from app.modules.im_intake.intake_pdf_parser import extract_basic_fields
+            if extract_basic_fields(c, db):
+                db.commit()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "intake basic field extract failed: candidate=%s err=%s", c.id, e
+            )
 
     action = await svc.analyze_chat(c, messages, job)
     svc.apply_terminal(c, action, user_id=user_id)
@@ -375,6 +412,52 @@ async def collect_chat(
             slot_keys=action.meta.get("slot_keys", []),
         ),
     )
+
+
+@router.post("/candidates/{candidate_id}/reextract")
+async def reextract_slots(
+    candidate_id: int,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """对存量 chat_snapshot 重跑 SlotFiller, 修复历史漏抽 slot."""
+    c = db.query(IntakeCandidate).filter_by(id=candidate_id, user_id=user_id).first()
+    if not c:
+        raise HTTPException(404, "candidate not found")
+
+    msgs = []
+    if isinstance(c.chat_snapshot, dict):
+        msgs = c.chat_snapshot.get("messages") or []
+    if not msgs:
+        return {"id": c.id, "filled": [], "skipped": "no_messages"}
+
+    from app.modules.im_intake.slot_filler import SlotFiller
+    from app import main as _main
+    llm = getattr(_main, "llm_client", None)
+    if llm is None:
+        raise HTTPException(503, "LLM not configured")
+
+    slots = {s.slot_key: s for s in db.query(IntakeSlot).filter_by(candidate_id=c.id).all()}
+    pending = [k for k in HARD_SLOT_KEYS if k in slots and not slots[k].value]
+    if not pending:
+        return {"id": c.id, "filled": [], "skipped": "all_hard_filled"}
+
+    filler = SlotFiller(llm=llm)
+    parsed = await filler.parse_conversation(msgs, c.boss_id, pending)
+
+    now = datetime.now(timezone.utc)
+    filled = []
+    for key, (val, source) in parsed.items():
+        s = slots[key]
+        s.value = val if isinstance(val, str) else str(val)
+        s.source = source
+        s.answered_at = now
+        filled.append(key)
+    if filled:
+        db.commit()
+        _audit_safe("f4_reextract", "slot_fill", c.id,
+                    {"filled": filled}, reviewer_id=user_id)
+    return {"id": c.id, "filled": filled, "pending": pending}
 
 
 @router.post("/candidates/{candidate_id}/ack-sent")
@@ -500,6 +583,20 @@ def autoscan_rank(
     """
     if not _settings_is_running(db, user_id):
         return {"items": [], "limit": limit}
+    # BUG-B2: demote candidates whose chat_snapshot is non-empty but at least
+    # one hard slot is still empty after we already asked. Those are extractor
+    # blind spots — re-picking them ahead of fresh candidates fuels the
+    # "ask → answer → can't extract → ask again" loop. Sort them to the back.
+    from sqlalchemy import select, and_
+    blind_hard_count_subq = (
+        select(func.count(IntakeSlot.slot_key))
+        .where(IntakeSlot.candidate_id == IntakeCandidate.id)
+        .where(IntakeSlot.slot_key.in_(list(HARD_SLOT_KEYS)))
+        .where(IntakeSlot.value == "")
+        .where(IntakeSlot.ask_count > 0)
+        .correlate(IntakeCandidate)
+        .scalar_subquery()
+    )
     rows = (
         db.query(IntakeCandidate)
         .filter(IntakeCandidate.user_id == user_id)
@@ -507,6 +604,13 @@ def autoscan_rank(
         .order_by(
             # collecting (0) before awaiting_reply (1)
             case((IntakeCandidate.intake_status == "collecting", 0), else_=1),
+            # blind-extract suspects (chat snapshot exists + asked at least once
+            # but slot still empty) → demote to back of queue
+            case(
+                (and_(IntakeCandidate.chat_snapshot.isnot(None),
+                      blind_hard_count_subq > 0), 1),
+                else_=0,
+            ),
             IntakeCandidate.updated_at.asc(),
         )
         .limit(limit)

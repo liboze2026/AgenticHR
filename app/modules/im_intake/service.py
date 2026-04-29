@@ -193,6 +193,36 @@ class IntakeService:
             from app.modules.im_intake.outbox_service import expire_pending_for_candidate
             expire_pending_for_candidate(self.db, candidate.id, reason="hard_slots_filled")
 
+        # BUG-B1 防循环：候选人已多次回复 + 之前问过 + SlotFiller 仍抽不到
+        # → 多半是语义不清或 LLM 抽取盲区，再问也是空。转 pending_human 让 HR 介入。
+        # 阈值：candidate_msg_count ≥ 2 且 至少一个 hard slot ask_count > 0。
+        still_unfilled = [k for k in HARD_SLOT_KEYS
+                          if slots_by.get(k) and not slots_by[k].value]
+        if still_unfilled:
+            candidate_msg_count = sum(
+                1 for m in merged_messages
+                if m.get("sender_id") == candidate.boss_id
+            )
+            already_asked_some = any(
+                slots_by[k].ask_count > 0
+                for k in HARD_SLOT_KEYS if k in slots_by
+            )
+            if candidate_msg_count >= 2 and already_asked_some:
+                candidate.intake_status = "pending_human"
+                candidate.intake_completed_at = datetime.now(timezone.utc)
+                self.db.commit()
+                from app.modules.im_intake.outbox_service import (
+                    expire_pending_for_candidate as _expire,
+                )
+                _expire(self.db, candidate.id, reason="extract_blind_pending_human")
+                _audit_safe(
+                    "f4_extract_failed_pending_human", "auto_pending", candidate.id,
+                    {"unfilled": still_unfilled,
+                     "candidate_msg_count": candidate_msg_count},
+                    reviewer_id=self.user_id or None,
+                )
+                return NextAction(type="mark_pending_human")
+
         slots = list(slots_by.values())  # use fresh re-query, not stale slots_by_key
         action = decide_next_action(
             candidate, slots, job,

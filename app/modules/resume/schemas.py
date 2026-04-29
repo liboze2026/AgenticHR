@@ -43,7 +43,11 @@ class ResumeCreate(BaseModel):
 
 class ResumeUpdate(BaseModel):
     """更新简历（全部字段可选，支持逐字段编辑）"""
-    name: str | None = Field(None, max_length=100)
+    # BUG-070 修复：添加 expected_salary 字段，与 ResumeCreate 对齐，避免静默丢弃
+    # BUG-069 修复：name 加 min_length=1，禁空字符串清姓名
+    model_config = {"extra": "forbid"}
+
+    name: str | None = Field(None, min_length=1, max_length=100)
     phone: str | None = Field(None, max_length=20)
     email: str | None = Field(None, max_length=200)
 
@@ -64,14 +68,18 @@ class ResumeUpdate(BaseModel):
     bachelor_school: str | None = Field(None, max_length=200)
     master_school: str | None = Field(None, max_length=200)
     phd_school: str | None = Field(None, max_length=200)
-    work_years: int | None = Field(None, ge=0)
+    work_years: int | None = Field(None, ge=0, le=80)
+    expected_salary_min: float | None = Field(None, ge=0)
+    expected_salary_max: float | None = Field(None, ge=0)
     job_intention: str | None = Field(None, max_length=200)
-    skills: str | None = None
-    work_experience: str | None = None
-    project_experience: str | None = None
-    self_evaluation: str | None = None
-    status: str | None = Field(None, description="pending, passed, rejected")
-    reject_reason: str | None = None
+    skills: str | None = Field(None, max_length=4000)
+    work_experience: str | None = Field(None, max_length=20000)
+    project_experience: str | None = Field(None, max_length=20000)
+    self_evaluation: str | None = Field(None, max_length=4000)
+    # BUG-067 修复：status 限定枚举，拒绝任意字符串注入
+    status: str | None = Field(None, pattern=r'^(pending|passed|rejected)$',
+                               description="pending, passed, rejected")
+    reject_reason: str | None = Field(None, max_length=500)
 
 
 class ResumeResponse(BaseModel):
@@ -104,6 +112,7 @@ class ResumeResponse(BaseModel):
     seniority: str = ""
     intake_status: str | None = None
     boss_id: str = ""
+    school_tier: str = ""
     created_at: datetime
     updated_at: datetime
 
