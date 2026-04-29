@@ -145,6 +145,87 @@ def test_recompute_zero_when_no_candidate_passes_hard_filter(client, db_session)
     assert resp.json()["total"] == 0
 
 
+def test_recompute_purges_stale_matching_results(client, db_session):
+    """再次分析: 硬筛失败的人之前留在 matching_results 的旧行必须删."""
+    from app.modules.matching.models import MatchingResult
+    from datetime import datetime, timezone
+
+    cm = {"hard_skills": [], "experience": {"years_min": 0},
+          "education": {}, "job_level": "中级"}
+    job = Job(title="后端", is_active=True, required_skills="",
+              competency_model=cm, competency_model_status="approved",
+              user_id=1, education_min="硕士")  # 仅硕士过硬筛
+    db_session.add(job); db_session.commit()
+
+    # 一个硕士过硬筛的人, 一个本科不过硬筛的人
+    _, r_pass = _seed_complete_candidate_with_resume(
+        db_session, boss_id="ok", name="硕士", education="硕士",
+    )
+    _, r_fail = _seed_complete_candidate_with_resume(
+        db_session, boss_id="fail", name="本科", education="本科",
+    )
+
+    # 模拟历史遗留: 两人都已有 matching_results 行 (上次硬筛规则不同)
+    now = datetime.now(timezone.utc)
+    for rid in (r_pass.id, r_fail.id):
+        db_session.add(MatchingResult(
+            resume_id=rid, job_id=job.id,
+            total_score=50.0, skill_score=50, experience_score=50,
+            seniority_score=50, education_score=50, industry_score=50,
+            hard_gate_passed=1, missing_must_haves="[]",
+            evidence="{}", tags="[]",
+            competency_hash="old", weights_hash="old",
+            scored_at=now,
+        ))
+    db_session.commit()
+    assert db_session.query(MatchingResult).filter_by(job_id=job.id).count() == 2
+
+    with patch("app.modules.matching.service.enhance_evidence_with_llm",
+               new=AsyncMock(side_effect=lambda ev, *a, **kw: ev)):
+        resp = client.post("/api/matching/recompute", json={"job_id": job.id})
+    assert resp.status_code == 200
+
+    # 本科那行应被清理, 仅硕士保留
+    rows = db_session.query(MatchingResult).filter_by(job_id=job.id).all()
+    surviving_ids = {row.resume_id for row in rows}
+    assert r_fail.id not in surviving_ids
+    assert r_pass.id in surviving_ids
+
+
+def test_recompute_purges_all_when_zero_pass_hard_filter(client, db_session):
+    """硬筛 0 通过时, 本 job 全部 matching_results 行清空 (列表也归零)."""
+    from app.modules.matching.models import MatchingResult
+    from datetime import datetime, timezone
+
+    cm = {"hard_skills": [], "experience": {"years_min": 0},
+          "education": {}, "job_level": "中级"}
+    job = Job(title="后端", is_active=True, required_skills="",
+              competency_model=cm, competency_model_status="approved",
+              user_id=1, education_min="博士")
+    db_session.add(job); db_session.commit()
+
+    _, r_fail = _seed_complete_candidate_with_resume(
+        db_session, boss_id="b1", education="本科",
+    )
+    db_session.add(MatchingResult(
+        resume_id=r_fail.id, job_id=job.id,
+        total_score=50.0, skill_score=50, experience_score=50,
+        seniority_score=50, education_score=50, industry_score=50,
+        hard_gate_passed=1, missing_must_haves="[]",
+        evidence="{}", tags="[]",
+        competency_hash="old", weights_hash="old",
+        scored_at=datetime.now(timezone.utc),
+    ))
+    db_session.commit()
+
+    with patch("app.modules.matching.service.enhance_evidence_with_llm",
+               new=AsyncMock(side_effect=lambda ev, *a, **kw: ev)):
+        resp = client.post("/api/matching/recompute", json={"job_id": job.id})
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+    assert db_session.query(MatchingResult).filter_by(job_id=job.id).count() == 0
+
+
 def test_recompute_resume_path_unaffected_by_hard_filter(client, db_session):
     """硬筛串联只在 job_id 路径生效, resume_id 路径行为不变."""
     cm = {"hard_skills": [], "experience": {"years_min": 0},

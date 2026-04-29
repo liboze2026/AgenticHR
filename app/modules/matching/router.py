@@ -83,6 +83,19 @@ def _hard_filter_resume_ids(db: Session, user_id: int, job_id: int) -> set[int]:
     return resume_ids
 
 
+def _purge_outside_hard_filter(db: Session, job_id: int, keep_resume_ids: set[int]) -> int:
+    """删本 job 下 resume_id 不在 keep_resume_ids 的所有 matching_results.
+    返回删除行数, 供调用方记日志。
+    keep_resume_ids 为空集合时 → 删本 job 全部行 (硬筛 0 通过场景)。
+    """
+    q = db.query(MatchingResult).filter(MatchingResult.job_id == job_id)
+    if keep_resume_ids:
+        q = q.filter(~MatchingResult.resume_id.in_(keep_resume_ids))
+    deleted = q.delete(synchronize_session=False)
+    db.commit()
+    return deleted
+
+
 def _resolve_or_404(db: Session, input_id: int, user_id: int) -> int:
     """统一鉴权 + 翻译。BUG-056 修复：他人资源与不存在均返 404。"""
     try:
@@ -270,6 +283,9 @@ async def post_recompute(
         # 硬筛串联 (五维能力筛选通道): 用 list_matched_for_job 的 candidate ID 集合
         # 翻译成 Resume.id, 仅对硬筛通过的人跑 F2, 避免给被硬筛拒掉的人浪费 LLM token.
         pre_filter_resume_ids = _hard_filter_resume_ids(db, user_id, req.job_id)
+        # 清理: 本 job 之下、不在硬筛通过集合内的旧 matching_results 行直接删,
+        # 保证 "再次分析" 后列表与硬筛通过名单严格一致 (旧人不残留)。
+        _purge_outside_hard_filter(db, req.job_id, pre_filter_resume_ids)
         total = len(pre_filter_resume_ids)
         task_id = _new_task(total)
         background.add_task(
