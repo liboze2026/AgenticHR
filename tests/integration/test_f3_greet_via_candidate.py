@@ -33,7 +33,6 @@ class TestF3GreetCreatesCandidate:
              .filter_by(user_id=1, boss_id="b_f3_create").first())
         assert c is not None, "F3 路径应建 IntakeCandidate"
 
-    @pytest.mark.skip(reason="阶段 C: Resume.intake_candidate_id 列在 0023 加")
     def test_resume_back_links_to_candidate(self, db_session):
         """阶段 C: F3 创建 Resume 后 intake_candidate_id 反向指 candidate"""
         from app.modules.recruit_bot.service import upsert_resume_by_boss_id

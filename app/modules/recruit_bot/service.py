@@ -135,6 +135,12 @@ def upsert_resume_by_boss_id(
         )
         existing.raw_text = raw_text
         existing.updated_at = now
+        # spec 0429 阶段 C: 反向键回填
+        if not existing.intake_candidate_id:
+            existing.intake_candidate_id = cand_row.id
+        # 维护 candidate 的 promoted_resume_id 反向链
+        if not cand_row.promoted_resume_id:
+            cand_row.promoted_resume_id = existing.id
         # 故意不动: status, greet_status, greeted_at, ai_parsed, ai_score, ai_summary
         db.commit()
         db.refresh(existing)
@@ -155,11 +161,16 @@ def upsert_resume_by_boss_id(
         greet_status="none",
         created_at=now,
         updated_at=now,
+        # spec 0429 阶段 C: 反向键 1:1
+        intake_candidate_id=cand_row.id,
     )
     try:
         db.add(r)
         db.commit()
         db.refresh(r)
+        # 维护正向键
+        cand_row.promoted_resume_id = r.id
+        db.commit()
         return r
     except IntegrityError:
         # Race: 另一路并发 writer 先插入了相同 (user_id, boss_id).
@@ -173,6 +184,10 @@ def upsert_resume_by_boss_id(
         if winner is None:
             # 若 IntegrityError 但没查到行 (不应发生), 抛出以暴露问题.
             raise
+        # 反向键补刀
+        if not winner.intake_candidate_id:
+            winner.intake_candidate_id = cand_row.id
+            db.commit()
         return winner
 
 

@@ -61,4 +61,11 @@ class IntakeCandidate(Base):
         Index("ix_intake_candidates_status", "intake_status"),
         Index("ix_intake_candidates_job_id", "job_id"),
         Index("ix_intake_candidates_expires_at", "expires_at"),
+        # spec 0429 阶段 C: 1:1 锁; 一个 Resume 只能被一个 candidate promote
+        Index(
+            "uniq_intake_candidates_promoted_resume_id",
+            "promoted_resume_id",
+            unique=True,
+            sqlite_where=Column("promoted_resume_id").isnot(None),
+        ),
     )

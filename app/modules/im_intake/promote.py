@@ -54,6 +54,8 @@ def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0)
         if not r.intake_started_at and candidate.intake_started_at:
             r.intake_started_at = candidate.intake_started_at
         r.intake_completed_at = datetime.now(timezone.utc)
+        # spec 0429 阶段 C: 反向键 1:1
+        r.intake_candidate_id = candidate.id
         db.flush()
 
         candidate.promoted_resume_id = r.id
@@ -79,6 +81,8 @@ def promote_to_resume(db: Session, candidate: IntakeCandidate, user_id: int = 0)
         intake_status="complete",
         intake_started_at=candidate.intake_started_at,
         intake_completed_at=datetime.now(timezone.utc),
+        # spec 0429 阶段 C: 反向键 1:1
+        intake_candidate_id=candidate.id,
     )
     db.add(r)
     db.flush()

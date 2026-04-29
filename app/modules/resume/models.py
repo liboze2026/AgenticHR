@@ -1,6 +1,6 @@
 """简历数据模型"""
 from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Text, Float, DateTime
+from sqlalchemy import Column, Integer, String, Text, Float, DateTime, Index, ForeignKey
 
 from app.database import Base
 
@@ -10,6 +10,13 @@ class Resume(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, default=0, index=True)
+    # spec 0429 阶段 C: 反向 FK 指回 IntakeCandidate, 强制 1:1
+    intake_candidate_id = Column(
+        Integer,
+        ForeignKey("intake_candidates.id", ondelete="SET NULL", use_alter=True,
+                   name="fk_resumes_intake_candidate_id"),
+        nullable=True,
+    )
     name = Column(String(100), nullable=False, index=True)
     phone = Column(String(20), default="", index=True)
     email = Column(String(200), default="")
@@ -50,4 +57,14 @@ class Resume(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
+    )
+
+    __table_args__ = (
+        # spec 0429 阶段 C: partial unique (NULL 允许多份, 非 NULL 唯一)
+        Index(
+            "uniq_resumes_intake_candidate_id",
+            "intake_candidate_id",
+            unique=True,
+            sqlite_where=Column("intake_candidate_id").isnot(None),
+        ),
     )
