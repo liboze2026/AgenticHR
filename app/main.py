@@ -229,9 +229,16 @@ if _frontend_dir:
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        """SPA fallback: serve index.html for all non-API routes"""
+        """SPA fallback: serve index.html for all non-API routes.
+
+        index.html 必须 no-cache, 否则前端发布新版本时浏览器仍用旧 chunk hash。
+        /assets/* 由 StaticFiles 处理 (chunk hash 内含 → 可长期 cache)。
+        """
         resolved_root = _frontend_dir.resolve()
         file_path = (_frontend_dir / full_path).resolve()
         if str(file_path).startswith(str(resolved_root)) and file_path.is_file():
             return FileResponse(str(file_path))
-        return FileResponse(str(_frontend_dir / "index.html"))
+        return FileResponse(
+            str(_frontend_dir / "index.html"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )

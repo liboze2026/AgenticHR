@@ -326,6 +326,7 @@ def list_resumes(
         page_size=page_size,
         keyword=keyword,
         source=source,
+        status=status,
     )
 
 

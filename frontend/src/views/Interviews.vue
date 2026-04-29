@@ -18,7 +18,7 @@
         <!-- 卡片头部：候选人 + 状态 -->
         <div class="card-header">
           <div class="candidate-info">
-            <span class="candidate-name">{{ getResumeName(iv.resume_id) }}</span>
+            <span class="candidate-name">{{ iv.resume_name || getResumeName(iv.resume_id) }}</span>
             <el-tag :type="iv.status === 'scheduled' ? 'primary' : iv.status === 'completed' ? 'success' : 'info'" size="small" style="margin-left: 8px">
               {{ iv.status === 'scheduled' ? '待面试' : iv.status === 'completed' ? '已完成' : '已取消' }}
             </el-tag>
@@ -443,7 +443,12 @@ async function onJobChange(jobId) {
 function getResume(id) { return resumeMap.value[id] || null }
 function getResumeName(id) { const r = resumeMap.value[id]; return r ? r.name : `候选人#${id}` }
 function getInterviewerName(id) { return interviewerMap.value[id] || `面试官#${id}` }
-function formatTime(t) { if (!t) return ''; return new Date(t.endsWith?.('Z') ? t : t + 'Z').toLocaleString('zh-CN') }
+function formatTime(t) {
+  // BUG #3 fix: 后端 SQLite 存 naive datetime (strip 时区, 数值保留为用户本地时间).
+  // 不带 tz 标记时按本地时间解析, 避免被当 UTC 二次转换 (+8 偏移).
+  if (!t) return ''
+  return new Date(t).toLocaleString('zh-CN')
+}
 
 // 取候选人最高学历 + 对应学校（博士 > 硕士 > 本科；找不到则 fallback 到 education 字段）
 function getEduInfo(resume) {

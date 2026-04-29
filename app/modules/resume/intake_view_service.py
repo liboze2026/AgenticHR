@@ -105,12 +105,28 @@ def list_resume_library(
     page_size: int = 10,
     keyword: str | None = None,
     source: str | None = None,
+    status: str | None = None,
 ) -> dict[str, Any]:
-    """简历库列表: 四项齐全的候选人"""
+    """简历库列表: 四项齐全的候选人
+
+    spec 0429 阶段 A 修复: 加 status 过滤 (passed/rejected/pending), 之前 router
+    接受 status 参数但没传下来, 导致 dashboard 总数/通过/淘汰三计数全相同。
+    """
     query = _complete_query(db, user_id)
 
     if source:
         query = query.filter(IntakeCandidate.source == source)
+
+    # spec 0429: candidate.status 直接过滤; 渲染层已用 candidate.status 兜底
+    if status:
+        # 历史兼容: status='rejected' 时把 abandoned/timed_out 的也算进去
+        if status == "rejected":
+            query = query.filter(
+                (IntakeCandidate.status == "rejected") |
+                (IntakeCandidate.intake_status.in_(("abandoned", "timed_out")))
+            )
+        else:
+            query = query.filter(IntakeCandidate.status == status)
 
     if keyword:
         _kw = keyword.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
