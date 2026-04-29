@@ -1,6 +1,8 @@
 """简历管理 API 路由"""
+import logging
 import shutil
 import time
+from datetime import timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, UploadFile, File, Form
@@ -147,16 +149,40 @@ def upload_pdf_resume(
     service: ResumeService = Depends(get_resume_service),
     user_id: int = Depends(get_current_user_id),
 ):
-    # 检查文件类型：文件名或 content-type 任一匹配即可
+    """spec 0429 阶段 B: 手动上传统一走 IntakeCandidate → promote → Resume
+
+    步骤:
+      1. 读 PDF 字节 + 类型校验
+      2. ensure_candidate (boss_id 空时用 sha256 surrogate)
+      3. 落盘 PDF + 写 candidate.pdf_path/raw_text/字段
+      4. 三 hard slot 兜底填充 (manual_upload sentinel)，使简历库可见
+      5. promote_to_resume 出 Resume 锚点 (matching/interview FK 用)
+      6. 渲染 candidate 视图返回 (与 GET /api/resumes/ 一致)
+    """
     is_pdf = (file.filename or "").lower().endswith(".pdf") or (file.content_type or "").startswith("application/pdf")
     if not is_pdf:
         raise HTTPException(status_code=400, detail="仅支持 PDF 文件")
 
+    # 读完整字节供 sha256 surrogate + 落盘
+    file_bytes = file.file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="上传文件为空")
+
+    import hashlib
+    from datetime import datetime
+    from app.modules.im_intake.candidate_model import IntakeCandidate as _IC
+    from app.modules.im_intake.models import IntakeSlot as _Slot
+    from app.modules.im_intake.templates import HARD_SLOT_KEYS as _HARD
+    from app.modules.im_intake.promote import promote_to_resume as _promote
+
+    # surrogate boss_id 防孤儿且同文件天然去重
+    surrogate_boss_id = candidate_boss_id or (
+        "manual_" + hashlib.sha256(file_bytes).hexdigest()[:16]
+    )
+
     storage_dir = Path(settings.resume_storage_path)
     storage_dir.mkdir(parents=True, exist_ok=True)
 
-    # 统一命名: 日期_姓名_职位.pdf
-    from datetime import datetime
     date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_name = (candidate_name or "未知").replace("/", "_").replace("\\", "_")
     safe_job = (candidate_job or "未知职位").replace("/", "_").replace("\\", "_")
@@ -164,31 +190,87 @@ def upload_pdf_resume(
     file_path = storage_dir / filename
 
     with open(file_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+        f.write(file_bytes)
 
-    resume = service.create_from_pdf(
-        str(file_path),
-        page_info={
-            "name": candidate_name,
-            "phone": candidate_phone,
-            "email": candidate_email,
-            "education": candidate_education,
-            "work_years": candidate_work_years,
-            "job_intention": candidate_job,
-        },
-        original_filename=file.filename or "",
-        user_id=user_id,
-        boss_id=candidate_boss_id,
-        source=candidate_source,
-    )
-    if not resume:
+    # PDF 解析（图片型 PDF 等抽不到文本时报 422 + 删文件）
+    from app.modules.resume.pdf_parser import parse_pdf, extract_resume_fields, parse_boss_filename
+    raw_text = parse_pdf(str(file_path).replace("\\", "/"))
+    if not raw_text:
         file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="PDF 解析失败，无法提取内容")
-    if candidate_boss_id and not resume.boss_id:
-        resume.boss_id = candidate_boss_id
+
+    pdf_fields = extract_resume_fields(raw_text)
+    filename_fields = parse_boss_filename(file.filename or "")
+
+    name = candidate_name or filename_fields.get("name") or pdf_fields.get("name") or "未知"
+    phone = candidate_phone or filename_fields.get("phone") or pdf_fields.get("phone") or ""
+    email = candidate_email or filename_fields.get("email") or pdf_fields.get("email") or ""
+    education = candidate_education or pdf_fields.get("education") or ""
+
+    # ensure_candidate: (user_id, boss_id) 唯一索引天然 dedup
+    candidate = (service.db.query(_IC)
+                 .filter_by(user_id=user_id, boss_id=surrogate_boss_id).first())
+    now = datetime.now(timezone.utc)
+    if candidate is None:
+        candidate = _IC(
+            user_id=user_id,
+            boss_id=surrogate_boss_id,
+            name=name,
+            phone=phone,
+            email=email,
+            education=education,
+            work_years=candidate_work_years or 0,
+            job_intention=candidate_job or "",
+            skills=pdf_fields.get("skills", "") or "",
+            work_experience=pdf_fields.get("work_experience", "") or "",
+            source="manual_upload" if not candidate_boss_id else candidate_source,
+            pdf_path=str(file_path).replace("\\", "/"),
+            raw_text=raw_text,
+            intake_status="collecting",
+            intake_started_at=now,
+        )
+        service.db.add(candidate)
         service.db.commit()
-        service.db.refresh(resume)
-    return resume
+        service.db.refresh(candidate)
+    else:
+        # 同 surrogate 重复上传：刷新 PDF + raw_text，不改 boss_id
+        if name and not candidate.name:
+            candidate.name = name
+        if phone and not candidate.phone:
+            candidate.phone = phone
+        if email and not candidate.email:
+            candidate.email = email
+        candidate.pdf_path = str(file_path).replace("\\", "/")
+        candidate.raw_text = raw_text
+
+    # 三 hard slot 兜底（手动上传场景认为信息已收齐 → 简历库可见）
+    existing_slots = {s.slot_key: s for s in
+                      service.db.query(_Slot).filter_by(candidate_id=candidate.id).all()}
+    for k in _HARD:
+        if k not in existing_slots:
+            service.db.add(_Slot(
+                candidate_id=candidate.id, slot_key=k, slot_category="hard",
+                value="manual_upload", source="manual_upload", ask_count=0,
+                answered_at=now,
+            ))
+        elif not existing_slots[k].value:
+            existing_slots[k].value = "manual_upload"
+            existing_slots[k].source = "manual_upload"
+            existing_slots[k].answered_at = now
+    service.db.commit()
+    service.db.refresh(candidate)
+
+    # promote 出 Resume 锚点
+    try:
+        _promote(service.db, candidate, user_id=user_id)
+        service.db.commit()
+        service.db.refresh(candidate)
+    except Exception as e:
+        # promote 失败不阻断上传 (candidate 已存)；但 matching/interview 链路要等修复
+        logger = logging.getLogger(__name__)
+        logger.warning("upload_pdf_resume promote failed: %s", e)
+
+    return _target_to_response_dict(candidate, service.db)
 
 
 @router.get("/settings/storage-path")

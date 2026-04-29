@@ -6,9 +6,58 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.modules.resume.models import Resume
+from app.modules.im_intake.candidate_model import IntakeCandidate
 
 if TYPE_CHECKING:
     from app.modules.recruit_bot.schemas import ScrapedCandidate
+
+
+def _ensure_candidate_for_f3(
+    db: Session, *, user_id: int, boss_id: str, name: str,
+    education: str = "", work_years: int = 0, intended_job: str = "",
+    skills_csv: str = "", latest_work_brief: str = "", raw_text: str = "",
+) -> IntakeCandidate:
+    """spec 0429 阶段 B: F3 路径 ensure IntakeCandidate（写 Resume 前的镜像）。
+
+    用 (user_id, boss_id) 唯一索引 dedup；非空字段才覆盖既有值，不清掉已抽到的信息。
+    """
+    c = (db.query(IntakeCandidate)
+         .filter_by(user_id=user_id, boss_id=boss_id).first())
+    now = datetime.now(timezone.utc)
+    if c is None:
+        c = IntakeCandidate(
+            user_id=user_id, boss_id=boss_id, name=name or "",
+            education=education or "",
+            work_years=work_years or 0,
+            job_intention=intended_job or "",
+            skills=skills_csv or "",
+            work_experience=latest_work_brief or "",
+            raw_text=raw_text or "",
+            source="f3_recruit_bot",
+            intake_status="collecting",
+            intake_started_at=now,
+        )
+        db.add(c)
+        db.commit()
+        db.refresh(c)
+    else:
+        # upsert 语义：scraper 给值时才覆盖，空值视为未观察
+        if name and not c.name:
+            c.name = name
+        if education and not c.education:
+            c.education = education
+        if work_years and not c.work_years:
+            c.work_years = work_years
+        if intended_job and not c.job_intention:
+            c.job_intention = intended_job
+        if skills_csv and not c.skills:
+            c.skills = skills_csv
+        if latest_work_brief and not c.work_experience:
+            c.work_experience = latest_work_brief
+        if raw_text:
+            c.raw_text = raw_text
+        db.commit()
+    return c
 
 
 def _safe_csv(tags: list[str]) -> str:
@@ -65,6 +114,14 @@ def upsert_resume_by_boss_id(
     summary = _summarize_raw_text(candidate)
     raw_text = (
         f"{summary} || 原文:{candidate.raw_text}" if candidate.raw_text else summary
+    )
+
+    # spec 0429 阶段 B: F3 路径必须先建 IntakeCandidate（孤儿避免 + 简历库可见）
+    cand_row = _ensure_candidate_for_f3(
+        db, user_id=user_id, boss_id=candidate.boss_id, name=candidate.name,
+        education=candidate.education, work_years=candidate.work_years,
+        intended_job=candidate.intended_job, skills_csv=skills_csv,
+        latest_work_brief=candidate.latest_work_brief, raw_text=raw_text,
     )
 
     if existing:
