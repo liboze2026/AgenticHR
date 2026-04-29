@@ -60,27 +60,7 @@ def _normalize_resume_id(db: Session, input_id: int, user_id: int) -> int | None
     return None
 
 
-def _hard_filter_resume_ids(db: Session, user_id: int, job_id: int) -> set[int]:
-    """硬筛通过的 candidate → 翻译为 Resume.id 集合 (按需 promote).
-    用于 "五维能力筛选" 通道：仅对硬筛通过的人跑 F2 评分。
-    翻译失败的 candidate (promote 抛异常) 静默跳过, 不阻塞批量。
-    """
-    from app.modules.resume.intake_view_service import (
-        _complete_query, list_matched_for_job,
-    )
-    # 复用 list_matched_for_job 的过滤规则 (四齐全 + 学历 + 院校等级)
-    matched_dicts = list_matched_for_job(db, user_id=user_id, job_id=job_id)
-    cand_ids = [d["id"] for d in matched_dicts]
-    resume_ids: set[int] = set()
-    for cid in cand_ids:
-        try:
-            rid = _normalize_resume_id(db, cid, user_id)
-            if rid is not None:
-                resume_ids.add(rid)
-        except _NormalizeError:
-            # promote 失败 → 跳过, 这条候选人本轮不参与 F2 评分
-            continue
-    return resume_ids
+from app.modules.matching.hard_filter import hard_filter_resume_ids as _hard_filter_resume_ids
 
 
 def _purge_outside_hard_filter(db: Session, job_id: int, keep_resume_ids: set[int]) -> int:
