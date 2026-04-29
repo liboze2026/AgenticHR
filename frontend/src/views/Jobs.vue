@@ -176,18 +176,23 @@
             style="margin-bottom: 12px;"
           />
           <div v-loading="matching.loading">
+            <el-alert
+              type="warning" :closable="false" show-icon
+              title="人工闸门: 只有标记「通过」的候选人才能进入约面试"
+              style="margin-bottom: 8px;"
+            />
             <el-empty v-if="!matching.items.length" description="无符合门槛的候选人" />
             <el-table v-else :data="matching.items" border stripe size="small">
               <el-table-column prop="name" label="姓名" min-width="100" />
               <el-table-column prop="phone" label="手机" width="130" />
-              <el-table-column prop="email" label="邮箱" min-width="180" />
-              <el-table-column prop="education" label="学历" width="80" />
-              <el-table-column label="院校" min-width="180">
+              <el-table-column prop="email" label="邮箱" min-width="160" />
+              <el-table-column prop="education" label="学历" width="70" />
+              <el-table-column label="院校" min-width="160">
                 <template #default="{ row }">
                   <span>{{ row.master_school || row.bachelor_school || row.phd_school || '—' }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="院校等级" width="100">
+              <el-table-column label="院校等级" width="90">
                 <template #default="{ row }">
                   <el-tag v-if="row.school_tier === '985'" type="danger" size="small">985</el-tag>
                   <el-tag v-else-if="row.school_tier === '211'" type="warning" size="small">211</el-tag>
@@ -195,7 +200,23 @@
                   <span v-else style="color:#999;">—</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="job_intention" label="求职意向" min-width="140" />
+              <el-table-column prop="job_intention" label="求职意向" min-width="120" />
+              <el-table-column label="本岗位决策" width="220" align="center">
+                <template #default="{ row }">
+                  <div v-if="row.job_action === 'passed'">
+                    <el-tag type="success" size="small">✓ 已通过</el-tag>
+                    <el-button link size="small" @click="setMatchedDecision(row, null)" :loading="row._actionLoading">改</el-button>
+                  </div>
+                  <div v-else-if="row.job_action === 'rejected'">
+                    <el-tag type="danger" size="small">✗ 已淘汰</el-tag>
+                    <el-button link size="small" @click="setMatchedDecision(row, null)" :loading="row._actionLoading">改</el-button>
+                  </div>
+                  <div v-else>
+                    <el-button size="small" type="success" plain @click="setMatchedDecision(row, 'passed')" :loading="row._actionLoading">通过</el-button>
+                    <el-button size="small" type="danger" plain @click="setMatchedDecision(row, 'rejected')" :loading="row._actionLoading">淘汰</el-button>
+                  </div>
+                </template>
+              </el-table-column>
             </el-table>
           </div>
         </el-tab-pane>
@@ -306,7 +327,7 @@
 import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox, ElNotification } from 'element-plus'
 import { ArrowRight } from '@element-plus/icons-vue'
-import { jobApi, competencyApi, matchingApi, weightsApi } from '../api'
+import { jobApi, competencyApi, matchingApi, weightsApi, decisionApi } from '../api'
 import CompetencyEditor from '../components/CompetencyEditor.vue'
 import { extractingJobIds } from '../stores/extractingJobs.js'
 
@@ -630,13 +651,29 @@ function jobActionOrder(action) {
   return 2  // 'rejected'
 }
 
+function matchingActionOrder(action) {
+  if (action === 'passed') return 0
+  if (action == null) return 1
+  return 2  // rejected
+}
+
+function sortMatchingItems(items) {
+  return [...items].sort((a, b) => {
+    const ao = matchingActionOrder(a.job_action)
+    const bo = matchingActionOrder(b.job_action)
+    if (ao !== bo) return ao - bo
+    return (b.created_at || '').localeCompare(a.created_at || '')
+  })
+}
+
 async function loadMatching() {
   if (!editingJob.value) return
   matching.value.loading = true
   try {
     // PR4: 新逻辑 — 直接拉"四项齐全 ∩ 学历门槛 ∩ 院校等级门槛"列表
+    // spec 0429-D: 后端注入 job_action; 前端按 passed → null → rejected 排序
     const items = await matchingApi.listPassedForJob(editingJob.value.id)
-    matching.value.items = items
+    matching.value.items = sortMatchingItems(items)
     matching.value.total = items.length
     matching.value.staleCount = 0
   } catch (e) {
@@ -646,12 +683,36 @@ async function loadMatching() {
   }
 }
 
+async function setMatchedDecision(row, action) {
+  if (row._actionLoading) return
+  if (action === 'rejected' && row.job_action !== 'rejected') {
+    try {
+      await ElMessageBox.confirm(
+        `确定将 "${row.name}" 在本岗位标记为淘汰？淘汰后该候选人将不能被约面试。`,
+        '确认淘汰',
+        { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }
+      )
+    } catch { return }
+  }
+  row._actionLoading = true
+  try {
+    await decisionApi.set(editingJob.value.id, row.id, action)
+    row.job_action = action
+    ElMessage.success(action === 'passed' ? '已标记本岗位通过' : action === 'rejected' ? '已标记本岗位淘汰' : '已清除本岗位决策')
+    matching.value.items = sortMatchingItems(matching.value.items)
+  } catch (e) {
+    ElMessage.error('操作失败：' + (e.response?.data?.detail || e.message || '请重试'))
+  } finally {
+    row._actionLoading = false
+  }
+}
+
 async function setJobAction(item, action) {
   if (item._actionLoading) return
   if (action === 'rejected' && item.job_action !== 'rejected') {
     try {
       await ElMessageBox.confirm(
-        `确定将 "${item.resume_name}" 在本岗位标记为淘汰？不影响该候选人的全局状态。`,
+        `确定将 "${item.resume_name}" 在本岗位标记为淘汰？淘汰后该候选人将不能被约面试。`,
         '确认淘汰',
         { type: 'warning', confirmButtonText: '确认', cancelButtonText: '取消' }
       )
@@ -659,7 +720,12 @@ async function setJobAction(item, action) {
   }
   item._actionLoading = true
   try {
-    await matchingApi.setAction(item.id, action)
+    // spec 0429-D: 优先走新决策端点 (按 candidate_id), 缺 candidate_id 则回退旧端点。
+    if (item.candidate_id) {
+      await decisionApi.set(editingJob.value.id, item.candidate_id, action)
+    } else {
+      await matchingApi.setAction(item.id, action)
+    }
     item.job_action = action
     ElMessage.success(action === 'passed' ? '已标记本岗位通过' : action === 'rejected' ? '已标记本岗位淘汰' : '已清除本岗位决策')
     // Re-sort after action change

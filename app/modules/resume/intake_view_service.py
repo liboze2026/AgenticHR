@@ -160,8 +160,18 @@ def list_matched_for_job(
     db: Session,
     user_id: int,
     job_id: int,
+    action_filter: str | None = None,
 ) -> list[dict[str, Any]]:
-    """岗位匹配候选人: 简历库 ∩ 岗位学历门槛"""
+    """岗位匹配候选人: 简历库 ∩ 岗位学历门槛。
+
+    返项追加 `job_action` 字段 (passed/rejected/None), 由 spec 0429-D 决策表注入。
+
+    action_filter:
+      None       → 不过滤 (默认)
+      'passed'   → 仅返 job_action='passed'
+      'rejected' → 仅返 job_action='rejected'
+      'undecided'→ 仅返 job_action=None
+    """
     job = db.query(Job).filter_by(id=job_id, user_id=user_id).first()
     if not job:
         return []
@@ -176,4 +186,20 @@ def list_matched_for_job(
         and meets_school_tier(c.school_tier or "", tier_min)
     ]
     matched.sort(key=lambda c: c.created_at or datetime.min, reverse=True)
-    return [candidate_to_resume_dict(c, db) for c in matched]
+
+    # spec 0429-D: 注入 job_action
+    from app.modules.matching.decision_service import get_decisions_map_for_job
+    decisions = get_decisions_map_for_job(db, user_id, job_id)
+
+    out: list[dict[str, Any]] = []
+    for c in matched:
+        d = candidate_to_resume_dict(c, db)
+        d["job_action"] = decisions.get(c.id)
+        if action_filter == "passed" and d["job_action"] != "passed":
+            continue
+        if action_filter == "rejected" and d["job_action"] != "rejected":
+            continue
+        if action_filter == "undecided" and d["job_action"] is not None:
+            continue
+        out.append(d)
+    return out

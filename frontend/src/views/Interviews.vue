@@ -429,7 +429,8 @@ async function onJobChange(jobId) {
   if (!jobId) return
   passedCandidatesLoading.value = true
   try {
-    const data = await matchingApi.listPassedForJob(jobId)
+    // spec 0429-D: 死卡 — 只列人工标"通过"的候选人
+    const data = await matchingApi.listPassedForJob(jobId, { action: 'passed' })
     passedCandidatesForJob.value = data
     // Also update resumeMap with these candidates so card display works
     data.forEach(r => { if (!resumeMap.value[r.id]) resumeMap.value[r.id] = r })

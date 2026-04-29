@@ -170,6 +170,24 @@ def list_results(
     resumes = {r.id: r for r in db.query(Resume).filter(Resume.id.in_(resume_ids)).all()}
     jobs = {j.id: j for j in db.query(Job).filter(Job.id.in_(job_ids)).all()}
 
+    # spec 0429-D: 反查 resume_id -> candidate_id (用 promoted_resume_id)
+    candidate_id_by_resume: dict[int, int] = {}
+    if resume_ids:
+        from app.modules.im_intake.candidate_model import IntakeCandidate
+        for cid, rid in db.query(
+            IntakeCandidate.id, IntakeCandidate.promoted_resume_id,
+        ).filter(
+            IntakeCandidate.promoted_resume_id.in_(resume_ids),
+            IntakeCandidate.user_id == user_id,
+        ).all():
+            candidate_id_by_resume[rid] = cid
+
+    # spec 0429-D: 注入决策表 job_action (覆盖 matching_results.job_action 旧字段)
+    from app.modules.matching.decision_service import get_decisions_map_for_job
+    decisions_by_job: dict[int, dict[int, str]] = {}
+    for jid in job_ids:
+        decisions_by_job[jid] = get_decisions_map_for_job(db, user_id, jid)
+
     # 按 job 分组算 current hash — 每个 job 用自己的 effective weights
     current_hashes = {}   # job_id → (competency_hash, weights_hash)
     for jid, j in jobs.items():
@@ -184,6 +202,8 @@ def list_results(
         job = jobs.get(r.job_id)
         current_c, current_w = current_hashes.get(r.job_id, (r.competency_hash, r.weights_hash))
         evidence_dict = json.loads(r.evidence or "{}")
+        cand_id = candidate_id_by_resume.get(r.resume_id)
+        decision_action = decisions_by_job.get(r.job_id, {}).get(cand_id) if cand_id else None
         items.append(MatchingResultResponse(
             id=r.id, resume_id=r.resume_id,
             resume_name=resume.name if resume else "",
@@ -195,7 +215,8 @@ def list_results(
             missing_must_haves=json.loads(r.missing_must_haves or "[]"),
             evidence={k: [EvidenceItem(**e) for e in v] for k, v in evidence_dict.items()},
             tags=json.loads(r.tags or "[]"),
-            job_action=r.job_action,
+            job_action=decision_action if decision_action is not None else r.job_action,
+            candidate_id=cand_id,
             stale=(r.competency_hash != current_c or r.weights_hash != current_w),
             scored_at=r.scored_at,
         ))
@@ -230,17 +251,43 @@ def set_action(result_id: int, body: _ActionBody, db: Session = Depends(get_db),
         raise HTTPException(status_code=400, detail="action must be passed/rejected/null")
     row.job_action = body.action
     db.commit()
+    # spec 0429-D: 同步写决策表 (job × candidate). 反查 candidate_id by promoted_resume_id.
+    from app.modules.im_intake.candidate_model import IntakeCandidate
+    from app.modules.matching.decision_service import set_decision, DecisionError
+    cand = db.query(IntakeCandidate).filter_by(
+        promoted_resume_id=row.resume_id, user_id=user_id,
+    ).first()
+    if cand:
+        try:
+            set_decision(
+                db, user_id=user_id, job_id=row.job_id,
+                candidate_id=cand.id, action=body.action,
+            )
+        except DecisionError:
+            pass
     return {"id": row.id, "job_action": row.job_action}
 
 
 @router.get("/passed-resumes/{job_id}")
-def list_passed_for_job(job_id: int, db: Session = Depends(get_db), user_id: int = Depends(get_current_user_id)):
-    """岗位匹配候选人: 四项齐全 ∩ 学历门槛 ∩ 院校等级门槛 (PR4)"""
+def list_passed_for_job(
+    job_id: int,
+    action: Optional[str] = None,
+    db: Session = Depends(get_db),
+    user_id: int = Depends(get_current_user_id),
+):
+    """岗位匹配候选人: 四项齐全 ∩ 学历门槛 ∩ 院校等级门槛 (PR4)。
+
+    spec 0429-D: 加 ?action=passed|rejected|undecided 过滤; 缺省返全部 (含 job_action 字段)。
+    """
     job = db.query(Job).filter_by(id=job_id).first()
     if not job or job.user_id != user_id:
         raise HTTPException(status_code=404, detail="岗位不存在")
+    if action is not None and action not in ("passed", "rejected", "undecided"):
+        raise HTTPException(status_code=400, detail="action 取值非法")
     from app.modules.resume.intake_view_service import list_matched_for_job
-    return list_matched_for_job(db, user_id=user_id, job_id=job_id)
+    return list_matched_for_job(
+        db, user_id=user_id, job_id=job_id, action_filter=action,
+    )
 
 
 @router.post("/recompute")

@@ -205,6 +205,14 @@ def delete_job(
         ).delete(synchronize_session=False)
     except Exception:
         pass
+    # spec 0429-D: 级联清 job × candidate 决策
+    try:
+        from app.modules.matching.decision_model import JobCandidateDecision
+        db.query(JobCandidateDecision).filter(
+            JobCandidateDecision.job_id == job_id
+        ).delete(synchronize_session=False)
+    except Exception:
+        pass
     db.commit()
     service.delete_job(job_id)
 

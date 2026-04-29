@@ -163,9 +163,18 @@ export const matchingApi = {
   recomputeJob: (job_id) => api.post('/matching/recompute', { job_id }),
   recomputeResume: (resume_id) => api.post('/matching/recompute', { resume_id }),
   recomputeStatus: (task_id) => api.get(`/matching/recompute/status/${task_id}`),
-  // per-(resume, job) action: 'passed' / 'rejected' / null
+  // per-(resume, job) action: 'passed' / 'rejected' / null — 旧端点, 兼容五维 Tab 用
   setAction: (id, action) => api.patch(`/matching/results/${id}/action`, { action }),
-  listPassedForJob: (job_id) => api.get(`/matching/passed-resumes/${job_id}`),
+  // spec 0429-D: action='passed'|'rejected'|'undecided' 闸门; 缺省返全部
+  listPassedForJob: (job_id, { action } = {}) =>
+    api.get(`/matching/passed-resumes/${job_id}`, { params: action ? { action } : {} }),
+}
+
+// spec 0429-D: 岗位 × 候选人 决策 API
+export const decisionApi = {
+  // action: 'passed' | 'rejected' | null (清除)
+  set: (job_id, candidate_id, action) =>
+    api.patch(`/jobs/${job_id}/candidates/${candidate_id}/decision`, { action }),
 }
 
 export default api

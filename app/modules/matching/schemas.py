@@ -30,6 +30,7 @@ class MatchingResultResponse(BaseModel):
     tags: list[str] = []
 
     job_action: str | None = None  # per-(resume, job) HR decision: 'passed' / 'rejected' / null
+    candidate_id: int | None = None  # spec 0429-D: IntakeCandidate.id for decision routing
 
     stale: bool = False
     scored_at: datetime
