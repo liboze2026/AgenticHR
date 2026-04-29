@@ -181,15 +181,31 @@ def delete_job(
             status_code=409,
             detail=f"该岗位下有 {linked} 场待面试，请先处理后再删除"
         )
+    # 级联清 cancelled Interview + 其 NotificationLog,
+    # 否则 Interview.job_id FK (无 ondelete) 让 db.delete(job) 挂 IntegrityError
+    from app.modules.notification.models import NotificationLog
+    cancelled_iv_ids = [
+        i for (i,) in db.query(Interview.id).filter(
+            Interview.job_id == job_id,
+            Interview.status == "cancelled",
+        ).all()
+    ]
+    if cancelled_iv_ids:
+        db.query(NotificationLog).filter(
+            NotificationLog.interview_id.in_(cancelled_iv_ids)
+        ).delete(synchronize_session=False)
+        db.query(Interview).filter(
+            Interview.id.in_(cancelled_iv_ids)
+        ).delete(synchronize_session=False)
     # 级联清 F2 匹配结果（无 FK，需手动）
     try:
         from app.modules.matching.models import MatchingResult
         db.query(MatchingResult).filter(
             MatchingResult.job_id == job_id
         ).delete(synchronize_session=False)
-        db.commit()
     except Exception:
         pass
+    db.commit()
     service.delete_job(job_id)
 
 

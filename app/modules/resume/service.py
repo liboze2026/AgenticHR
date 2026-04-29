@@ -150,15 +150,10 @@ class ResumeService:
         resume = self.get_by_id(resume_id)
         if not resume:
             return False
-        # 级联清理：matching_results 没有 FK，需要手动清，否则会留孤儿行
-        try:
-            from app.modules.matching.models import MatchingResult
-            self.db.query(MatchingResult).filter(
-                MatchingResult.resume_id == resume_id
-            ).delete(synchronize_session=False)
-        except Exception:
-            pass
-        self.db.delete(resume)
+        # 级联清 Interview / NotificationLog / MatchingResult 后再删 Resume,
+        # 否则 Interview.resume_id FK (无 ondelete) 会让 DELETE 挂 IntegrityError.
+        from app.modules.resume.cascade import purge_resumes_with_deps
+        purge_resumes_with_deps(self.db, [resume_id])
         self.db.commit()
         return True
 

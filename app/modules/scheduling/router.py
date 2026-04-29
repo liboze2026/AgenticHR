@@ -193,7 +193,8 @@ def delete_interviewer(
     user_id: int = Depends(get_current_user_id),
 ):
     # 防呆：检查关联面试
-    from app.modules.scheduling.models import Interview, Interviewer
+    from app.modules.scheduling.models import Interview, Interviewer, InterviewerAvailability
+    from app.modules.notification.models import NotificationLog
     interviewer = service.db.query(Interviewer).filter(Interviewer.id == interviewer_id).first()
     if not interviewer:
         raise HTTPException(status_code=404, detail="面试官不存在")
@@ -208,6 +209,24 @@ def delete_interviewer(
             status_code=409,
             detail=f"该面试官有 {linked} 场待面试，请先取消或重新分配后再删除"
         )
+    # 级联清 cancelled Interview + 其 NotificationLog + InterviewerAvailability,
+    # 否则 FK (无 ondelete) 让 db.delete(interviewer) 挂 IntegrityError
+    cancelled_iv_ids = [
+        i for (i,) in service.db.query(Interview.id).filter(
+            Interview.interviewer_id == interviewer_id,
+            Interview.status == "cancelled",
+        ).all()
+    ]
+    if cancelled_iv_ids:
+        service.db.query(NotificationLog).filter(
+            NotificationLog.interview_id.in_(cancelled_iv_ids)
+        ).delete(synchronize_session=False)
+        service.db.query(Interview).filter(
+            Interview.id.in_(cancelled_iv_ids)
+        ).delete(synchronize_session=False)
+    service.db.query(InterviewerAvailability).filter(
+        InterviewerAvailability.interviewer_id == interviewer_id
+    ).delete(synchronize_session=False)
     if not service.delete_interviewer(interviewer_id):
         raise HTTPException(status_code=404, detail="面试官不存在")
 
@@ -273,8 +292,19 @@ def clear_all_interviews(
                 "feishu_event_id": iv.feishu_event_id,
             })
 
-    count = service.db.query(Interview).filter(Interview.user_id == user_id).count()
-    service.db.query(Interview).filter(Interview.user_id == user_id).delete(synchronize_session=False)
+    user_interview_ids = [
+        i for (i,) in service.db.query(Interview.id)
+        .filter(Interview.user_id == user_id).all()
+    ]
+    count = len(user_interview_ids)
+    if user_interview_ids:
+        from app.modules.notification.models import NotificationLog
+        service.db.query(NotificationLog).filter(
+            NotificationLog.interview_id.in_(user_interview_ids)
+        ).delete(synchronize_session=False)
+        service.db.query(Interview).filter(
+            Interview.id.in_(user_interview_ids)
+        ).delete(synchronize_session=False)
     service.db.commit()
 
     # Step 2: 后台线程跑 cleanup，不阻塞响应
@@ -655,6 +685,11 @@ async def delete_interview(
     cleanup = await _cleanup_interview_external(interview)
     logger.info(f"Delete interview {interview_id} external cleanup: {cleanup}")
 
+    # 同时清 NotificationLog 软引用（无 FK，否则留孤儿行）
+    from app.modules.notification.models import NotificationLog
+    service.db.query(NotificationLog).filter(
+        NotificationLog.interview_id == interview_id
+    ).delete(synchronize_session=False)
     service.db.delete(interview)
     service.db.commit()
 

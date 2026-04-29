@@ -38,31 +38,13 @@ def clear_all_resumes(
     BUG-062 修复：之前只清 Resume 表，IntakeCandidate/IntakeSlot/intake_outbox 残留导致刷新后列表回填。
     BUG-084 修复：os.remove 加 storage_root 边界校验，防注入路径穿越删系统文件。
     """
-    import os
     from app.modules.resume.models import Resume
-    from app.modules.scheduling.models import Interview
-    from app.modules.notification.models import NotificationLog
+    from app.modules.resume.cascade import purge_resumes_with_deps
     from app.modules.im_intake.candidate_model import IntakeCandidate
     from app.modules.im_intake.models import IntakeSlot
     from app.modules.im_intake.outbox_model import IntakeOutbox
 
     user_resume_ids = [r.id for r in db.query(Resume.id).filter(Resume.user_id == user_id).all()]
-    interview_count = db.query(Interview).filter(Interview.resume_id.in_(user_resume_ids)).count() if user_resume_ids else 0
-    if user_resume_ids:
-        user_interview_ids = [i.id for i in db.query(Interview.id).filter(Interview.resume_id.in_(user_resume_ids)).all()]
-        notification_count = db.query(NotificationLog).filter(NotificationLog.interview_id.in_(user_interview_ids)).count() if user_interview_ids else 0
-        if user_interview_ids:
-            db.query(NotificationLog).filter(NotificationLog.interview_id.in_(user_interview_ids)).delete(synchronize_session=False)
-        db.query(Interview).filter(Interview.resume_id.in_(user_resume_ids)).delete(synchronize_session=False)
-        try:
-            from app.modules.matching.models import MatchingResult
-            db.query(MatchingResult).filter(
-                MatchingResult.resume_id.in_(user_resume_ids)
-            ).delete(synchronize_session=False)
-        except Exception:
-            pass
-    else:
-        notification_count = 0
 
     # 收集 candidate 侧 PDF 路径与 ID
     cand_rows = db.query(IntakeCandidate).filter(IntakeCandidate.user_id == user_id).all()
@@ -83,8 +65,10 @@ def clear_all_resumes(
             pass
         db.query(IntakeCandidate).filter(IntakeCandidate.user_id == user_id).delete(synchronize_session=False)
 
-    count = db.query(Resume).filter(Resume.user_id == user_id).count()
-    db.query(Resume).filter(Resume.user_id == user_id).delete(synchronize_session=False)
+    purged = purge_resumes_with_deps(db, user_resume_ids)
+    count = purged["resumes"]
+    interview_count = purged["interviews"]
+    notification_count = purged["notifications"]
     db.commit()
 
     # 删 PDF 文件，仅限 storage_root 之内
